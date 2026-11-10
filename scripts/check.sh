@@ -18,6 +18,7 @@ if [ "$P" = p01 ] || [[ "$P" > p01 ]]; then
     echo "$deps" | grep -q 'd3d9.dll' && bad "asi imports d3d9.dll statically (must use GetModuleHandle/GetProcAddress)" || ok "no static d3d9 import"
   fi
   grep -q "warning:" build/gate.log && echo "     (compiler warnings present: $(grep -c 'warning:' build/gate.log))"
+  grep -q "vsnprintf" plugin/src/log.cpp && ok "logger uses vsnprintf" || bad "logger must use vsnprintf for va_list"
   grep -q "0xC97C28" plugin/src/*.cpp && ok "uses the game device pointer" || bad "0xC97C28 not used"
   grep -q "remixapi_InitializeLibrary" plugin/src/*.cpp && ok "loads Remix API" || bad "remixapi_InitializeLibrary not referenced"
   grep -q "DrawLightInstance" plugin/src/*.cpp && ok "draws a light" || bad "DrawLightInstance not used"

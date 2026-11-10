@@ -17,7 +17,10 @@ static bool g_logOpen = false;
 static std::string logPath() {
     char module[MAX_PATH];
     module[0] = '\0';
-    DWORD n = GetModuleFileNameA(NULL, module, MAX_PATH);
+    HMODULE self = NULL;  // our own .asi, not the game exe
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCSTR>(&logPath), &self);
+    DWORD n = GetModuleFileNameA(self, module, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) {
         return "rhyremix.log";
     }
@@ -49,7 +52,7 @@ void rhyLog(const char* fmt, ...) {
     char msg[1024];
     va_list args;
     va_start(args, fmt);
-    int written = std::snprintf(msg, sizeof msg, fmt, args);
+    int written = std::vsnprintf(msg, sizeof msg, fmt, args);
     va_end(args);
     if (written < 0) {
         return;
