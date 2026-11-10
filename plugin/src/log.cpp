@@ -1,0 +1,78 @@
+#include "log.h"
+
+#include <windows.h>
+
+#include <cstdarg>
+#include <chrono>
+#include <cstdio>
+#include <ctime>
+#include <mutex>
+#include <string>
+
+static std::mutex g_logMutex;
+static FILE* g_logFile = nullptr;
+static bool g_logOpen = false;
+
+// "<folder of our module>/rhyremix.log", falling back to the current directory.
+static std::string logPath() {
+    char module[MAX_PATH];
+    module[0] = '\0';
+    DWORD n = GetModuleFileNameA(NULL, module, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        return "rhyremix.log";
+    }
+    std::string path(module, n);
+    std::string::size_type sep = path.find_last_of("\\/");
+    if (sep == std::string::npos) {
+        return "rhyremix.log";
+    }
+    return path.substr(0, sep + 1) + "rhyremix.log";
+}
+
+void rhyLogInit() {
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    if (g_logOpen) {
+        return;
+    }
+    g_logOpen = true;
+    g_logFile = std::fopen(logPath().c_str(), "a");
+    if (!g_logFile) {
+        return;
+    }
+    std::fprintf(g_logFile, "---- log starts ----\n");
+    std::fflush(g_logFile);
+}
+
+void rhyLog(const char* fmt, ...) {
+    rhyLogInit();
+
+    char msg[1024];
+    va_list args;
+    va_start(args, fmt);
+    int written = std::snprintf(msg, sizeof msg, fmt, args);
+    va_end(args);
+    if (written < 0) {
+        return;
+    }
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t epoch = std::chrono::system_clock::to_time_t(now);
+    unsigned ms = static_cast<unsigned>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+    std::tm* lt = std::localtime(&epoch);  // guarded by g_logMutex below
+    if (!lt) {
+        return;
+    }
+
+    char ts[32];
+    std::snprintf(ts, sizeof ts, "%04d-%02d-%02d %02d:%02d:%02d.%03u",
+                  lt->tm_year + 1900, lt->tm_mon + 1, lt->tm_mday,
+                  lt->tm_hour, lt->tm_min, lt->tm_sec, ms);
+
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    if (!g_logFile) {
+        return;
+    }
+    std::fprintf(g_logFile, "[%s] %s\n", ts, msg);
+    std::fflush(g_logFile);
+}
