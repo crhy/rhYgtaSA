@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <cstring>
+#include <cstdint>
 
 #include "remix_c.h"
 #include "log.h"
@@ -16,6 +17,8 @@ static bool g_ready = false;
 static remixapi_Interface g_api;
 static remixapi_LightHandle g_light = nullptr;
 static int g_drawCalls = 0;
+static remixapi_LightInfo g_lightInfo;
+static remixapi_LightInfoSphereEXT g_sphere;
 static DWORD g_lastErrTick = 0;
 
 static const UINT64 kLightHash = 0x52485952454D4958ull;  // "RH\XRHEMIX"-ish tag
@@ -60,22 +63,22 @@ void rhyRemixInitOnce() {
     }
 
     // One test light: sphere, warm radiance, fixed world position.
-    remixapi_LightInfo lightInfo;
+    remixapi_LightInfo& lightInfo = g_lightInfo;
     std::memset(&lightInfo, 0, sizeof lightInfo);
     lightInfo.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     lightInfo.hash = kLightHash;
-    lightInfo.radiance.x = 200.0f;
-    lightInfo.radiance.y = 180.0f;
-    lightInfo.radiance.z = 140.0f;
+    lightInfo.radiance.x = 5000.0f;
+    lightInfo.radiance.y = 4500.0f;
+    lightInfo.radiance.z = 3500.0f;
 
-    remixapi_LightInfoSphereEXT sphere;
+    remixapi_LightInfoSphereEXT& sphere = g_sphere;
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
     sphere.pNext = nullptr;
     sphere.position.x = 2495.0f;
     sphere.position.y = -1680.0f;
     sphere.position.z = 18.0f;
-    sphere.radius = 0.5f;
+    sphere.radius = 1.0f;  // rtx.sceneScale = 0.01: game units are treated as cm
     sphere.shaping_hasvalue = 0;  // shaping disabled
     sphere.volumetricRadianceScale = 0.0f;
     lightInfo.pNext = &sphere;
@@ -97,6 +100,18 @@ void rhyRemixFrame() {
         return;
     }
     ++g_drawCalls;
+    // Test light follows CJ, 2 m above his head (CPed* at 0xB7CD98).
+    if (g_api.DestroyLight && g_api.CreateLight) {
+        uintptr_t ped = *reinterpret_cast<uintptr_t*>(0xB7CD98);
+        if (ped) {
+            uintptr_t m = *reinterpret_cast<uintptr_t*>(ped + 0x14);
+            const float* pos = m ? reinterpret_cast<const float*>(m + 0x30) : reinterpret_cast<const float*>(ped + 0x4);
+            g_sphere.position.x = pos[0]; g_sphere.position.y = pos[1]; g_sphere.position.z = pos[2] + 2.0f;
+            g_api.DestroyLight(g_light);
+            g_light = nullptr;
+            if (g_api.CreateLight(&g_lightInfo, &g_light) != REMIXAPI_ERROR_CODE_SUCCESS || !g_light) { g_ready = false; return; }
+        }
+    }
     remixapi_ErrorCode r = g_api.DrawLightInstance(g_light);
 
     if (g_drawCalls <= 3) {
