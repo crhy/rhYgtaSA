@@ -52,30 +52,47 @@ local function shot(name)
   else note("cannot write marker for " .. name) end
 end
 
+local function restore()
+  pcall(restoreCameraJumpcut); pcall(setCameraBehindPlayer)
+  pcall(displayHud, true); pcall(displayRadar, true)
+  pcall(setPlayerControl, PLAYER_HANDLE, true)
+end
+
+local function runStop(s)
+  local name, h, m = s[1], s[2], s[3]
+  forceWeatherNow(1)
+  setTimeOfDay(h, m)
+  setCharCoordinates(PLAYER_PED, s[4], s[5], s[6])   -- teleport first, then stream around it
+  requestCollision(s[4], s[5]); loadScene(s[4], s[5], s[6])
+  setFixedCameraPosition(s[7], s[8], s[9], 0.0, 0.0, 0.0)
+  pointCameraAtPoint(s[10], s[11], s[12], 2)
+  wait(SETTLE_MS)
+  setTimeOfDay(h, m)          -- the clock ran during the wait; pin it again
+  wait(GAP_MS)
+  shot(name)
+  wait(GAP_MS)
+end
+
 function main()
   if not exists(flag) then return end
   while not isPlayerPlaying(PLAYER_HANDLE) do wait(500) end
+  -- Teleporting out of an interior (CJ's house, a shop) crashed opcode 00A1 on
+  -- 2026-11-11, so the tour waits until CJ is outdoors.
+  local told = false
+  while getActiveInterior() ~= 0 do
+    if not told then note("waiting: step outside to start the tour"); told = true end
+    wait(1000)
+  end
   wait(5000)
   note("tour start, " .. #stops .. " stops")
   setPlayerControl(PLAYER_HANDLE, false)
   displayHud(false); displayRadar(false)
   for _, s in ipairs(stops) do
-    local name, h, m = s[1], s[2], s[3]
-    forceWeatherNow(1)
-    setTimeOfDay(h, m)
-    requestCollision(s[4], s[5]); loadScene(s[4], s[5], s[6])
-    setCharCoordinates(PLAYER_PED, s[4], s[5], s[6])
-    setFixedCameraPosition(s[7], s[8], s[9], 0.0, 0.0, 0.0)
-    pointCameraAtPoint(s[10], s[11], s[12], 2)
-    wait(SETTLE_MS)
-    setTimeOfDay(h, m)          -- the clock ran during the wait; pin it again
-    wait(GAP_MS)
-    shot(name)
-    wait(GAP_MS)
+    if not isPlayerPlaying(PLAYER_HANDLE) then note("player not playing; tour stopped"); break end
+    local ok, err = pcall(runStop, s)
+    if not ok then note("stop " .. s[1] .. " failed: " .. tostring(err)); break end
   end
-  restoreCameraJumpcut(); setCameraBehindPlayer()
-  displayHud(true); displayRadar(true)
-  setPlayerControl(PLAYER_HANDLE, true)
+  restore()                   -- always: control, HUD and camera come back
   os.remove(flag)
   note("tour done")
 end
