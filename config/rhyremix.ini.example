@@ -1,0 +1,76 @@
+; rhyremix.asi settings.  Place at <game>\scripts\rhyremix.ini
+; (deploy.sh copies this file there with --install; the plugin also writes these
+; same defaults itself on first run).
+;
+; UNITS.  rtx.conf sets rtx.sceneScale = 0.01, so 1 GTA SA game unit = 1 cm in
+; the Remix world.  The lamp lists are in game units, so radius is in game units
+; too: a street lamp head sits ~20 units up, hence radius=20 for a pool that
+; reaches the road.  Radiance falls off with the square of that distance, so
+; values around 1-3 are the right order of magnitude.  Values in the hundreds
+; flood the scene -- that is what made the earlier build look too bright.
+;
+; Brightness knobs, in the order they matter most:
+;   probe / probe_*    one calibration light, see the CALIBRATING note below
+;   radiance_scale     global multiplier over every radiance we send
+;   radiance_*         per-lamp radiance, picked by lamp size band
+;   radius             sphere radius in game units
+;   max_lights         lights alive at once (also a perf knob)
+;   sphere_shaping     1 = cone pointing straight down, light lands on the road
+;
+; CALIBRATING.  Set probe=1 and go to the probe position (probe_x/y/z, a lamp
+; head near Grove Street by default).  One white light is drawn every frame
+; regardless of hour or distance.  Invisible -> multiply probe_radiance by 10;
+; blown out -> divide by 10; a dot rather than a pool -> raise probe_radius.
+; Copy the winning numbers into radius / radiance_* and set probe=0.
+;
+; SCREENSHOTS.  block_gamma=1 swallows the game's IDirect3DDevice9::SetGammaRamp
+; call (vtable entry 21) instead of forwarding it to the Remix bridge.  That
+; call is the last bridge command queued before the Remix server dies with crash
+; id 0xe06d7363 when you press Ctrl+PrintScreen, and the game's gamma ramp is
+; cosmetic under Remix anyway (rtx.tonemap.finalizeWithACES does the tonemapping).
+; Set block_gamma=0 to restore the original call.
+;
+; destroy_delay_ms: handles retired by distance or by a traffic phase change are
+; destroyed at the start of a later Present, never in the middle of a frame that
+; is still drawing other lights.  0 destroys them immediately.
+[streetlights]
+enabled=1
+list=rhyremix_lights.txt
+max_distance=300
+min_distance=0
+max_lights=150
+on_hour=19
+off_hour=6
+radius=20
+cone_angle=70
+cone_softness=0.4
+sphere_shaping=1
+focus_exponent=0
+radiance_big=3
+radiance_middle=1.8
+radiance_small=1.0
+radiance_scale=1.0
+cold=0.85,0.90,1.00
+warm=1.00,0.80,0.55
+resync_frames=30
+light_hash_base=0
+destroy_delay_ms=500
+block_gamma=1
+probe=0
+probe_x=2489.927
+probe_y=-1655.956
+probe_z=19.843
+probe_radius=20
+probe_radiance=3
+
+[trafficlights]
+enabled=1
+list=rhyremix_traffic.txt
+mode=cycle
+period=60
+max_lights=100
+max_distance=300
+radius=6
+night_only=1
+radiance=1.5
+resync_frames=30

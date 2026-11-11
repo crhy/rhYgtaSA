@@ -1,3 +1,11 @@
 .strata/
 build/
 build-*.json
+build-queue.log
+__pycache__/
+*.pyc
+screenshots/
+# The lamp table is a file from the GTASA-Remix pack. tools/*.py read it straight
+# out of <game>/moonloader/, so a local copy here is convenience only and does not
+# belong in the repo.
+data/SARemix_Light_Manager.dat

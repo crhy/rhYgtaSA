@@ -1,8 +1,14 @@
 #include <windows.h>
 #include <d3d9.h>
 
+#include "config.h"
+#include "delayed.h"
 #include "log.h"
+#include "probe.h"
 #include "remix.h"
+#include "streetlights.h"
+#include "sun.h"
+#include "trafficlights.h"
 
 // The game's D3D9 device (0 until rendering starts); in the RTX build it belongs
 // to the Remix bridge client d3d9.dll in the game folder.
@@ -10,6 +16,34 @@ static const void* const kDeviceSlot = reinterpret_cast<const void*>(0xC97C28);
 
 // IDirect3DDevice9 vtable: 0..2 = IUnknown, Present is entry 17.
 static const int kPresentEntry = 17;
+
+// IDirect3DDevice9::SetGammaRamp is entry 21 (checked against the MinGW-w64
+// d3d9 header: the base classes take entries 0..17, Present is 17, and SetGammaRamp
+// is the entry directly after it).
+typedef HRESULT(__stdcall* rhySetGammaRampFn)(IDirect3DDevice9*, UINT,
+                                             D3DGAMMARAMP*, BOOL);
+static const int kSetGammaRampEntry = 21;
+static rhySetGammaRampFn g_origSetGammaRamp = nullptr;
+static int g_gammaCalls = 0;
+
+// The last Remix bridge command queued before the server dies with crash id
+// 0xe06d7363 when the user presses Ctrl+PrintScreen, and the only call in that
+// screenshot path the ASI itself makes.  The game's gamma ramp is cosmetic under
+// Remix (rtx.tonemap.finalizeWithACES does the tonemapping), so swallow it
+// instead of forwarding it.  Returning S_OK keeps the game from treating it as
+// a failure and retrying in a loop.
+static HRESULT __stdcall hkSetGammaRamp(IDirect3DDevice9* dev, UINT which,
+                                       D3DGAMMARAMP* ramp, BOOL scaleGamma) {
+    (void)dev;
+    (void)which;
+    (void)ramp;
+    (void)scaleGamma;
+    ++g_gammaCalls;
+    if ((g_gammaCalls % 20) == 1) {
+        rhyLog("SetGammaRamp swallowed (%d calls so far)", g_gammaCalls);
+    }
+    return S_OK;
+}
 
 typedef HRESULT(__stdcall* rhyPresentFn)(IDirect3DDevice9*, const RECT*,
                                         const RECT*, HWND, const RGNDATA*);
@@ -19,8 +53,34 @@ static rhyPresentFn g_origPresent = nullptr;
 static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
                                    const RECT* dstRect, HWND focusWindow,
                                    const RGNDATA* regions) {
-    rhyRemixInitOnce();  // first frame, on the render thread
-    rhyRemixFrame();     // draw the test light before presenting
+    rhyRemixInitOnce();        // first frame, on the render thread
+    rhyStreetlightsInitOnce(); // loads rhyremix.ini and the lamp list once
+    rhyTrafficInitOnce();      // loads rhyremix_traffic.txt once
+    rhyFlushDelayed();         // destroy handles retired on earlier frames
+    rhyConfigReloadIfChanged(); // re-read rhyremix.ini when it changed on disk
+    if (const RhyConfig* cfg = rhyConfigGet()) {
+        rhySetLightBudget(cfg->max_total_lights);
+    }
+    rhyProbeFrame();           // one-light calibration probe, if enabled
+    rhySunFrame();             // sun as a Remix distant light (replaces the Lua sun)
+    rhyStreetlightsFrame();    // draw the street lamp lights before presenting
+    rhyTrafficFrame();         // draw the traffic light lights too
+
+    // One line a second, independent of which module is on.  This is the number
+    // to watch while tuning: "live" is how many handles the bridge still holds
+    // for us, and a draw_fail that climbs while live stays flat means the bridge
+    // handed us handles for lights the Remix server never accepted.
+    {
+        const DWORD now = GetTickCount();
+        static DWORD s_tick = 0;
+        if (now - s_tick >= 1000) {
+            s_tick = now;
+            rhyLog("remix: live=%u create_fail=%u draw_fail=%u budget_refused=%u "
+                   "| pending_destroy=%u",
+                   rhyLiveLights(), rhyCreateFailures(), rhyDrawFailures(),
+                   rhyBudgetRefusals(), rhyDelayedPending());
+        }
+    }
 
     if (g_origPresent) {
         return g_origPresent(dev, srcRect, dstRect, focusWindow, regions);
@@ -60,6 +120,28 @@ static DWORD WINAPI rhyInitThread(void* /*unused*/) {
     vtable[kPresentEntry] = reinterpret_cast<void*>(&hkPresent);
     rhyLog("vtable[%d] patched to hkPresent=%p", kPresentEntry,
            reinterpret_cast<void*>(&hkPresent));
+
+    // --- SetGammaRamp guard ---
+    const RhyConfig* cfg = rhyConfigGet();
+    if (!cfg->block_gamma) {
+        rhyLog("block_gamma=0: SetGammaRamp forwarded to the bridge unchanged "
+               "(Ctrl+PrintScreen may still crash the Remix server)");
+        return 0;
+    }
+    if (FAILED(VirtualProtect(&vtable[kSetGammaRampEntry], sizeof(void*),
+                              PAGE_EXECUTE_READWRITE, &prevPerms))) {
+        rhyLog("VirtualProtect on vtable[%d] failed (err=%lu), gamma guard not "
+               "installed", kSetGammaRampEntry,
+               static_cast<unsigned long>(GetLastError()));
+    } else {
+        g_origSetGammaRamp =
+            reinterpret_cast<rhySetGammaRampFn>(vtable[kSetGammaRampEntry]);
+        vtable[kSetGammaRampEntry] = reinterpret_cast<void*>(&hkSetGammaRamp);
+        rhyLog("vtable[%d] SetGammaRamp old=%p -> swallowed: the game's gamma "
+               "ramp never reaches the bridge, so Ctrl+PrintScreen no longer "
+               "queues the command that precedes crash 0xe06d7363", kSetGammaRampEntry,
+               reinterpret_cast<void*>(g_origSetGammaRamp));
+    }
     return 0;
 }
 

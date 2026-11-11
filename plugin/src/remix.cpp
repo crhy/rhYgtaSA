@@ -1,27 +1,13 @@
-// The Remix API refuses to compile on 32-bit unless REMIX_ALLOW_X86 is set: our
-// plugin is 32-bit (the game is), while the Remix bridge it talks to is 64-bit
-// only in the sense of the API's data layout, which is fixed-size and identical.
-#define REMIX_ALLOW_X86
-#define REMIX_WINAPI_NO_LIBRARY_LOADER
-
-#include <windows.h>
+#include "remix.h"
 
 #include <cstring>
 #include <cstdint>
 
-#include "remix_c.h"
 #include "log.h"
 
-static bool g_tried = false;              // never retry after a failed init
+static bool g_tried = false;  // never retry after a failed init
 static bool g_ready = false;
 static remixapi_Interface g_api;
-static remixapi_LightHandle g_light = nullptr;
-static int g_drawCalls = 0;
-static remixapi_LightInfo g_lightInfo;
-static remixapi_LightInfoSphereEXT g_sphere;
-static DWORD g_lastErrTick = 0;
-
-static const UINT64 kLightHash = 0x52485952454D4958ull;  // "RH\XRHEMIX"-ish tag
 
 void rhyRemixInitOnce() {
     if (g_tried) {
@@ -61,68 +47,88 @@ void rhyRemixInitOnce() {
     if (err != REMIXAPI_ERROR_CODE_SUCCESS) {
         return;  // game keeps running; never try again
     }
+    g_ready = true;
+}
 
-    // One test light: sphere, warm radiance, fixed world position.
-    remixapi_LightInfo& lightInfo = g_lightInfo;
-    std::memset(&lightInfo, 0, sizeof lightInfo);
-    lightInfo.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
-    lightInfo.hash = kLightHash;
-    lightInfo.radiance.x = 5000.0f;
-    lightInfo.radiance.y = 4500.0f;
-    lightInfo.radiance.z = 3500.0f;
+const remixapi_Interface* rhyRemixApi() {
+    return g_ready ? &g_api : nullptr;
+}
 
-    remixapi_LightInfoSphereEXT& sphere = g_sphere;
-    std::memset(&sphere, 0, sizeof sphere);
-    sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
-    sphere.pNext = nullptr;
-    sphere.position.x = 2495.0f;
-    sphere.position.y = -1680.0f;
-    sphere.position.z = 18.0f;
-    sphere.radius = 1.0f;  // rtx.sceneScale = 0.01: game units are treated as cm
-    sphere.shaping_hasvalue = 0;  // shaping disabled
-    sphere.volumetricRadianceScale = 0.0f;
-    lightInfo.pNext = &sphere;
+// ---------------------------------------------------------------- light calls
 
-    if (!g_api.CreateLight) {
-        rhyLog("remix: interface has no CreateLight, giving up");
+static unsigned g_live = 0;
+static unsigned g_createFail = 0;
+static unsigned g_drawFail = 0;
+static unsigned g_budget = 0;  // 0 = no cap; the modules cap themselves
+static unsigned g_budgetRefuse = 0;
+
+void rhySetLightBudget(unsigned cap) { g_budget = cap; }
+unsigned rhyBudgetRefusals() { return g_budgetRefuse; }
+
+// Returns the handle the bridge gave us, or null when the create failed.  Note
+// what "failed" means here: the bridge client can return SUCCESS plus a handle
+// for a light the Remix server then refuses to draw.  That is why rhyDrawLight
+// counts separately - the draw counter is the one that actually tracks whether
+// the lights exist in the renderer.  reason separates "we said no to ourselves"
+// (1) from "the bridge said no" (2); see remix.h.
+remixapi_LightHandle rhyCreateLight(const remixapi_LightInfo* info, int* reason) {
+    const remixapi_Interface* api = rhyRemixApi();
+    if (!api || !api->CreateLight) {
+        if (reason) {
+            *reason = 2;
+        }
+        return nullptr;
+    }
+    if (g_budget != 0 && g_live >= g_budget) {
+        // Logged a few times, not every frame: the cap is a config value, so the
+        // fix is max_total_lights in rhyremix.ini, or fewer lights in a module.
+        if (g_budgetRefuse++ < 3) {
+            rhyLog("remix: refusing a light, %u handles already live "
+                   "(max_total_lights=%u)", g_live, g_budget);
+        }
+        if (reason) {
+            *reason = 1;  // our cap, not the bridge: the module must stay on
+        }
+        return nullptr;
+    }
+    remixapi_LightHandle handle = nullptr;
+    const remixapi_ErrorCode err = api->CreateLight(info, &handle);
+    if (err != REMIXAPI_ERROR_CODE_SUCCESS || !handle) {
+        ++g_createFail;
+        if (reason) {
+            *reason = 2;
+        }
+        return nullptr;
+    }
+    if (reason) {
+        *reason = 0;
+    }
+    ++g_live;
+    return handle;
+}
+
+void rhyDestroyLight(remixapi_LightHandle handle) {
+    const remixapi_Interface* api = rhyRemixApi();
+    if (!api || !api->DestroyLight || !handle) {
         return;
     }
-    remixapi_ErrorCode ce = g_api.CreateLight(&lightInfo, &g_light);
-    rhyLog("remix: CreateLight -> %u handle=%p", static_cast<unsigned>(ce),
-           static_cast<void*>(g_light));
-    if (ce == REMIXAPI_ERROR_CODE_SUCCESS && g_light) {
-        g_ready = true;
+    if (api->DestroyLight(handle) == REMIXAPI_ERROR_CODE_SUCCESS && g_live > 0) {
+        --g_live;
     }
 }
 
-void rhyRemixFrame() {
-    if (!g_ready || !g_light || !g_api.DrawLightInstance) {
-        return;
+bool rhyDrawLight(remixapi_LightHandle handle) {
+    const remixapi_Interface* api = rhyRemixApi();
+    if (!api || !api->DrawLightInstance || !handle) {
+        return false;
     }
-    ++g_drawCalls;
-    // Test light follows CJ, 2 m above his head (CPed* at 0xB7CD98).
-    if (g_api.DestroyLight && g_api.CreateLight) {
-        uintptr_t ped = *reinterpret_cast<uintptr_t*>(0xB7CD98);
-        if (ped) {
-            uintptr_t m = *reinterpret_cast<uintptr_t*>(ped + 0x14);
-            const float* pos = m ? reinterpret_cast<const float*>(m + 0x30) : reinterpret_cast<const float*>(ped + 0x4);
-            g_sphere.position.x = pos[0]; g_sphere.position.y = pos[1]; g_sphere.position.z = pos[2] + 2.0f;
-            g_api.DestroyLight(g_light);
-            g_light = nullptr;
-            if (g_api.CreateLight(&g_lightInfo, &g_light) != REMIXAPI_ERROR_CODE_SUCCESS || !g_light) { g_ready = false; return; }
-        }
+    if (api->DrawLightInstance(handle) != REMIXAPI_ERROR_CODE_SUCCESS) {
+        ++g_drawFail;
+        return false;
     }
-    remixapi_ErrorCode r = g_api.DrawLightInstance(g_light);
-
-    if (g_drawCalls <= 3) {
-        rhyLog("remix: DrawLightInstance #%d -> %u", g_drawCalls,
-               static_cast<unsigned>(r));
-    } else if (r != REMIXAPI_ERROR_CODE_SUCCESS) {
-        DWORD now = GetTickCount();
-        if (now - g_lastErrTick >= 10000) {  // one line per 10 s
-            g_lastErrTick = now;
-            rhyLog("remix: DrawLightInstance #%d -> %u (non-zero)", g_drawCalls,
-                   static_cast<unsigned>(r));
-        }
-    }
+    return true;
 }
+
+unsigned rhyLiveLights() { return g_live; }
+unsigned rhyCreateFailures() { return g_createFail; }
+unsigned rhyDrawFailures() { return g_drawFail; }

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=GTA San Andreas RTX
+Comment=GTA SA with RTX Remix path tracing (Proton)
+Exec=/home/rhy/rhYgtaSA/launcher/launch-rtx.sh
+Path=/media/rhy/data/Gamez/GTASA-RTX
+Icon=applications-games
+Terminal=false
+Categories=Game;

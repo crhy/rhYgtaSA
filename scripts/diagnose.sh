@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Read-only verdict on the one question the last session could not answer:
+# the plugin said "60 active lights" while bridge64.log said every draw failed.
+# Reads both logs and the deployed ini, changes nothing.
+# Usage: scripts/diagnose.sh [GAME_DIR]
+set -uo pipefail
+GAME="${1:-/media/rhy/data/Gamez/GTASA-RTX}"
+INI="$GAME/scripts/rhyremix.ini"
+LOG="$GAME/scripts/rhyremix.log"
+
+# rhyremix.log lines are prefixed "[timestamp] ", so never anchor at ^ .
+ts_grep() { grep -hE "$1" "$LOG" 2>/dev/null | tail -n "${2:-4}"; }
+
+[ -f "$LOG" ] || { echo "no plugin log at $LOG - the game has not run this build yet"; exit 1; }
+
+say() { printf '\n== %s ==\n' "$1"; }
+
+say "ini (what the running build was configured with)"
+if [ -f "$INI" ]; then
+  grep -nE '^\[|^(enabled|max_lights|max_total_lights|probe|probe_follow|probe_scale|probe_hash|probe_sweep|radiance_scale)=' "$INI" || true
+else
+  echo "no ini at $INI"
+fi
+
+say "remix counters (live / create_fail / draw_fail / budget_refused)"
+counters=$(ts_grep 'remix: live=' 3)
+if [ -n "$counters" ]; then echo "$counters"; else
+  echo "none: this log predates the counters, rebuild and rerun"
+fi
+
+say "active vs drawn (active>0 with drawn=0 means the lights exist only in the plugin)"
+ts_grep '(streetlights|trafficlights): [0-9]+ active' 4 || echo "no module lines"
+
+say "modules that gave up (they retry on the next rhyremix.ini edit)"
+ts_grep 'rejected|disabled until|refusing a light' 6 || echo "none"
+
+say "probe (the calibration rig: what it asked for, and when)"
+ts_grep 'probe: ' 6 || echo "no probe lines: set probe=1 in the ini"
+
+say "sky (sun and moon are the control: different code path from a point light)"
+ts_grep 'sky: ' 2 || echo "no sky lines"
+
+# Every bridge log, not just the newest: bridge32.log and bridge64.log coexist
+# and the interesting one is whichever has failures.
+say "bridge logs: the reason the server rejected things, which our log never shows"
+shopt -s nullglob
+bridges=("$GAME"/rtx-remix/logs/bridge*.log)
+if [ ${#bridges[@]} -eq 0 ]; then
+  echo "no bridge log under $GAME/rtx-remix/logs/"
+else
+  for b in "${bridges[@]}"; do
+    printf '%s: create_failed=%s invalid_handle=%s api_failed=%s\n' \
+      "$(basename "$b")" \
+      "$(grep -c 'CreateLight.*failed' "$b" 2>/dev/null || true)" \
+      "$(grep -c 'Invalid light handle' "$b" 2>/dev/null || true)" \
+      "$(grep -c 'Remix API call failed' "$b" 2>/dev/null || true)"
+  done
+  for b in "${bridges[@]}"; do
+    grep -hE 'failed|Invalid|error' "$b" 2>/dev/null | tail -3 | sed "s|^|$(basename "$b"): |"
+  done
+  # How many invalid draws share one timestamp: 1 means a single handle drawn
+  # every frame (one bad light), N means N lights are bad. This is the difference
+  # between "fix one light's parameters" and "the whole set was rejected".
+  for b in "${bridges[@]}"; do
+    n=$(grep -c 'Invalid light handle' "$b" 2>/dev/null || true)
+    if [ "${n:-0}" -gt 0 ]; then
+      printf '%s: max invalid draws sharing one timestamp = %s\n' \
+        "$(basename "$b")" \
+        "$(grep 'Invalid light handle' "$b" | cut -d']' -f1 | uniq -c |
+         sort -rn | head -1 | awk '{print $1}')"
+    fi  done
+fi
+
+# The verdict, in the order the rungs of the ladder answer them.
+say "verdict"
+last=$(echo "$counters" | tail -1)
+live=$(printf '%s' "$last" | sed -n 's/.*live=\([0-9]*\).*/\1/p')
+draw=$(printf '%s' "$last" | sed -n 's/.*draw_fail=\([0-9]*\).*/\1/p')
+bridge_bad=0
+for b in "${bridges[@]}"; do
+  n=$(grep -c 'Invalid light handle' "$b" 2>/dev/null || true)
+  bridge_bad=$((bridge_bad + ${n:-0}))
+done
+if [ -z "$live" ]; then
+  echo "no counter lines: this log is from a build before the wrappers - rebuild and rerun"
+elif [ "${draw:-0}" -gt 0 ] || [ "$bridge_bad" -gt 0 ]; then
+  per_ts=$(grep -h 'Invalid light handle' "${bridges[@]}" 2>/dev/null | cut -d']' -f1 | uniq -c | sort -rn | head -1 | awk '{print $1}')
+  echo "the bridge handed us handles for lights the Remix server never accepted."
+  echo "live=$live draw_fail=$draw bridge_invalid=$bridge_bad max_per_timestamp=${per_ts:-0}"
+  if [ "${per_ts:-0}" -le 2 ]; then
+    echo "but only ~1 handle per frame is bad: ONE light is rejected, the rest are"
+    echo "being drawn fine. Fix that light's parameters (the probe line above), not"
+    echo "the whole set - the lamps are not the failing ones."
+  else
+    echo "Next rung: probe alone (streetlights/traffic off). If the probe also fails,"
+    echo "the parameters are wrong, not the count. If the probe shows and the modules"
+    echo "do not, lower max_lights / max_total_lights: the renderer has a budget we"
+    echo "have not measured."
+  fi
+elif [ "${live:-0}" -eq 0 ]; then
+  echo "no live handles: every module is off, or every create was refused."
+else
+  echo "no rejected draws in this log. A light that is created, drawn and still"
+  echo "invisible is a units or brightness question, not a handle question:"
+  echo "rtx.sceneScale=0.01 means Remix works in metres while the lamp list is in"
+  echo "game units, so a lamp can be created and drawn 2.5 km away. probe_scale=0.01"
+  echo "vs 1 decides that in one run each; probe_sweep then walks radiance x1..x1000."
+fi
