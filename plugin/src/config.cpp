@@ -8,6 +8,7 @@
 #include <string>
 
 #include "log.h"
+#include "lamps.h"
 
 // Same module-folder logic as log.cpp: ask for the module that contains a
 // function of this file, then take its directory. Falls back to the current
@@ -69,6 +70,11 @@ static const char* const kIniDefaults =
     "radiance_scale=1.0\r\n"
     "cold=0.85,0.90,1.00\r\n"
     "warm=1.00,0.80,0.55\r\n"
+    "kelt_cold=5000\r\n"
+    "kelt_warm=2100\r\n"
+    "when=twilight\r\n"
+    "dusk_deg=-6\r\n"
+    "dawn_deg=-4\r\n"
     "resync_frames=30\r\n"
     "light_hash_base=0\r\n"
     "destroy_delay_ms=500\r\n"
@@ -94,27 +100,47 @@ static const char* const kIniDefaults =
     "\r\n"
     "[sun]\r\n"
     "enabled=1\r\n"
+    "model=1\r\n"
     "radiance=6\r\n"
     "color=1.00,0.98,0.95\r\n"
-    "angular_diameter=3\r\n"
+    "angular_diameter=0.53\r\n"
     "spin=0\r\n"
     "tilt=0\r\n"
     "roll=0\r\n"
     "fade_pow=1\r\n"
     "min_elevation=0.02\r\n"
-    "step_deg=2\r\n"
+    "step_deg=1\r\n"
     "volumetric=0\r\n"
     "hash=7\r\n"
+    "latitude=34.05\r\n"
+    "longitude=-118.24\r\n"
+    "timezone=-8\r\n"
+    "day_of_year=186\r\n"
+    "track_date=1\r\n"
+    "turbidity=0.12\r\n"
     "\r\n"
     "[moon]\r\n"
     "enabled=1\r\n"
-    "radiance=0.12\r\n"
-    "color=0.55,0.65,1.00\r\n"
-    "angular_diameter=1.5\r\n"
+    "radiance=0.10\r\n"
+    "color=0.78,0.85,1.00\r\n"
+    "angular_diameter=0.52\r\n"
+    "phase=0.5\r\n"
     "fade_pow=1\r\n"
     "min_elevation=0\r\n"
     "step_deg=3\r\n"
     "hash=8\r\n"
+    "\r\n"
+    "[sky]\r\n"
+    "apply=1\r\n"
+    "day=1.0\r\n"
+    "night=0.02\r\n"
+    "moon=0.05\r\n"
+    "dusk_deg=-10\r\n"
+    "dawn_deg=4\r\n"
+    "emissive_day=1.0\r\n"
+    "emissive_night=1.0\r\n"
+    "settings=rhyremix-rtx.conf\r\n"
+    "probe=0\r\n"
     "\r\n"
     "[trafficlights]\r\n"
     "enabled=1\r\n"
@@ -253,6 +279,21 @@ static void loadConfig() {
     c.on_hour = iniInt("on_hour", 19) % 24;
     c.off_hour = iniInt("off_hour", 6) % 24;
     c.radius = iniFloat("radius", 15.0f);
+    c.fixture_size = iniInt("fixture_size", 1);
+    c.fixture_scale = iniFloat("fixture_scale", 1.0f);
+    if (!(c.fixture_scale > 0.0f)) {
+        c.fixture_scale = 1.0f;
+    }
+    if (c.fixture_scale > 1000.0f) {
+        c.fixture_scale = 1000.0f;
+    }
+    // 15 is the radius the shipped radiance_big/middle/small values were tuned
+    // against, so it is the correct default reference: with fixture_size=1 the
+    // radiance is multiplied up by exactly the factor the smaller sphere loses.
+    c.radius_ref = iniFloat("radius_ref", 15.0f);
+    if (!(c.radius_ref > 0.0f)) {
+        c.radius_ref = 15.0f;
+    }
     c.cone_angle = iniFloat("cone_angle", 70.0f);
     c.cone_softness = iniFloat("cone_softness", 0.4f);
     c.sphere_shaping = iniInt("sphere_shaping", 1);
@@ -263,6 +304,41 @@ static void loadConfig() {
     c.radiance_scale = iniFloat("radiance_scale", 1.0f);
     iniRgb("cold", c.cold);
     iniRgb("warm", c.warm);
+    c.kelt_cold = iniFloat("kelt_cold", 5000.0f);
+    c.kelt_warm = iniFloat("kelt_warm", 2100.0f);
+    // Lamp family by name. Default is the single most common real fixture in
+    // San Andreas street lighting: high-pressure sodium on the warm side. The
+    // cool side defaults to mercury vapour, which is what the cool-white street
+    // lamps of this era actually were. Set lamp_cold= / lamp_warm= to nothing to
+    // fall back to the kelvin numbers.
+    {
+        std::string cw = iniString("lamp_warm", "hps");
+        std::string cc = iniString("lamp_cold", "mercury");
+        c.lamp_warm_family = cw.empty() ? -1 : rhyLampFamilyFromName(cw.c_str());
+        c.lamp_cold_family = cc.empty() ? -1 : rhyLampFamilyFromName(cc.c_str());
+        if (!cw.empty() && c.lamp_warm_family < 0) {
+            rhyLog("config: lamp_warm=\"%s\" is not a lamp family (hps, mercury, "
+                   "halide, led, tungsten, neon); falling back to kelt_warm",
+                   cw.c_str());
+        }
+        if (!cc.empty() && c.lamp_cold_family < 0) {
+            rhyLog("config: lamp_cold=\"%s\" is not a lamp family (hps, mercury, "
+                   "halide, led, tungsten, neon); falling back to kelt_cold",
+                   cc.c_str());
+        }
+    }
+    if (c.kelt_cold < 0.0f) {
+        c.kelt_cold = 0.0f;
+    }
+    if (c.kelt_warm < 0.0f) {
+        c.kelt_warm = 0.0f;
+    }
+    if (c.kelt_cold > 25000.0f) {
+        c.kelt_cold = 25000.0f;  // the Planck fit is out of range above this
+    }
+    if (c.kelt_warm > 25000.0f) {
+        c.kelt_warm = 25000.0f;
+    }
     c.resync_frames = iniInt("resync_frames", 30);
     c.light_hash_base = iniU64("light_hash_base", 0ull);
     c.destroy_delay_ms = iniFloat("destroy_delay_ms", 500.0f);
@@ -417,6 +493,101 @@ static void loadConfig() {
     c.sun_step_deg = iniFloatSec("sun", "step_deg", 0.5f);
     c.sun_volumetric = iniFloatSec("sun", "volumetric", 0.0f);
     c.sun_hash = iniU64Sec("sun", "hash", 7ull);
+    c.sun_model = iniIntSec("sun", "model", 1);
+
+    // Observer location. The defaults are Los Angeles, because that is the city
+    // GTA SA's map is a stand-in for; getting the latitude wrong is the single
+    // biggest error in where the sun ends up, so it is a knob, not a constant.
+    c.sky_latitude = iniFloatSec("sun", "latitude", 34.05f);
+    c.sky_longitude = iniFloatSec("sun", "longitude", -118.24f);
+    c.sky_timezone = iniFloatSec("sun", "timezone", -8.0f);
+    c.sky_day_of_year = iniIntSec("sun", "day_of_year", 186);
+    c.sky_track_date = iniIntSec("sun", "track_date", 1);
+    c.sky_turbidity = iniFloatSec("sun", "turbidity", 0.12f);
+    c.sun_force_hour = iniIntSec("sun", "force_hour", -1);
+    c.sun_force_minute = iniIntSec("sun", "force_minute", -1);
+    if (c.sun_force_hour > 23) {
+        c.sun_force_hour = 23;
+    }
+    if (c.sun_force_minute > 59) {
+        c.sun_force_minute = 59;
+    }
+    if (c.sky_latitude < -89.0f) {
+        c.sky_latitude = -89.0f;
+    }
+    if (c.sky_latitude > 89.0f) {
+        c.sky_latitude = 89.0f;
+    }
+    if (c.sky_longitude < -180.0f) {
+        c.sky_longitude = -180.0f;
+    }
+    if (c.sky_longitude > 180.0f) {
+        c.sky_longitude = 180.0f;
+    }
+    if (c.sky_day_of_year < 1) {
+        c.sky_day_of_year = 1;
+    }
+    if (c.sky_day_of_year > 366) {
+        c.sky_day_of_year = 366;
+    }
+    if (!(c.sky_turbidity >= 0.0f)) {
+        c.sky_turbidity = 0.0f;
+    }
+    if (c.sky_turbidity > 1.0f) {
+        c.sky_turbidity = 1.0f;  // beyond this the sun simply vanishes
+    }
+
+    // --- sky layer: the renderer's own ambient, driven from the sun ---
+    c.sky_apply = iniIntSec("sky", "apply", 1);
+    c.sky_day = iniFloatSec("sky", "day", 1.0f);
+    c.sky_night = iniFloatSec("sky", "night", 0.02f);
+    c.sky_moon = iniFloatSec("sky", "moon", 0.05f);
+    c.sky_dusk_deg = iniFloatSec("sky", "dusk_deg", -10.0f);
+    c.sky_dawn_deg = iniFloatSec("sky", "dawn_deg", 4.0f);
+    c.sky_emissive_day = iniFloatSec("sky", "emissive_day", 1.0f);
+    c.sky_emissive_night = iniFloatSec("sky", "emissive_night", 1.0f);
+    c.sky_settings = iniStringSec("sky", "settings", "rhyremix-rtx.conf");
+    c.sky_probe = iniIntSec("sky", "probe", 0);
+    if (c.sky_day < 0.0f) {
+        c.sky_day = 0.0f;
+    }
+    if (c.sky_day > 100.0f) {
+        c.sky_day = 100.0f;
+    }
+    if (c.sky_night < 0.0f) {
+        c.sky_night = 0.0f;
+    }
+    if (c.sky_night > c.sky_day) {
+        c.sky_night = c.sky_day;  // a brighter night than day is a typo
+    }
+    if (c.sky_moon < 0.0f) {
+        c.sky_moon = 0.0f;
+    }
+    if (!(c.sky_dusk_deg < c.sky_dawn_deg)) {
+        // Twilight has to run upward. Reversed, the daylight factor is stuck at
+        // one end of its range and the whole scene is either day or night.
+        c.sky_dusk_deg = -10.0f;
+        c.sky_dawn_deg = 4.0f;
+    }
+    if (c.sky_emissive_day < 0.0f) {
+        c.sky_emissive_day = 0.0f;
+    }
+    if (c.sky_emissive_night < 0.0f) {
+        c.sky_emissive_night = 0.0f;  // 0 = do not touch rtx.conf's value
+    }
+
+    // --- lamp switching by twilight rather than by wall clock ---
+    std::string lampWhen = iniStringSec("streetlights", "when", "twilight");
+    c.lamp_mode = 1;
+    if (lampWhen == "hours" || lampWhen == "clock" || lampWhen == "0") {
+        c.lamp_mode = 0;
+    }
+    c.lamp_dusk_deg = iniFloatSec("streetlights", "dusk_deg", -6.0f);
+    c.lamp_dawn_deg = iniFloatSec("streetlights", "dawn_deg", -4.0f);
+    if (!(c.lamp_dusk_deg < c.lamp_dawn_deg)) {
+        c.lamp_dusk_deg = -6.0f;
+        c.lamp_dawn_deg = -4.0f;
+    }
 
     // The moon is read from its own [moon] section; every key falls back to
     // the same-named sun key's default, not to the sun's value.
@@ -446,6 +617,11 @@ static void loadConfig() {
     c.moon_min_elevation = iniFloatSec("moon", "min_elevation", 0.0f);
     c.moon_step_deg = iniFloatSec("moon", "step_deg", 3.0f);
     c.moon_hash = iniU64Sec("moon", "hash", 8ull);
+    c.moon_phase = iniFloatSec("moon", "phase", 0.5f);
+    c.moon_phase = c.moon_phase - static_cast<int>(c.moon_phase);
+    if (c.moon_phase < 0.0f) {
+        c.moon_phase += 1.0f;
+    }
 
     if (!(c.sun_radiance >= 0.0f)) {
         c.sun_radiance = 1.0f;
@@ -522,6 +698,10 @@ static void loadConfig() {
         c.traffic_period = 5;
     }
     c.traffic_radius = iniFloatSec("trafficlights", "radius", 6.0f);
+    c.traffic_radius_ref = iniFloatSec("trafficlights", "radius_ref", 6.0f);
+    if (!(c.traffic_radius_ref > 0.0f)) {
+        c.traffic_radius_ref = 6.0f;
+    }
     c.traffic_radiance = iniFloatSec("trafficlights", "radiance", 1.5f);
     c.traffic_max_lights = iniIntSec("trafficlights", "max_lights", 60);
     c.traffic_max_distance = iniIntSec("trafficlights", "max_distance", 250);
@@ -566,9 +746,17 @@ static void loadConfig() {
     std::string tlist = iniStringSec("trafficlights", "list", "rhyremix_traffic.txt");
     if (!tlist.empty() && (tlist.find(':') != std::string::npos ||
                            tlist[0] == '\\' || tlist[0] == '/')) {
-        c.trafficPath = tlist;
+        c.trafficPath = tlist;  // absolute (drive-letter or rooted)
     } else {
         c.trafficPath = moduleDir() + tlist;
+    }
+
+    // Same resolution rule as the lamp lists: a bare name means "next to the
+    // .asi", because the game's working directory is the game root, not scripts/.
+    if (!c.sky_settings.empty() &&
+        c.sky_settings.find(':') == std::string::npos &&
+        c.sky_settings[0] != '\\' && c.sky_settings[0] != '/') {
+        c.sky_settings = moduleDir() + c.sky_settings;
     }
 
     // Three lines, not one: a single 70-argument format string drifts by one
@@ -588,6 +776,29 @@ static void loadConfig() {
            c.cold[0], c.cold[1], c.cold[2], c.warm[0], c.warm[1], c.warm[2],
            c.resync_frames, c.light_hash_base, c.destroy_delay_ms,
            c.block_gamma, c.max_total_lights);
+    rhyLog("config: lamp source cool=%s warm=%s (kelvin fallback %.0f/%.0f) -> "
+           "rgb %.2f,%.2f,%.2f / %.2f,%.2f,%.2f",
+           c.lamp_cold_family >= 0 ? rhyLampFamilyName(c.lamp_cold_family) : "kelvin",
+           c.lamp_warm_family >= 0 ? rhyLampFamilyName(c.lamp_warm_family) : "kelvin",
+           c.kelt_cold, c.kelt_warm, c.cold[0], c.cold[1], c.cold[2],
+           c.warm[0], c.warm[1], c.warm[2]);
+    {
+        // Say what the emitting spheres will actually be. The shipped radius of
+        // 15 game units is a 30 metre ball, and the log is the only place a
+        // reader finds out which one is in effect this run.
+        const float streetR = c.fixture_size ? rhyStreetRadius(0, c.fixture_scale)
+                                             : c.radius;
+        const float signalR = c.fixture_size ? rhySignalRadius(c.fixture_scale)
+                                             : c.traffic_radius;
+        const float k = (c.fixture_size && streetR > 0.0f)
+                            ? c.radius_ref / streetR : 1.0f;
+        rhyLog("config: fixture geometry %s (street big radius %.2f -> %.2f game "
+               "units, signal %.2f -> %.2f), radiance x%.0f to hold flux, "
+               "fixture_size=%d scale=%.2f ref=%.2f",
+           c.fixture_size ? "real luminaire sizes" : "ini radius (legacy blob)",
+           c.radius, streetR, c.traffic_radius, signalR, k * k,
+           c.fixture_size, c.fixture_scale, c.radius_ref);
+    }
     rhyLog("config: traffic=%d/%d list=%s period=%d radiance=%.2f radius=%.2f "
            "max=%d dist=%d..%d phase_near=%d night_only=%d resync=%d",
            c.traffic_enabled, c.traffic_mode, c.trafficPath.c_str(),
@@ -613,6 +824,17 @@ static void loadConfig() {
            c.probe_shape,
            c.probe_cone, c.probe_sweep, c.probe_sweep_axis, c.probe_sweep_steps,
            c.probe_step_ms, c.probe_refresh_ms);
+    rhyLog("config: sun_model=%d lat=%.2f lon=%.2f tz=%+.1f doy=%d track_date=%d "
+           "turbidity=%.3f force=%d:%02d | moon_phase=%.2f | lamps=%s dusk=%.1f dawn=%.1f",
+           c.sun_model, c.sky_latitude, c.sky_longitude, c.sky_timezone,
+           c.sky_day_of_year, c.sky_track_date, c.sky_turbidity,
+           c.sun_force_hour, c.sun_force_minute, c.moon_phase,
+           c.lamp_mode ? "twilight" : "hours", c.lamp_dusk_deg, c.lamp_dawn_deg);
+    rhyLog("config: sky_apply=%d day=%.3f night=%.3f moon=%.3f twilight=%.1f..%.1f "
+           "emissive=%.2f(day)/%.2f(night) settings=%s probe=%d",
+           c.sky_apply, c.sky_day, c.sky_night, c.sky_moon, c.sky_dusk_deg,
+           c.sky_dawn_deg, c.sky_emissive_day, c.sky_emissive_night,
+           c.sky_settings.c_str(), c.sky_probe);
 }
 
 // Timestamp of the ini the loaded values came from.  A FILETIME is two 32-bit

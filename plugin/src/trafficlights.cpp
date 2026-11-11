@@ -17,6 +17,8 @@
 #include "delayed.h"
 #include "game.h"
 #include "log.h"
+#include "sun.h"  // rhyLampsOn: signals and street lamps switch on the same evening
+#include "lamps.h"
 
 // One traffic light from rhyremix_traffic.txt: "x y z headz".
 struct TrafficLight {
@@ -125,8 +127,15 @@ void rhyTrafficInitOnce() {
 // Player position and the game clock come from game.cpp, so the traffic lights
 // switch on exactly when the street lamps do.
 
-// Night window on_hour..off_hour, wrapping midnight (19..6 by default).
+// Night window, shared with the street lamps. A real traffic signal is lit
+// around the clock, so night_only=0 is the physically correct setting and costs
+// handles; night_only=1 is the performance setting, and it should switch on the
+// same twilight the street lamps use rather than on a wall-clock hour, or the
+// signals go dark while the street is still lit.
 static bool isNight(int hour, const RhyConfig& c) {
+    if (c.lamp_mode == 1) {
+        return rhyLampsOn();
+    }
     if (c.on_hour == c.off_hour) {
         return true;
     }
@@ -189,11 +198,24 @@ static std::vector<int> chooseLights(const RhyConfig& c, const float* pp) {
 
 // Radiance is baked at CreateLight time, so a phase change means destroying
 // the light and creating a new one with a different hash.
-static const float kPhaseColor[3][3] = {
-    {0.15f, 1.00f, 0.25f},  // green
-    {1.00f, 0.55f, 0.10f},  // amber
-    {1.00f, 0.12f, 0.10f},  // red
-};
+//
+// The colours are the passbands of real signal lenses, integrated across the
+// visible spectrum (see lamps.h), not three hand-picked triples. That matters
+// more than it sounds: sampling a single "red" wavelength like 620 nm gives
+// orange, because the eye's response at 620 nm still carries a lot of green,
+// whereas a real red lens has cut the green out entirely. Integrating the band
+// is what produces the saturated red and the distinctly blue-green traffic green.
+static const float* phaseColor(int phase) {
+    static float rgb[3][3] = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}};
+    static bool done = false;
+    if (!done) {
+        done = true;
+        for (int p = 0; p < 3; ++p) {
+            rhySignalLensRgb(p, rgb[p]);
+        }
+    }
+    return rgb[phase >= 0 && phase <= 2 ? phase : 0];
+}
 
 static remixapi_LightHandle createLight(int index, int phase,
                                         const RhyConfig& c) {
@@ -202,10 +224,21 @@ static remixapi_LightHandle createLight(int index, int phase,
         return nullptr;
     }
     const TrafficLight& L = g_lights[index];
-    const float* col = kPhaseColor[phase >= 0 && phase <= 2 ? phase : 0];
+    const float* col = phaseColor(phase);
 
     static remixapi_LightInfo info;
     static remixapi_LightInfoSphereEXT sphere;
+
+    // A signal module lens is 200 mm across, so the emitting sphere is 0.1 game
+    // units in radius; the shipped value of 6 was a six metre ball, wider than
+    // the intersection it is supposed to be a point on. Radiance is scaled by
+    // (radius_ref/radius)^2 so the signal keeps its brightness at the new size.
+    RhyFixture fix;
+    rhySignalFixture(&fix);
+    const float radius = c.fixture_size ? fix.radius * c.fixture_scale
+                                        : c.traffic_radius;
+    const float rad = rhyRadianceForFlux(c.traffic_radiance, radius,
+                                         c.traffic_radius_ref) * c.radiance_scale;
 
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
@@ -214,9 +247,9 @@ static remixapi_LightHandle createLight(int index, int phase,
     info.hash = c.light_hash_base +
                 (static_cast<uint64_t>(index) << 2) +
                 static_cast<uint64_t>(phase & 3);
-    info.radiance.x = col[0] * c.traffic_radiance * c.radiance_scale;
-    info.radiance.y = col[1] * c.traffic_radiance * c.radiance_scale;
-    info.radiance.z = col[2] * c.traffic_radiance * c.radiance_scale;
+    info.radiance.x = col[0] * rad;
+    info.radiance.y = col[1] * rad;
+    info.radiance.z = col[2] * rad;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -224,7 +257,14 @@ static remixapi_LightHandle createLight(int index, int phase,
     sphere.position.x = L.x;
     sphere.position.y = L.y;
     sphere.position.z = L.z + L.headz;
-    sphere.radius = c.traffic_radius;
+    sphere.radius = radius;
+    // Deliberately unshaped. A real signal module is strongly directional - the
+    // visor and refractor throw a narrow beam down the approach - but the lamp
+    // list carries only x, y, z and a head offset, with no heading, so there is
+    // nothing to aim a cone with. A wrong cone is worse than none: it would put
+    // a dark side on every signal seen from the cross street. Getting this right
+    // means adding a heading column to rhyremix_traffic.txt from the IPL's
+    // rotation, which is the honest fix and is noted in docs/FINDINGS.md.
     sphere.shaping_hasvalue = 0;
     sphere.volumetricRadianceScale = 0.0f;
     info.pNext = &sphere;

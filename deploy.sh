@@ -1,10 +1,13 @@
 #!/bin/bash
 # Install the freshly built plugin into the GTASA-RTX install so the game runs our code.
-# Usage: ./deploy.sh [--build] [--test] [--force-ini] [--lua-off|--lua-on] [--no-launcher] [GAME_DIR]
+# Usage: ./deploy.sh [--build] [--prod|--test] [--force-ini] [--lua-off|--lua-on] [--no-launcher] [GAME_DIR]
 #   --build       run plugin/build.sh first (also done automatically when build/ is empty)
+#   --prod        install config/rhyremix-production.ini (the shipped lighting
+#                 profile: everything on, physically-grounded sun/moon/sky).
+#                 This is the default when there is no rhyremix.ini yet.
 #   --test        install config/rhyremix-test.ini (bisect ladder: probe + moon on,
 #                 streetlights and traffic lights off, lights on at every hour)
-#   --force-ini   overwrite an existing rhyremix.ini with that test ini
+#   --force-ini   overwrite an existing rhyremix.ini with whichever ini was chosen
 #   --lua-off     rename moonloader/SARemiv_LightMan.lua -> .dat (disable the Lua light manager)
 #   --lua-on      undo that rename
 #                 (default: auto - disabled exactly when [streetlights] enabled=1)
@@ -16,14 +19,20 @@
 #                 hotkey); --shotkey-on installs/refreshes it. Default: on.
 #   --no-launcher do not refresh launch-rtx.sh in the game folder (used by the launcher itself)
 #   --aftermath   add devk.enableAftermath = True to <game>/dvk.conf (names the shader on a GPU crash)
+#   --rtx-probe   write rhyremix-rtx.conf with the candidate rtx.* key list and set
+#                 [sky] probe=1, so one run reports which rtx.* settings this Remix
+#                 build actually accepts instead of silently ignoring a wrong name
+#   --rtx-conf    install config/rtx.conf (conservative: the two measured changes)
+#   --rtx-conf-exp install config/rtx.conf.experimental (adds six unobserved ones)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 R="/media/rhy/data/Gamez/GTASA-RTX"
-TEST=0; FORCE_INI=0; BUILD=0; LUA=auto; SUN=auto; LAUNCHER=1; AFTERMATH=0; SHOTKEY=on
+TEST=0; PROD=0; FORCE_INI=0; BUILD=0; LUA=auto; SUN=auto; LAUNCHER=1; AFTERMATH=0; SHOTKEY=on; RTXPROBE=0; RTXCONF=0
 for a in "$@"; do
   case "$a" in
     --build) BUILD=1 ;;
-    --test) TEST=1 ;;
+    --test) TEST=1; PROD=0 ;;
+    --prod) PROD=1; TEST=0 ;;
     --force-ini) FORCE_INI=1 ;;
     --lua-off) LUA=off ;;
     --lua-on) LUA=on ;;
@@ -33,6 +42,9 @@ for a in "$@"; do
     --shotkey-on) SHOTKEY=on ;;
     --no-launcher) LAUNCHER=0 ;;
     --aftermath) AFTERMATH=1 ;;
+    --rtx-probe) RTXPROBE=1 ;;
+    --rtx-conf) RTXCONF=1 ;;
+    --rtx-conf-exp) RTXCONF=2 ;;
     *) R="$a" ;;
   esac
 done
@@ -69,16 +81,68 @@ cp "$LIST" "$R/scripts/rhyremix_lights.txt"
 cp "$TLIST" "$R/scripts/rhyremix_traffic.txt"
 echo "== installed rhyremix.asi + rhyremix_lights.txt + rhyremix_traffic.txt into $R/scripts"
 
+# The runtime rtx.* pushes. Kept as a separate file rather than baked into the
+# ini because it is a list of renderer settings, not mod parameters, and because
+# a wrong key is rejected by the bridge and logged - so it wants to be a file you
+# can edit and re-run without touching the lighting parameters.
+if [ -f "$HERE/config/rhyremix-rtx.conf" ]; then
+  cp "$HERE/config/rhyremix-rtx.conf" "$R/scripts/rhyremix-rtx.conf"
+  echo "== installed rhyremix-rtx.conf (renderer settings pushed at runtime)"
+fi
+
+# The renderer's own startup settings. rtx.conf is read once, before the first
+# frame, and it is the only supported place for the settings that reconfigure a
+# renderer subsystem - see config/rhyremix-rtx.conf for why pushing those at
+# runtime took the bridge down once. Opt-in because rtx.conf also holds the
+# per-install texture hash lists, and a user may have edited it by hand.
+if [ "$RTXCONF" != 0 ]; then
+  if [ -f "$R/rtx.conf" ] && [ ! -f "$R/rtx.conf.orig" ]; then
+    cp "$R/rtx.conf" "$R/rtx.conf.orig"
+    echo "== original rtx.conf saved as rtx.conf.orig"
+  fi
+  if [ "$RTXCONF" = 2 ]; then
+    SRC="$HERE/config/rtx.conf.experimental"
+    echo "== installed rtx.conf.experimental: the two conservative changes PLUS"
+    echo "   autoExposure on (evMin -4), localtonemap.shadows 1.0, pathMaxBounces 3,"
+    echo "   pathMinBounces 1. None of those six have ever been observed running. If"
+    echo "   the image looks wrong, undo this first: ./deploy.sh --rtx-conf $R"
+  else
+    SRC="$HERE/config/rtx.conf"
+    echo "== installed rtx.conf: exactly two changes from the shipped file -"
+    echo "   emissiveIntensity 10 -> 1.0 (the asset pack's own emissives reach 3000,"
+    echo "   so x10 rendered shopfronts at 30000) and skyBrightness 3 -> 1.0 (the sky"
+    echo "   now comes from the solar model, not a static boost)"
+  fi
+  cp "$SRC" "$R/rtx.conf"
+fi
+
 INI="$R/scripts/rhyremix.ini"
-if [ "$TEST" = 1 ]; then
+if [ "$TEST" = 1 ] || [ "$PROD" = 1 ]; then
+  SRC="$HERE/config/rhyremix-production.ini"
+  LABEL="production"
+  if [ "$TEST" = 1 ]; then SRC="$HERE/config/rhyremix-test.ini"; LABEL="test"; fi
   if [ -f "$INI" ] && [ "$FORCE_INI" != 1 ]; then
     echo "== keeping your existing rhyremix.ini (use --force-ini to replace it)"
   else
-    cp "$HERE/config/rhyremix-test.ini" "$INI"
-    echo "== wrote test ini (radius/radiance in game units, block_gamma=1, probe=1)"
+    cp "$SRC" "$INI"
+    echo "== wrote $LABEL ini (physically-grounded sun/moon/sky, block_gamma=1)"
   fi
 elif [ ! -f "$INI" ]; then
-  echo "== no ini yet: the plugin writes its own defaults on first run"
+  # First run on a fresh install: ship the production profile rather than let the
+  # plugin write its built-in defaults, because the production profile is the one
+  # whose numbers were measured.
+  cp "$HERE/config/rhyremix-production.ini" "$INI"
+  echo "== no ini yet: wrote the production profile"
+fi
+
+if [ "$RTXPROBE" = 1 ]; then
+  # Ask the bridge which rtx.* keys it knows. NOTE: this writes real values into
+  # a live renderer, and the return code does not validate the key - the server
+  # logs the truth. Read it with scripts/check-rtx-probe.sh.
+  awk 'BEGIN{done=0} /^\[sky\]/{insec=1; print; next} /^\[/{if(insec&&!done){print "probe=1"; done=1} insec=0; print; next} {if(insec&&/^probe[ ]*=/){print "probe=1"; done=1; next} print} END{if(!done) print "probe=1"}' \
+    "$INI" > "$INI.tmp" && mv "$INI.tmp" "$INI"
+  echo "== [sky] probe=1: audit the result with scripts/check-rtx-probe.sh"
+  echo "   (the client accepts every key; only remix-dxvk.log says which ones work)"
 fi
 
 # MoonLoader only loads moonloader/*.lua, so renaming to .dat disables a script

@@ -20,7 +20,12 @@ runtime, or GTASA-Remix's assets — get those from their original sources.
 | Street lights flicker forever | random pause timer re-triggers the warm-up flicker | lights stay on after warm-up |
 | GPU crash (`VK_ERROR_DEVICE_LOST`) when lights spawn | ~1000 lights declare `inputs:shaping:focus`/`focusTint` without a value (NaN in 1.6) | `tools/usd_light_defaults.py` gives defaults |
 | Crash: "Light prims anchored to a mesh replacement must also include actual meshes" | USD references point at the author's `D:/Games/...` | relative paths |
-| World washed out, yet lamps cast no pool of light | our `LightInstance` radius/radiance were the wrong order of magnitude for `rtx.sceneScale = 0.01` | radius in game units (~20), radiance ~1-3, plus a probe light to calibrate |
+| World washed out, yet lamps cast no pool of light | our `LightInstance` radius/radiance were the wrong order of magnitude | radius/radiance calibrated with a probe light; see the units correction below |
+| Lamp light pools read as shapeless haze; volumetrics give a fog wall | `radius=15` game units is a **30 metre** emitting sphere for a lunchbox-sized housing, and our own docs said it was 15 cm | `fixture_size=1` uses real luminaire sizes with radiance rescaled by `(radius_ref/radius)^2` to hold total flux (`plugin/src/lamps.cpp`) |
+| Sodium street lamps look like dim incandescent bulbs | they were given a colour temperature (`kelt_warm=2100`). A gas discharge has no useful colour temperature: HPS is the 589 nm sodium D doublet, and a 2000 K Planck curve puts a third of its energy in deep red where sodium has almost none | `lamp_warm=hps` / `lamp_cold=mercury` build the colour from documented atomic emission lines |
+| Shopfront windows blown to white | the asset pack's own emissive materials reach `emissive_intensity = 3000`, and `rtx.emissiveIntensity = 10` multiplied that to 30000 | `rtx.emissiveIntensity = 1.0` |
+| Traffic signal reds look orange | the lens colours were hand-picked triples; a single "red" wavelength like 620 nm still carries a lot of green | colours integrated from real lens passbands (red 610-645 nm, amber 585-605, green 515-565) |
+| Game launches to a white window that never initialises, logs look like a mod bug | VRAM already held by another process (a local LLM server pinned 15.5 of 16.4 GiB) | `launch-rtx.sh` preflights free VRAM and names the process holding it |
 | `Ctrl+PrintScreen` kills the Remix server (CPU crash `0xe06d7363`) | the game's `SetGammaRamp` is the last bridge command queued before the server dies | ASI swallows `SetGammaRamp` (vtable entry 21), `block_gamma=1` |
 | Vehicle toolkit can't load | missing `SARemix_DebugPrinter` module; old `SARemiv_VTK.lua` uses wrong ids | stub module; use `SARemix_VTK.lua` |
 | Gray square under CJ | game's real-time ped shadow render target | MixSets `UseHighPedShadows = 0` |
@@ -31,18 +36,51 @@ Mod-by-mod inventory of the install and what our plugin replaces: [docs/MODS-REP
 
 ## Lights: brightness, casting, screenshots (p04)
 
-The Remix mod converts the D3D9 scene at `rtx.sceneScale = 0.01` (see
-`rtx-remix/config/rtx.conf`): **1 GTA SA game unit = 1 cm in the Remix world**.  The
-lamp lists are in game units, so the `LightInstance` fields we send must be too.
+**Units correction, read this before touching a radius.** One GTA SA game unit is
+about **one metre**, and light positions and radii handed to `CreateLight` are in
+game units. The earlier claim in this file - "1 game unit = 1 cm in the Remix
+world, so `radius=15` is 15 cm" - was wrong and cost a lot: it made a 30 metre
+emitting sphere look like a correctly-sized lamp head, so nobody thought to fix
+it. Two independent measurements settle it:
+
+- `probe_scale=1` puts a probe light on a lamp post; `probe_scale=0.01` does not.
+  `rtx.sceneScale = 0.01` applies to the converted scene, not to `LightInstance`
+  fields (see `docs/FINDINGS.md`).
+- The traffic signal data puts a signal head 7.6 units above its road plane, and
+  a real signal head hangs about 6 m up.
+
 The mod's own `Light_Manager.lua` uses `radius = 15` for a lamp whose head sits
-~20 game units up, and `radiance = 1` for a traffic light.
+~20 game units up, and `radiance = 1` for a traffic light. Those are *game-unit*
+numbers, i.e. a 15 metre ball.
 
 The earlier plugin build sent `radius = 1.5` and `radiance = 400`.  A 1.5-unit
-sphere is 2.5 cm, so it cannot cast a pool of light on a road ("lights don't cast"),
+sphere is 1.5 m, so it cannot cast a pool of light on a road ("lights don't cast"),
 while a radiance of 400 at that radius floods everything nearby ("world too bright").
 Both were wrong in the same direction: radius divided by ~10, radiance multiplied
-by ~100.  Defaults are now `radius = 15` (street) / `6` (traffic), matching the mod's own `Light_Manager.lua`, and radiance
+by ~100.  Defaults were `radius = 15` (street) / `6` (traffic), matching the mod's own `Light_Manager.lua`, and radiance
 `3 / 1.8 / 1` by lamp size band.
+
+**Those radii are now superseded** by `fixture_size=1`, which uses the real
+fixture size (0.2 game units for a cobra-head luminaire, 0.1 for a 200 mm signal
+lens) and multiplies radiance by `(radius_ref/radius)^2` so the lamp puts out the
+same total light. That decoupling is the only reason the radius could be fixed at
+all: shrinking the sphere without compensating takes the street's light with it.
+
+### Physical light sources
+
+`plugin/src/lamps.cpp` holds the physics, and `tests/lamps_check.cpp` (30 checks,
+plain `g++`, no game needed) pins it down:
+
+- **Discharge lamps are line spectra, not blackbodies.** Colours are built from
+  documented atomic emission lines: HPS 1.000/0.844/0.000, mercury
+  0.755/1.000/0.602, metal halide 0.732/1.000/0.793, LED 0.872/1.000/0.762.
+  Tungsten is the one family where a colour temperature *is* the right model.
+- **Traffic signal lenses are filters.** Their colour comes from integrating the
+  glass passband, which is what makes a red lens red instead of orange.
+- **Size and output are separate numbers.** `rhyRadianceForFlux()` keeps total
+  emitted power constant when the fixture is resized.
+
+See [docs/TESTING.md](docs/TESTING.md) for what to look at and which knob to turn.
 
 To calibrate instead of guessing, set `probe=1` in `rhyremix.ini`: one white light
 is drawn every frame at `probe_x/y/z`, ignoring hour and distance, and `rhyremix.log`

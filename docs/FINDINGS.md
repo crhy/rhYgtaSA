@@ -253,3 +253,87 @@ What is left are three bugs of our own, all visible in the numbers:
 What a good run should look like: `remix: live=~380 create_fail=0 draw_fail=0
 budget_refused=0`, `streetlights: N active, N drawn this frame` with N≈300-320 near
 Grove Street, and no `Invalid light handle!` lines in `bridge64.log`.
+
+## Small light sources: what is actually in the scene (2026-11-11)
+
+Audited every artificial light source rather than just the street lamps, because
+"the lights look wrong" was being debugged one knob at a time.
+
+**The asset pack already lights most of this, and we were doubling it.**
+Inventory of `rtx-remix/mods`, 891 `.usda` files:
+
+| prim type | count | what it is |
+|---|---|---|
+| `SphereLight` | 2036 | street luminaires, vehicle lights, interior fixtures |
+| `RectLight` | 67 | shopfront glazing and interior ceiling strips |
+| `DiskLight` | 10 | signage |
+| `DistantLight` | 1 | `SARemix_Sun.usda`, the Lua sun mod's asset |
+
+`SARemix/SARemix_StreetLights.usda` defines the lamp models themselves:
+`Spot_Light_{B,M,S}_{Cold,Warm}`, each carrying **two** SphereLights
+(`Light_Focus` intensity 3000-6000, `Light_Normal` 1500-3000, colour temperature
+4500/6500 K). Those are templates instantiated wherever the game places a lamp,
+so **every street lamp in the world is already lit by the asset pack** - and our
+7002-entry `rhyremix_lights.txt` puts a second light on top of it. Two lights per
+post is not just twice the brightness, it is twice the shadow and GI cost, which
+is money straight out of the 60 FPS budget.
+
+Shopfronts are covered too: 39 files under `Light/` (`Burger_Shot`, `Pizza`,
+`Barber_Shop`, `Binco`, `Ammu_Nation`, `House_01/02`, `CJ_House`, `Ganton_Gym`,
+`Disco_Light`, `Airport_Terminal`, ...) with `RectLight` prims. A `RectLight` is
+exactly the right primitive for a window, so **we should not add our own lights
+there** - a point light in front of a glowing window double-counts the same
+surface and destroys the falloff.
+
+**The gain stacking is the washed-out look.** Emissive materials in the pack carry
+`inputs:emissive_intensity` up to 3000, and light prims up to 30000. Our
+`rtx.conf` had `rtx.emissiveIntensity = 10`, so a shopfront window renders at
+30000. That multiplier is applied on top of values the mod authors already tuned.
+
+**Fixing the radius was blocked on a units error in our own docs.** One GTA SA
+game unit is about one metre - measured from the traffic signal data, where a
+signal head sits 7.6 units above its road plane and a real one hangs about 6 m up.
+`README.md` and the ini both said "radius=15 is 15 cm at `rtx.sceneScale=0.01`".
+It is not: `probe_scale=1` was verified to mean light positions are in game units,
+so `radius=15` is a **thirty metre sphere** for a lamp housing the size of a
+lunchbox. That is the shapeless-haze light pools, and it is why volumetrics gave a
+fog wall instead of shafts. Nobody could shrink it because shrinking the sphere
+without compensating radiance takes the street's light with it.
+
+Fixed by separating the two: `fixture_size=1` gives the real housing size
+(0.2 game units for a cobra-head luminaire, 0.1 for a 200 mm signal lens) and
+`rhyRadianceForFlux()` scales radiance by `(radius_ref/radius)^2` so total emitted
+power is unchanged. `fixture_scale` is the escape hatch if the small spheres turn
+out to band in the path tracer.
+
+**Discharge lamps do not have a colour temperature.** `plugin/src/lamps.cpp` builds
+lamp colours from documented atomic emission lines instead:
+
+| source | linear sRGB | note |
+|---|---|---|
+| high-pressure sodium | 1.000, 0.844, 0.000 | sodium D doublet at 589.0/589.6 nm |
+| mercury vapour | 0.755, 1.000, 0.602 | 546.1 nm green and 435.8 nm blue dominate |
+| metal halide | 0.732, 1.000, 0.793 | lines plus a real continuum |
+| white LED | 0.872, 1.000, 0.762 | 450 nm pump plus phosphor band |
+| tungsten 2856 K | 1.000, 0.676, 0.390 | a thermal source, so kelvin IS correct |
+
+The sodium row is the point. Its *correlated* temperature is ~2000 K, and the old
+profile used `kelt_warm=2100`, which gives 1.000, 0.537, 0.055 - a third of that
+energy sits below 650 nm in the deep red, where a real sodium lamp has almost
+none. Setting kelvin for a discharge lamp makes it look like a dim incandescent
+bulb. `lamp_warm=hps` / `lamp_cold=mercury` replace the dial.
+
+**Traffic signal lenses are filters, not sources**, so their colour comes from
+integrating the glass passband (red 610-645 nm, amber 585-605, green 515-565)
+rather than sampling one wavelength. Sampling 620 nm gives orange, because the
+eye's response there still carries a lot of green; a real red lens has cut the
+green out. Result: red 1.000/0.269/0.000, amber 1.000/0.769/0.000, green
+0.429/1.000/0.000. Tests in `tests/lamps_check.cpp` assert the band-integrated
+red is redder than the single-wavelength sample, which is what pins that down.
+
+**Known gap, deliberately not faked.** A real signal module is strongly
+directional - visor plus refractor throw a narrow beam down the approach - but
+`rhyremix_traffic.txt` carries only `x y z headz`, no heading. A cone aimed the
+wrong way would put a dark face on every signal seen from the cross street, which
+is worse than an unshaped light. The honest fix is a heading column derived from
+the IPL placement rotation.

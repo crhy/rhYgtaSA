@@ -12,11 +12,15 @@
 #include <utility>
 #include <vector>
 
+#include "lamps.h"
+
 #include "remix.h"
 #include "config.h"
 #include "delayed.h"
 #include "game.h"
 #include "log.h"
+#include "solar.h"  // colorTemperatureToRgb for the lamp spectra
+#include "sun.h"    // rhyLampsOn: one clock decides both the sun and the lamps
 
 // One lamp light from rhyremix_lights.txt: "type x y z".
 struct LampLight {
@@ -86,8 +90,22 @@ void rhyStreetlightsInitOnce() {
 // traffic lights and the probe cannot disagree about where the player is or
 // what hour it is.
 
-// Night window on_hour..off_hour, wrapping midnight (19..6 by default).
+// Night window. Two ways to answer it:
+//
+//   when=twilight (default) - the sun's elevation. A real street lamp is on a
+//     photocell and switches around civil twilight, about -6 degrees. The old
+//     on_hour/off_hour window is wrong in both directions across a year: at 19:00
+//     in July the sun is still up over Los Santos, and at 6:00 in December it is
+//     still dark. It also never matched the moment the shadows actually changed.
+//   when=hours - the original behaviour, kept for A/B and for people who want a
+//     fixed schedule.
+//
+// rhyLampsOn() comes from the sky module so the lamps and the sun cannot
+// disagree about what time of day it is.
 static bool isNight(int hour, const RhyConfig& c) {
+    if (c.lamp_mode == 1) {
+        return rhyLampsOn();
+    }
     if (c.on_hour == c.off_hour) {
         return true;
     }
@@ -98,8 +116,13 @@ static bool isNight(int hour, const RhyConfig& c) {
 }
 
 // Radiance scale by lamp size: types 1-2/7-8 big, 3-4/9-10 middle, 5-6/11-12 small.
+// The band is also what selects the physical fixture size, so it is factored out.
+static int sizeBand(int type) {
+    return (type >= 1 && type <= 12) ? ((type - 1) % 6) / 2 : 1;
+}
+
 static float radianceScale(int type, const RhyConfig& c) {
-    int band = (type >= 1 && type <= 12) ? ((type - 1) % 6) / 2 : 1;
+    int band = sizeBand(type);
     if (band == 0) {
         return static_cast<float>(c.radiance_big);
     }
@@ -107,6 +130,57 @@ static float radianceScale(int type, const RhyConfig& c) {
         return static_cast<float>(c.radiance_small);
     }
     return static_cast<float>(c.radiance_middle);
+}
+
+// Colour of a lamp.
+//
+// A lamp family name wins over a colour temperature, because these are gas
+// discharge lamps and a gas discharge does not have a colour temperature in any
+// sense that produces the right picture. High-pressure sodium has a *correlated*
+// temperature near 2000 K, but its flux is essentially the sodium D doublet at
+// 589 nm: yellow-orange, with almost nothing in the deep red where a 2000 K
+// Planck curve puts a third of its energy. Setting kelt_warm=2000 therefore
+// makes sodium look like a dim incandescent bulb. See lamps.h.
+//
+// With no family configured, kelvin wins over the hand-written cold/warm triples,
+// because a kelvin number is something a user can look up and get right while an
+// arbitrary RGB triple is something to guess at.
+static const float* lampColor(int type, const RhyConfig& c) {
+    const bool cool = (type & 1) != 0;
+    const int fam = cool ? c.lamp_cold_family : c.lamp_warm_family;
+
+    static float famRgb[2][3] = {{1, 1, 1}, {1, 1, 1}};
+    static int famSet[2] = {-1, -1};
+    if (fam >= 0) {
+        const int slot = cool ? 0 : 1;
+        if (famSet[slot] != fam) {
+            famSet[slot] = fam;
+            rhyLampFamilyRgb(fam, famRgb[slot]);
+        }
+        return famRgb[slot];
+    }
+
+    const float kelvin = cool ? c.kelt_cold : c.kelt_warm;
+    if (kelvin > 0.0f) {
+        // One static per parity: the value only depends on the parity of the
+        // type, and recomputing the Planck fit per lamp per create is pointless.
+        static float coldRgb[3] = {0.85f, 0.90f, 1.00f};
+        static float warmRgb[3] = {1.00f, 0.80f, 0.55f};
+        static float coldK = -1.0f, warmK = -1.0f;
+        if (cool) {
+            if (coldK != kelvin) {
+                coldK = kelvin;
+                colorTemperatureToRgb(kelvin, coldRgb);
+            }
+            return coldRgb;
+        }
+        if (warmK != kelvin) {
+            warmK = kelvin;
+            colorTemperatureToRgb(kelvin, warmRgb);
+        }
+        return warmRgb;
+    }
+    return cool ? c.cold : c.warm;
 }
 
 // A lamp's light points straight down: street lamps light the road, not the
@@ -192,8 +266,16 @@ static remixapi_LightHandle createLight(int index, const RhyConfig& c) {
     static remixapi_LightInfo info;
     static remixapi_LightInfoSphereEXT sphere;
 
-    const float scale = radianceScale(L.type, c) * c.radiance_scale;
-    const float* col = (L.type & 1) ? c.cold : c.warm;  // odd cold, even warm
+    const int band = sizeBand(L.type);
+    // Physical fixture size, with radiance rescaled to hold total flux constant.
+    // Without the rescale, replacing the shipped 15 game unit sphere (a 30 metre
+    // ball) with a real 0.2 m luminaire head would cut the light by ~2500x and
+    // the street would go black - which is why the radius had never been fixed.
+    const float radius = c.fixture_size ? rhyStreetRadius(band, c.fixture_scale)
+                                        : c.radius;
+    const float scale = rhyRadianceForFlux(radianceScale(L.type, c), radius,
+                                           c.radius_ref) * c.radiance_scale;
+    const float* col = lampColor(L.type, c);  // family, kelvin, or cold/warm
 
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
@@ -210,9 +292,18 @@ static remixapi_LightHandle createLight(int index, const RhyConfig& c) {
     sphere.position.x = L.x;
     sphere.position.y = L.y;
     sphere.position.z = L.z;
-    sphere.radius = c.radius;
+    sphere.radius = radius;
     if (c.sphere_shaping || L.type <= 6) {  // cone shaping, straight down
         applyDownCone(&sphere, c);
+        if (c.fixture_size) {
+            // The fixture's own distribution, not a single global cone. A
+            // roadway luminaire floods the pavement at ~125 degrees; a
+            // post-top pedestrian luminaire is wider and softer still.
+            RhyFixture f;
+            rhyStreetFixture(band, &f);
+            sphere.shaping_value.coneAngleDegrees = f.coneDeg;
+            sphere.shaping_value.coneSoftness = f.coneSoftness;
+        }
     } else {
         sphere.shaping_hasvalue = 0;
     }

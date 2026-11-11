@@ -6,6 +6,7 @@
 #include "log.h"
 #include "probe.h"
 #include "remix.h"
+#include "rtxconf.h"
 #include "streetlights.h"
 #include "sun.h"
 #include "trafficlights.h"
@@ -60,6 +61,20 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
     rhyConfigReloadIfChanged(); // re-read rhyremix.ini when it changed on disk
     if (const RhyConfig* cfg = rhyConfigGet()) {
         rhySetLightBudget(cfg->max_total_lights);
+        // Push the extra rtx.* settings once the bridge is up. This is the hook
+        // that lets the mod own the renderer's ambient and exposure instead of
+        // leaving them as constants in rtx.conf; rhySunFrame() then drives the
+        // time-varying part of them every second.
+        static bool s_rtxApplied = false;
+        if (!s_rtxApplied && rhyRemixApi()) {
+            s_rtxApplied = true;
+            if (cfg->sky_probe) {
+                rhyRtxProbeOnce();
+            }
+            if (!cfg->sky_settings.empty()) {
+                rhyRtxApplyFile(cfg->sky_settings.c_str());
+            }
+        }
     }
     rhyProbeFrame();           // one-light calibration probe, if enabled
     rhySunFrame();             // sun as a Remix distant light (replaces the Lua sun)

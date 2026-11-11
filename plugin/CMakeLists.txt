@@ -12,6 +12,9 @@ add_library(rhyremix SHARED
   src/delayed.cpp
   src/game.cpp
   src/probe.cpp
+  src/rtxconf.cpp
+  src/solar.cpp
+  src/lamps.cpp
   src/streetlights.cpp
   src/sun.cpp
   src/trafficlights.cpp)
