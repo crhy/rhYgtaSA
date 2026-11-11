@@ -1,0 +1,81 @@
+-- SARemix_Tour - an in-game photo tour for the lighting tests in docs/TESTING.md.
+--
+-- Runs only when <game>/screenshots/tour.req exists (delete it to never run).
+-- For each stop it moves CJ, sets the clock and clear weather, puts a fixed
+-- camera on the subject, waits for streaming and the Remix denoiser to settle,
+-- then drops the same marker file F12 does, so scripts/shot-watch.sh grabs the
+-- composited window. The order and names of the shots go to
+-- screenshots/tour-manifest.txt. Player control, camera and HUD are restored
+-- at the end, and tour.req is removed so the tour runs once.
+
+script_name("SARemix_Tour")
+script_author("rhY")
+script_version("0.1.0")
+
+-- getWorkingDirectory() is <game>\moonloader, not the game folder: go one up.
+local work = getWorkingDirectory() .. "/.."
+local flag = work .. "/screenshots/tour.req"
+local pendingDir = work .. "/screenshots/pending"
+local manifest = work .. "/screenshots/tour-manifest.txt"
+
+local SETTLE_MS = 12000   -- streaming + denoiser after a teleport / time change
+local GAP_MS = 2500       -- between two shots at the same stop
+
+-- name, hour, minute, player xyz, camera xyz, look-at xyz
+local stops = {
+  {"00-baseline-noon-grove",       13, 0,  2471.7, -1678.0, 13.5,  2440.0, -1672.0, 16.0,  2500.0, -1668.0, 13.5},
+  {"01-under-lamp-grove-2100",     21, 0,  2471.7, -1677.0, 13.5,  2465.5, -1682.0, 16.5,  2471.7, -1673.7, 13.5},
+  {"02-grove-30m-pools-2100",      21, 0,  2440.0, -1670.0, 13.5,  2438.0, -1671.0, 15.5,  2500.0, -1668.0, 13.5},
+  {"03-sodium-lamp-closeup-2100",  21, 0,  2471.7, -1677.0, 13.5,  2467.0, -1679.0, 18.5,  2471.7, -1673.7, 19.8},
+  {"04-tungsten-shopfront-2100",   21, 0,  2302.0, -1648.0, 14.8,  2300.0, -1652.0, 15.8,  2309.8, -1643.5, 14.8},
+  {"05-burger-shot-marina-2100",   21, 0,   805.0, -1622.0, 13.5,   798.0, -1628.0, 15.5,   811.0, -1616.0, 14.5},
+  {"06-signals-close-2100",        21, 0,  1040.0, -1392.0, 13.4,  1036.0, -1394.0, 16.0,  1061.6, -1416.1, 15.0},
+  {"07-signals-cross-street-2100", 21, 0,  1068.0, -1428.0, 13.4,  1070.0, -1432.0, 16.0,  1052.8, -1385.5, 15.0},
+  {"08a-sunset-facing-east-1905",  19, 5,   370.0, -2040.0,  7.8,   368.0, -2042.0, 10.0,   600.0, -2000.0, 30.0},
+  {"08b-sunset-facing-west-1905",  19, 5,   370.0, -2040.0,  7.8,   372.0, -2040.0, 10.0,   100.0, -2060.0, 15.0},
+  {"09-grove-dawn-0530",            5, 30, 2440.0, -1670.0, 13.5,  2438.0, -1671.0, 15.5,  2500.0, -1668.0, 13.5},
+}
+
+local function exists(p) local f = io.open(p, "r"); if f then f:close(); return true end; return false end
+
+local function note(line)
+  local f = io.open(manifest, "a")
+  if f then f:write(os.date("%Y-%m-%d %H:%M:%S") .. "  " .. line .. "\n"); f:close() end
+  print("[SARemix_Tour] " .. line)
+end
+
+local seq = 0
+local function shot(name)
+  seq = seq + 1
+  local f = io.open(string.format("%s/rhytour_%02d.req", pendingDir, seq), "w")
+  if f then f:write(name .. "\n"); f:close(); note(string.format("shot %02d %s", seq, name))
+  else note("cannot write marker for " .. name) end
+end
+
+function main()
+  if not exists(flag) then return end
+  while not isPlayerPlaying(PLAYER_HANDLE) do wait(500) end
+  wait(5000)
+  note("tour start, " .. #stops .. " stops")
+  setPlayerControl(PLAYER_HANDLE, false)
+  displayHud(false); displayRadar(false)
+  for _, s in ipairs(stops) do
+    local name, h, m = s[1], s[2], s[3]
+    forceWeatherNow(1)
+    setTimeOfDay(h, m)
+    requestCollision(s[4], s[5]); loadScene(s[4], s[5], s[6])
+    setCharCoordinates(PLAYER_PED, s[4], s[5], s[6])
+    setFixedCameraPosition(s[7], s[8], s[9], 0.0, 0.0, 0.0)
+    pointCameraAtPoint(s[10], s[11], s[12], 2)
+    wait(SETTLE_MS)
+    setTimeOfDay(h, m)          -- the clock ran during the wait; pin it again
+    wait(GAP_MS)
+    shot(name)
+    wait(GAP_MS)
+  end
+  restoreCameraJumpcut(); setCameraBehindPlayer()
+  displayHud(true); displayRadar(true)
+  setPlayerControl(PLAYER_HANDLE, true)
+  os.remove(flag)
+  note("tour done")
+end

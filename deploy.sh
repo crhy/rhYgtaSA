@@ -80,6 +80,9 @@ cp "$ASI" "$R/scripts/rhyremix.asi"
 cp "$LIST" "$R/scripts/rhyremix_lights.txt"
 cp "$TLIST" "$R/scripts/rhyremix_traffic.txt"
 echo "== installed rhyremix.asi + rhyremix_lights.txt + rhyremix_traffic.txt into $R/scripts"
+# rhyremix lights the street lamps; the asset pack's own lamp SphereLights would
+# light each one a second time (idempotent; --restore in the tool undoes it).
+python3 "$HERE/tools/strip_pack_lamp_lights.py" "$R" || echo "WARN: could not remove the pack's duplicate lamp lights"
 
 # The runtime rtx.* pushes. Kept as a separate file rather than baked into the
 # ini because it is a list of renderer settings, not mod parameters, and because

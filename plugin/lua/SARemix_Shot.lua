@@ -16,8 +16,9 @@ script_name("SARemix_Shot")
 script_author("rhY")
 script_version("0.1.0")
 
-local work = getWorkingDirectory()
-local confPath = work .. "/moonloader/SARemix_Shot.conf"
+-- getWorkingDirectory() is <game>\moonloader, not the game folder: go one up.
+local work = getWorkingDirectory() .. "/.."
+local confPath = getWorkingDirectory() .. "/SARemix_Shot.conf"
 local pendingDir = work .. "/screenshots/pending"
 local fallback = work .. "/scripts/rhyshot.req"   -- used if pending/ is missing
 

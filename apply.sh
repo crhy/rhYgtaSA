@@ -10,6 +10,8 @@ grep '^+++ ' "$HERE/patches/gtasa-remix-linux.patch" | sed -E 's/^\+\+\+ "?b\///
   [ -f "$R/$f" ] && { mkdir -p "$B/$(dirname "$f")"; cp -p "$R/$f" "$B/$f"; }; done
 echo "== patching GTASA-Remix files (scripts, light USDs, rtx.conf)"
 patch -p1 -d "$R" --forward --binary < "$HERE/patches/gtasa-remix-linux.patch"
+echo "== street lamps: rhyremix.asi lights them, so the pack's duplicate lamp lights go"
+python3 "$HERE/tools/strip_pack_lamp_lights.py" "$R"
 echo "== new helper modules"
 mkdir -p "$R/moonloader/lib"; cp "$HERE"/moonloader/lib/*.lua "$R/moonloader/lib/"
 echo "== stale upstream script (SARemiv_VTK.lua uses pre-cloud model ids) -> backup"
