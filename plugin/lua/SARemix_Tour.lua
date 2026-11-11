@@ -34,6 +34,8 @@ local stops = {
   {"08a-sunset-facing-east-1905",  19, 5,   370.0, -2040.0,  7.8,   368.0, -2042.0, 10.0,   600.0, -2000.0, 30.0},
   {"08b-sunset-facing-west-1905",  19, 5,   370.0, -2040.0,  7.8,   372.0, -2040.0, 10.0,   100.0, -2060.0, 15.0},
   {"09-grove-dawn-0530",            5, 30, 2440.0, -1670.0, 13.5,  2438.0, -1671.0, 15.5,  2500.0, -1668.0, 13.5},
+  {"10-water-santa-maria-noon",    13, 0,   370.0, -2040.0,  7.8,   360.0, -2060.0,  6.0,   250.0, -2150.0,  0.0},
+  {"11-water-santa-maria-2100",    21, 0,   370.0, -2040.0,  7.8,   360.0, -2060.0,  6.0,   250.0, -2150.0,  0.0},
 }
 
 local function exists(p) local f = io.open(p, "r"); if f then f:close(); return true end; return false end
@@ -52,6 +54,24 @@ local function shot(name)
   else note("cannot write marker for " .. name) end
 end
 
+-- Ped opcodes (00A0, 00A1, ...) raise an unhandled exception under MoonLoader
+-- 0.27 in this RTX/Linux build (see moonloader/lib/sa_ped_safe.lua), so CJ is
+-- moved by writing his matrix position directly. GTA SA 1.0 US offsets.
+local memory = require "memory"
+local PLAYER_PED_PTR = 0xB7CD98   -- CWorld::Players[0].m_pPed
+
+local function teleport(x, y, z)
+  local p = memory.getuint32(PLAYER_PED_PTR)
+  if p == 0 then error("no player ped") end
+  local m = memory.getuint32(p + 0x14)          -- CPlaceable::m_matrix
+  if m ~= 0 then
+    memory.setfloat(m + 0x30, x); memory.setfloat(m + 0x34, y); memory.setfloat(m + 0x38, z)
+  else
+    memory.setfloat(p + 0x4, x); memory.setfloat(p + 0x8, y); memory.setfloat(p + 0xC, z)
+  end
+  memory.setfloat(p + 0x44, 0.0); memory.setfloat(p + 0x48, 0.0); memory.setfloat(p + 0x4C, 0.0)  -- m_vecMoveSpeed
+end
+
 local function restore()
   pcall(restoreCameraJumpcut); pcall(setCameraBehindPlayer)
   pcall(displayHud, true); pcall(displayRadar, true)
@@ -62,8 +82,8 @@ local function runStop(s)
   local name, h, m = s[1], s[2], s[3]
   forceWeatherNow(1)
   setTimeOfDay(h, m)
-  setCharCoordinates(PLAYER_PED, s[4], s[5], s[6])   -- teleport first, then stream around it
   requestCollision(s[4], s[5]); loadScene(s[4], s[5], s[6])
+  teleport(s[4], s[5], s[6] + 0.5)
   setFixedCameraPosition(s[7], s[8], s[9], 0.0, 0.0, 0.0)
   pointCameraAtPoint(s[10], s[11], s[12], 2)
   wait(SETTLE_MS)

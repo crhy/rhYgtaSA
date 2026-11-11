@@ -54,8 +54,12 @@ function main()
     print("[SARemix_Shot] disabled by " .. confPath)
     return
   end
-  if type(isPs2KeyboardKeyJustPressed) ~= "function" then
-    print("[SARemix_Shot] this MoonLoader has no key state API; hotkey unavailable")
+  -- `key` is a Windows virtual-key code (0x7B = F12). isKeyJustPressed takes
+  -- those; isPs2KeyboardKeyJustPressed takes the game's own PS2 key numbers, so
+  -- with it F12 was never seen and no shot was ever requested.
+  local justPressed = isKeyJustPressed
+  if type(justPressed) ~= "function" then
+    print("[SARemix_Shot] this MoonLoader has no isKeyJustPressed; hotkey unavailable")
     return
   end
   print(string.format("[SARemix_Shot] hotkey on, key=%d cooldown=%.2fs", math.floor(key), cooldown))
@@ -64,7 +68,7 @@ function main()
   local warned = false
   while true do
     wait(0)
-    local ok, down = pcall(isPs2KeyboardKeyJustPressed, key)
+    local ok, down = pcall(justPressed, key)
     if not ok then
       if not warned then
         print("[SARemix_Shot] key query failed: " .. tostring(down))
