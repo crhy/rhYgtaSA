@@ -40,13 +40,20 @@ done
 ASI="$HERE/build/rhyremix.asi"
 LIST="$HERE/build/rhyremix_lights.txt"
 TLIST="$HERE/build/rhyremix_traffic.txt"
-if [ "$BUILD" = 1 ] || [ ! -f "$ASI" ] || [ ! -f "$LIST" ]; then
+if [ "$BUILD" = 1 ] || [ ! -f "$ASI" ]; then
   echo "== building plugin"
   timeout 600 bash "$HERE/plugin/build.sh" >/dev/null || { echo "build failed"; exit 1; }
 fi
 if [ ! -f "$TLIST" ]; then
   echo "== generating traffic light list"
   timeout 600 python3 "$HERE/tools/traffic_list.py" --game "$R" --out "$TLIST" >/dev/null || { echo "traffic_list.py failed"; exit 1; }
+fi
+# The lists are generated from the game's own data (gta3.img + .ide + .ipl, and
+# the mod pack's lamp table under <game>/moonloader/), so they are not in git:
+# a fresh clone generates them here instead of failing on a missing file.
+if [ ! -f "$LIST" ]; then
+  echo "== generating street light list"
+  timeout 900 python3 "$HERE/tools/lamp_list.py" --game "$R" --out "$LIST" >/dev/null || { echo "lamp_list.py failed"; exit 1; }
 fi
 [ -f "$ASI" ] && [ -f "$LIST" ] || { echo "missing $ASI or $LIST"; exit 1; }
 file "$ASI" | grep -q 'PE32.*i386' || { echo "$ASI is not a 32-bit DLL, refusing"; exit 1; }

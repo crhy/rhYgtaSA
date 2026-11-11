@@ -152,8 +152,11 @@ the `rtx.conf` settings that decide brightness and whether a light casts.
 3. `./apply.sh /path/to/your/GTASA-RTX` — backs up every file it touches, applies `patches/gtasa-remix-linux.patch`,
    adds the helper modules, the Proton bridge setting and the launcher.
 4. One-time bootstrap (the game folder still holds the old launcher copy):
-   `cd /home/rhy/rhYgtaSA && ./deploy.sh --build --test --force-ini` — copies `build/rhyremix.asi`,
-   `build/rhyremix_lights.txt` and `build/rhyremix_traffic.txt` into `<game>/scripts/` (outgoing asi backed up
+   `cd /home/rhy/rhYgtaSA && ./deploy.sh --build --test --force-ini` — builds `build/rhyremix.asi` and,
+   on a fresh clone, **generates** `build/rhyremix_lights.txt` and `build/rhyremix_traffic.txt` from the
+   game's own data (`gta3.img` + `.ide` + `.ipl`, plus the mod pack's lamp table under
+   `<game>/moonloader/`; those lists are generated files, not in git), then copies all three into
+   `<game>/scripts/` (outgoing asi backed up
    under `build/tmp/`, refused unless it is `PE32 ... i386`), installs `config/rhyremix-test.ini` (`--force-ini`
    overwrites yours), disables the Lua mods our plugin replaces (**auto**: the light manager follows
    `[streetlights] enabled`, the sun mod follows `[sun] enabled`; `--lua-on` / `--sun-on` override), refreshes

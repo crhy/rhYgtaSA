@@ -155,6 +155,7 @@ PY
   grep -q "parse_ide_from_text" tools/lamp_list.py && ok "lamp model names resolve through .ide, not the img index" || bad "lamp_list.py still guesses model ids from the img index"
   h=$(awk '!/^#/{print $4}' build/gate-traffic.txt 2>/dev/null | sort -u | wc -l); [ "${h:-0}" -ge 2 ] && ok "traffic head heights come from the lamp table ($h distinct)" || bad "every traffic light head is the same radius guess"
   grep -q "report-missing" tools/lamp_list.py && ok "the lamp table's gaps are reported, not silent" || bad "missing lamp models stay invisible"
+  grep -q "lamp_list.py" deploy.sh && grep -q "traffic_list.py" deploy.sh && ok "deploy generates the lists, so a fresh clone can install" || bad "the lists are generated files that nothing generates"
   grep -qi "blink" README.md && ok "README explains the blink" || bad "README does not explain the blink"
   grep -qi "max_total_lights" docs/FINDINGS.md && ok "findings record the cap that caused it" || bad "findings do not record the cap"
 fi
