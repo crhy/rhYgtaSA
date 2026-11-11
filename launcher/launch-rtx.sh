@@ -22,14 +22,6 @@ export WINEDLLOVERRIDES="d3d9=n,b"                 # load the Remix bridge d3d9.
 export DXVK_NVAPI_LOG_LEVEL=info PROTON_LOG=1 PROTON_LOG_DIR="$R/logs"
 [ -f "$HOME/.config/MangoHud/wine-gta-sa.conf" ] && export MANGOHUD=1 MANGOHUD_CONFIGFILE="$HOME/.config/MangoHud/wine-gta-sa.conf"
 mkdir -p "$STEAM_COMPAT_DATA_PATH" "$R/logs" "$R/screenshots/pending"
-# F12 inside the game only writes a marker file (moonloader/SARemix_Shot.lua);
-# this watcher is the half that actually grabs the window, because the game's
-# own PrintScreen path takes the Remix bridge down.
-WATCHER=""
-if [ "${RHYS_SHOT_WATCH:-1}" = 1 ] && [ -f "$REPO/scripts/shot-watch.sh" ]; then
-  bash "$REPO/scripts/shot-watch.sh" --game "$R" &
-  WATCHER=$!
-fi
 # Free-VRAM preflight. This exists because of a specific, expensive confusion:
 # on 2026-11-11 a local LLM server (Strata, --resident-experts --kv-resident
 # 32768) was holding 15,494 of the 4070 Ti SUPER's 16,376 MiB. GTA SA RTX Remix
@@ -66,17 +58,34 @@ if [ "${RHY_SKIP_VRAM_CHECK:-0}" != 1 ] && command -v nvidia-smi > /dev/null 2>&
             # Naming it here is what stopped three config rollbacks and four
             # wasted launches on 2026-11-11.
             case "$name" in
-              strata*) echo "                 ^ this is the local LLM server that is"
-                       echo "                   serving the assistant. Stop it, or lower"
-                       echo "                   --kv-resident / --max-context, to free VRAM." ;;
+              strata*) echo "                 ^ this is the local LLM server (Strata). Its"
+                       echo "                   expert cache fills the card on purpose; stop"
+                       echo "                   it while you play (context size is not it)." ;;
             esac
           done
       echo "         Free it, or set RHY_SKIP_VRAM_CHECK=1 to launch anyway."
+      if [ ! -t 1 ]; then   # started from the desktop: nobody sees stdout
+        msg="GTA SA RTX did not start: only ${vram_free} MiB of ${vram_total} MiB VRAM is free.
+RTX Remix needs most of the card. Using it now:
+$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader 2>/dev/null | while IFS=, read -r pid mem; do printf '%s %s (pid %s)\n' "$(ps -o comm= -p "$pid" 2>/dev/null)" "$mem" "$pid"; done)
+Close it (Strata: stop the server) and start the game again."
+        if command -v zenity >/dev/null 2>&1; then zenity --error --title="GTA SA RTX" --text="$msg" 2>/dev/null
+        elif command -v notify-send >/dev/null 2>&1; then notify-send -u critical "GTA SA RTX" "$msg"; fi
+      fi
       exit 1
     fi
   fi
 fi
 
+# F12 inside the game only writes a marker file (moonloader/SARemix_Shot.lua);
+# this watcher is the half that actually grabs the window, because the game's
+# own PrintScreen path takes the Remix bridge down. Started only now, so an
+# early exit above cannot leave it running.
+WATCHER=""
+if [ "${RHYS_SHOT_WATCH:-1}" = 1 ] && [ -f "$REPO/scripts/shot-watch.sh" ]; then
+  bash "$REPO/scripts/shot-watch.sh" --game "$R" &
+  WATCHER=$!
+fi
 cd "$R" && "$RUNTIME" --verb=waitforexitandrun -- "$PROTON" waitforexitandrun ./gta-sa.exe
 rc=$?
 [ -n "$WATCHER" ] && kill "$WATCHER" 2>/dev/null

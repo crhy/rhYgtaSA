@@ -81,7 +81,7 @@ sky: sun elev=... rad=... | moon elev=... rad=... (hour=...)
 
 ## Step 3 - what to photograph, and what each one proves
 
-Take shots with **F12** in game; they land in
+Take shots with **F12** in game (fixed 2026-11-11: before that every F12 failed silently, see below); they land in
 `/media/rhy/data/Gamez/GTASA-RTX/screenshots/pending` and `scripts/shot-watch.sh`
 (started by the launcher) moves them to `screenshots/shots/`.
 
@@ -158,14 +158,15 @@ behaviour exactly, so any difference between the two states is attributable.
 
 ## What is NOT covered by this test
 
-**Street lamps are probably double-lit.** The asset pack's lamp *models* carry
-their own SphereLights (`SARemix/SARemix_StreetLights.usda`:
-`Spot_Light_{B,M,S}_{Cold,Warm}`, two lights each, intensity 1500-6000, 4500 and
-6500 K), instantiated wherever the game places a lamp. Our 7002-entry
-`rhyremix_lights.txt` adds a second light to each. If shot 1 or 2 looks twice as
-bright as expected, that is why, and the fix is a decision rather than a knob:
-either ignore the pack's lamp lights (`rtx.ignoreLights`) and keep ours, or drop
-our list and tune the pack's. It needs a picture to decide.
+**Street lamps are lit once, by rhyremix (decided 2026-11-11).** The asset
+pack's lamp models carried their own SphereLights
+(`SARemix/SARemix_StreetLights.usda`: `Spot_Light_*` with two each,
+`Sphere_Light_*` with one, 18 in all) on top of our 7002-entry list, so every
+lamp was lit twice and night read twice as bright. rhY chose to keep ours (real
+fixture sizes, sodium/mercury colours, twilight switching): `deploy.sh` and
+`apply.sh` run `tools/strip_pack_lamp_lights.py`, which removes the pack's 18
+lights and keeps the original as `.orig-with-lights` (`--restore` puts it back).
+Remix reads USD at start-up, so it takes effect on the next launch.
 
 **Traffic signals are unshaped on purpose.** A real signal module throws a narrow
 beam down the approach, but `rhyremix_traffic.txt` carries only `x y z headz` -

@@ -76,6 +76,7 @@ enum RhyLampFamily {
 };
 
 // Colour of a lamp family, linear sRGB normalised so the strongest channel is 1.
+void rhyXyToLinearRgb(float x, float y, float* rgb);  // CIE 1931 xy -> linear sRGB, max 1
 void rhyLampFamilyRgb(int family, float* rgb);
 const char* rhyLampFamilyName(int family);
 

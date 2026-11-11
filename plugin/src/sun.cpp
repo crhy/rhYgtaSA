@@ -359,6 +359,12 @@ void rhySunFrame() {
     if (ob.dayOfYear < 1 || ob.dayOfYear > 366) {
         ob.dayOfYear = 186;  // mid-July, the season GTA SA's story opens in
     }
+    // US daylight saving: the second Sunday of March to the first Sunday of
+    // November falls on days 67-73 and 305-311; 70..307 is the middle of both.
+    // Without it a July game clock runs an hour ahead of the sun.
+    if (cfg->sky_dst && ob.dayOfYear >= 70 && ob.dayOfYear <= 307) {
+        ob.timezoneHours += 1.0f;
+    }
 
     int hour = 0, minute = 0;
     gameClock(&hour, &minute);

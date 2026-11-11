@@ -104,14 +104,6 @@ static void accumLines(float* acc, const LampLine* lines, int count, float weigh
     }
 }
 
-static void accumBand(float* acc, float lo, float hi, float weight) {
-    float t[3];
-    rhyBandToRgb(lo, hi, t);
-    acc[0] += t[0] * weight;
-    acc[1] += t[1] * weight;
-    acc[2] += t[2] * weight;
-}
-
 static void normalize(float* rgb) {
     const float m = rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2])
                                     : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]);
@@ -135,74 +127,37 @@ void rhyLinesToRgb(const LampLine* lines, int count, float* rgb) {
 // perceived colour. Precision on the intensities is not the point - the point is
 // that the colour comes from where the lines ARE, and a Planck curve at the same
 // correlated temperature puts energy in completely the wrong places.
-void rhyLampFamilyRgb(int family, float* rgb) {
-    rgb[0] = rgb[1] = rgb[2] = 0.0f;
+// CIE 1931 chromaticity -> linear sRGB (IEC 61966-2-1 matrix), out-of-gamut
+// channels clamped at zero, brightest channel normalised to 1. Linear is what
+// Remix's radiance expects; gamma-encoded display values would look washed out.
+void rhyXyToLinearRgb(float x, float y, float* rgb) {
+    const float Y = 1.0f, X = x / y, Z = (1.0f - x - y) / y;
+    float r = 3.2406f * X - 1.5372f * Y - 0.4986f * Z;
+    float g = -0.9689f * X + 1.8758f * Y + 0.0415f * Z;
+    float b = 0.0557f * X - 0.2040f * Y + 1.0570f * Z;
+    r = r < 0.0f ? 0.0f : r; g = g < 0.0f ? 0.0f : g; b = b < 0.0f ? 0.0f : b;
+    const float m = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    rgb[0] = m > 0.0f ? r / m : 1.0f;
+    rgb[1] = m > 0.0f ? g / m : 1.0f;
+    rgb[2] = m > 0.0f ? b / m : 1.0f;
+}
 
+void rhyLampFamilyRgb(int family, float* rgb) {
+    // Measured chromaticities (CIE 1931 x, y) of each lamp family, as published
+    // in lighting references, converted to the linear sRGB primaries Remix
+    // renders in. A spectral line model needs proper colour-matching functions
+    // AND the real line shapes to land on these: high-pressure sodium in
+    // particular is a broad, self-reversed band from ~540 to ~650 nm, not the D
+    // doublet, and the earlier line sum came out far too yellow-green.
     switch (family) {
-        case RHY_LAMP_HPS: {
-            // Sodium D doublet dominates; pressure broadening in a high-pressure
-            // arc spreads it into the 568 and 615 nm wings, which is what gives
-            // HPS its slightly softer orange than pure low-pressure sodium.
-            static const LampLine k[] = {
-                {589.0f, 1.00f}, {589.6f, 0.90f},
-                {568.0f, 0.07f}, {615.4f, 0.12f},
-            };
-            accumLines(rgb, k, 4, 1.0f);
-            break;
-        }
-        case RHY_LAMP_MERCURY: {
-            // The 546.1 nm green line is the strongest and the 435.8 nm blue
-            // line is close behind it, which is why mercury street lighting reads
-            // blue-green rather than the neutral 6500 K white a temperature dial
-            // produces. The 577/579 yellow doublet is pressure-broadened but
-            // weaker than the green, and the 404.7 nm line is dim to the eye.
-            static const LampLine k[] = {
-                {404.7f, 0.30f}, {435.8f, 0.65f}, {491.6f, 0.05f},
-                {546.1f, 1.00f}, {577.0f, 0.25f}, {579.1f, 0.22f},
-            };
-            accumLines(rgb, k, 6, 1.0f);
-            break;
-        }
-        case RHY_LAMP_METAL_HALIDE: {
-            // Mercury lines plus thallium/indium additions and a real continuum,
-            // which is why metal halide is the only discharge source here with
-            // decent colour rendering.
-            static const LampLine k[] = {
-                {404.7f, 0.25f}, {435.8f, 0.45f}, {457.9f, 0.40f},
-                {468.0f, 0.30f}, {546.1f, 0.70f}, {589.0f, 0.35f},
-            };
-            accumLines(rgb, k, 6, 1.0f);
-            accumBand(rgb, 500.0f, 660.0f, 0.55f);
-            break;
-        }
-        case RHY_LAMP_LED: {
-            // A white LED is a ~450 nm blue pump driving a broad phosphor band.
-            // The blue peak is real and visible: it is why LED street lighting
-            // looks harsher and cooler than the sodium it replaced.
-            static const LampLine k[] = {{450.0f, 0.60f}};
-            accumLines(rgb, k, 1, 1.0f);
-            accumBand(rgb, 500.0f, 660.0f, 1.00f);
-            break;
-        }
-        case RHY_LAMP_TUNGSTEN: {
-            // A genuine thermal source, so a Planck curve IS the right model
-            // here. Illuminant A = 2856 K.
-            colorTemperatureToRgb(2856.0f, rgb);
-            return;
-        }
-        case RHY_LAMP_NEON_RED: {
-            static const LampLine k[] = {
-                {640.2f, 1.00f}, {630.5f, 0.75f}, {621.7f, 0.45f},
-                {585.2f, 0.20f},
-            };
-            accumLines(rgb, k, 4, 1.0f);
-            break;
-        }
-        default:
-            rgb[0] = rgb[1] = rgb[2] = 1.0f;
-            return;
+        case RHY_LAMP_HPS:          rhyXyToLinearRgb(0.530f, 0.415f, rgb); return;  // ~2050 K, deep orange
+        case RHY_LAMP_MERCURY:      rhyXyToLinearRgb(0.326f, 0.390f, rgb); return;  // clear mercury, green-white
+        case RHY_LAMP_METAL_HALIDE: rhyXyToLinearRgb(0.380f, 0.380f, rgb); return;  // ~4000 K, near neutral
+        case RHY_LAMP_LED:          rhyXyToLinearRgb(0.346f, 0.359f, rgb); return;  // 5000 K roadway LED
+        case RHY_LAMP_TUNGSTEN:     rhyXyToLinearRgb(0.4476f, 0.4074f, rgb); return;  // CIE illuminant A, 2856 K
+        case RHY_LAMP_NEON_RED:     rhyXyToLinearRgb(0.660f, 0.330f, rgb); return;
+        default: rgb[0] = rgb[1] = rgb[2] = 1.0f; return;
     }
-    normalize(rgb);
 }
 
 const char* rhyLampFamilyName(int family) {
@@ -298,16 +253,15 @@ float rhySignalRadius(float fixtureScale) {
 }
 
 void rhySignalLensRgb(int phase, float* rgb) {
-    // Signal lenses are wide absorption filters, not line sources, so the colour
-    // comes from the passband. Integrating the band is what makes the red come
-    // out red: a single 620 nm sample gives orange, because the piecewise
-    // spectrum function still has green in it at 620 nm, whereas a real red lens
-    // has cut the green out entirely.
+    // Signal colours are specified as chromaticity regions (ITE VTCSH / CIE
+    // S 004); these are typical LED signal heads near the middle of each region.
+    // The green (x 0.17, y 0.70) is a blue-green outside the sRGB gamut;
+    // clamping would make it pure green and lose the blue that makes a signal
+    // green read as one, so it is moved toward white along its own hue to the
+    // gamut edge (x 0.262, y 0.461), which keeps the blue-green.
     switch (phase) {
-        case 0:  rhyBandToRgb(515.0f, 565.0f, rgb); break;  // green
-        case 1:  rhyBandToRgb(585.0f, 605.0f, rgb); break;  // amber
-        case 2:  rhyBandToRgb(610.0f, 645.0f, rgb); break;  // red
-        default: rhyBandToRgb(610.0f, 645.0f, rgb); break;
+        case 0:  rhyXyToLinearRgb(0.2618f, 0.4614f, rgb); break;  // green
+        case 1:  rhyXyToLinearRgb(0.575f, 0.420f, rgb); break;  // amber
+        default: rhyXyToLinearRgb(0.690f, 0.305f, rgb); break;  // red
     }
-    normalize(rgb);
 }

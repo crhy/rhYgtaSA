@@ -51,41 +51,42 @@ int main() {
     rhyWavelengthToRgb(800.0f, c);
     ok("800 nm (infrared) contributes nothing", c[0] == 0.0f && c[2] == 0.0f);
 
-    // ---- the reason this module exists: sodium is not a 2000 K blackbody ----
+    // ---- lamp families: measured chromaticity, linear sRGB ----
     float hps[3], planck2000[3];
     rhyLampFamilyRgb(RHY_LAMP_HPS, hps);
     colorTemperatureToRgb(2000.0f, planck2000);
     show("high-pressure sodium", hps);
-    show("Planck at 2000 K (wrong)", planck2000);
-    ok("HPS has almost no blue", hps[2] < 0.10f);
-    ok("HPS is yellow-orange: green channel high", hps[1] > 0.75f);
-    // The decisive difference. A 2000 K Planck curve puts a lot of energy in the
-    // deep red and comparatively little in the green, so it reads as a dim
-    // amber. Sodium puts nearly everything at 589 nm, which is yellow. If this
-    // assertion ever starts failing the line list has been broken.
-    ok("HPS is much greener than a 2000 K Planck curve",
-       hps[1] > planck2000[1] + 0.20f);
+    show("Planck at 2000 K", planck2000);
+    // Real HPS sits at x 0.530 y 0.415, close to a ~2050 K blackbody: deep orange
+    // in linear sRGB (1, 0.25, 0). The old line sum gave green > 0.75 (yellow).
+    ok("HPS is deep orange: green near 0.25, no blue",
+       hps[0] > 0.99f && hps[1] > 0.20f && hps[1] < 0.30f && hps[2] < 0.05f);
+    ok("HPS is close to a ~2000 K blackbody (green within 0.12)",
+       fabsf(hps[1] - planck2000[1]) < 0.12f);
 
     float mv[3];
     rhyLampFamilyRgb(RHY_LAMP_MERCURY, mv);
     show("mercury vapour", mv);
-    ok("mercury reads cool: blue channel strong", mv[2] > 0.55f);
-    ok("mercury reads greenish: the 546 nm line is visible", mv[1] > 0.60f);
-    ok("mercury is not neutral white (red channel clearly lower)",
-       mv[0] < mv[1] - 0.10f);
+    ok("mercury is green-white: green the strongest channel", mv[1] > mv[0] && mv[1] > mv[2]);
+    ok("mercury keeps real blue", mv[2] > 0.45f);
+    ok("mercury is not neutral white (red clearly lower than green)", mv[0] < mv[1] - 0.15f);
 
     float mh[3], led[3], w[3];
     rhyLampFamilyRgb(RHY_LAMP_METAL_HALIDE, mh);
     rhyLampFamilyRgb(RHY_LAMP_LED, led);
     show("metal halide", mh);
     show("white LED", led);
-    ok("metal halide is near neutral (channels within 0.35 of each other)",
-       fabsf(mh[0] - mh[1]) < 0.35f && fabsf(mh[1] - mh[2]) < 0.35f);
-    ok("white LED still carries a blue pump peak", led[2] > 0.45f);
+    ok("metal halide is warm-neutral, between tungsten and LED", mh[2] > 0.30f && mh[2] < led[2]);
+    ok("a 5000 K LED is the coolest white here", led[2] > 0.55f);
 
     rhyLampFamilyRgb(RHY_LAMP_TUNGSTEN, w);
-    show("tungsten 2856 K", w);
-    ok("tungsten is warm and red-dominant", w[0] > 0.9f && w[2] < 0.50f);
+    show("tungsten 2856 K (illuminant A)", w);
+    ok("tungsten is warm and red-dominant", w[0] > 0.99f && w[2] < 0.20f);
+    ok("HPS is redder than tungsten (less green)", hps[1] < w[1]);
+    float planck2856[3];
+    colorTemperatureToRgb(2856.0f, planck2856);
+    ok("the Kelvin dial is linear: 2856 K matches illuminant A within 0.08",
+       fabsf(planck2856[1] - w[1]) < 0.08f && fabsf(planck2856[2] - w[2]) < 0.08f);
 
     // ---- traffic signal lenses ----
     float grn[3], amb[3], red[3];
@@ -95,20 +96,12 @@ int main() {
     show("signal green lens", grn);
     show("signal amber lens", amb);
     show("signal red lens", red);
-    ok("signal green is green-dominant with little red",
-       grn[1] > 0.95f && grn[0] < 0.65f);
-    ok("signal amber sits between: strong red and strong green, no blue",
-       amb[0] > 0.9f && amb[1] > 0.55f && amb[2] < 0.10f);
-    ok("signal red is red-dominant and saturated",
-       red[0] > 0.95f && red[1] < 0.45f && red[2] < 0.10f);
-    ok("the three lenses are mutually distinguishable in green",
-       grn[1] > amb[1] + 0.2f && amb[1] > red[1] + 0.2f);
-    // A single 620 nm sample would give orange, not red. This is the assertion
-    // that justifies integrating a band instead of sampling a wavelength.
-    float single620[3];
-    rhyWavelengthToRgb(620.0f, single620);
-    ok("band integration is what makes the red lens red (a 620 nm sample is more orange)",
-       red[1] < single620[1]);
+    ok("signal green is blue-green: green dominant, real blue, no red",
+       grn[1] > 0.99f && grn[2] > 0.25f && grn[0] < 0.05f);
+    ok("signal amber is orange: full red, some green, no blue",
+       amb[0] > 0.99f && amb[1] > 0.12f && amb[1] < 0.35f && amb[2] < 0.05f);
+    ok("signal red is pure red", red[0] > 0.99f && red[1] < 0.05f && red[2] < 0.05f);
+    ok("amber and red are distinguishable", amb[1] > red[1] + 0.12f);
 
     // ---- fixture geometry and flux preservation ----
     RhyFixture st, sig;

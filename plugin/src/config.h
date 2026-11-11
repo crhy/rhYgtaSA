@@ -120,6 +120,7 @@ struct RhyConfig {
     float sky_timezone;       // local standard offset from UTC, LA = -8
     int   sky_day_of_year;    // 1..366, the season; used when track_date=0
     int   sky_track_date;     // 1 = read the in-game calendar when it looks valid
+    int   sky_dst;            // 1 = US daylight saving (+1 h, ~Mar 11 - Nov 4)
     float sky_turbidity;      // aerosol extinction beta at 550 nm (0.08 clean, 0.25 smog)
     // Pin the game clock for lighting A/B. GTA SA advances one in-game minute
     // every 1.6 real seconds, so walking from noon to sunset by waiting takes

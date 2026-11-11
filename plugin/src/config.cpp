@@ -115,6 +115,7 @@ static const char* const kIniDefaults =
     "latitude=34.05\r\n"
     "longitude=-118.24\r\n"
     "timezone=-8\r\n"
+    "dst=1\r\n"
     "day_of_year=186\r\n"
     "track_date=1\r\n"
     "turbidity=0.12\r\n"
@@ -503,6 +504,7 @@ static void loadConfig() {
     c.sky_timezone = iniFloatSec("sun", "timezone", -8.0f);
     c.sky_day_of_year = iniIntSec("sun", "day_of_year", 186);
     c.sky_track_date = iniIntSec("sun", "track_date", 1);
+    c.sky_dst = iniIntSec("sun", "dst", 1);
     c.sky_turbidity = iniFloatSec("sun", "turbidity", 0.12f);
     c.sun_force_hour = iniIntSec("sun", "force_hour", -1);
     c.sun_force_minute = iniIntSec("sun", "force_minute", -1);

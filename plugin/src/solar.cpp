@@ -317,8 +317,9 @@ bool lampsShouldBeOn(float sunElevationDeg, float duskElevationDeg,
 }
 
 void colorTemperatureToRgb(float kelvin, float* out) {
-    // Kim et al. (2002) piecewise fit of the Planckian locus. The published
-    // formula returns 0..255, so everything below stays in that range and only
+    // Tanner Helland's piecewise fit of blackbody colour. It returns gamma-
+    // encoded sRGB display values 0..255 (linearised at the end, since Remix
+    // radiance is linear), so everything below stays in that range and only
     // the final normalisation divides. Below 1000 K the fit is out of range;
     // clamp rather than extrapolate, since extrapolating it goes negative.
     const float t = clampf(kelvin, 1000.0f, 25000.0f) / 100.0f;
@@ -348,7 +349,9 @@ void colorTemperatureToRgb(float kelvin, float* out) {
         out[0] = out[1] = out[2] = 0.0f;
         return;
     }
-    out[0] = r / m;
-    out[1] = g / m;
-    out[2] = b / m;
+    // sRGB decode: the fit's values are display-encoded; radiance is linear.
+    const float v[3] = {r / m, g / m, b / m};
+    for (int i = 0; i < 3; ++i) {
+        out[i] = v[i] <= 0.04045f ? v[i] / 12.92f : powf((v[i] + 0.055f) / 1.055f, 2.4f);
+    }
 }
