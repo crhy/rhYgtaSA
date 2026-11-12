@@ -332,11 +332,15 @@ green out. Result: red 1.000/0.269/0.000, amber 1.000/0.769/0.000, green
 red is redder than the single-wavelength sample, which is what pins that down.
 
 **Known gap, deliberately not faked.** A real signal module is strongly
-directional - visor plus refractor throw a narrow beam down the approach - but
-`rhyremix_traffic.txt` carries only `x y z headz`, no heading. A cone aimed the
-wrong way would put a dark face on every signal seen from the cross street, which
-is worse than an unshaped light. The honest fix is a heading column derived from
-the IPL placement rotation.
+directional - visor plus refractor throw a narrow beam down the approach. As of
+n02 `rhyremix_traffic.txt` does carry the instance heading (v2: `x y z headz
+heading lensx lensy lensz`, and the light now sits on the lens the offset points
+to), but a heading is not a lens normal: it is the model's yaw, and nothing
+measured says which way inside the model the visor faces - the game's own 2DFX
+entry carries a position and no direction either (0x59C890 rotates three floats
+and adds the translation). A cone aimed the wrong way would put a dark face on
+every signal seen from the cross street, which is worse than an unshaped light,
+so the shaping stays off and the heading is used only to place the bulb.
 
 ## Traffic signal heads: where the game itself puts the light (2026-11-11, s01)
 
@@ -886,6 +890,19 @@ times in that log, `N heads lit` appears zero times, and the hook counters never
 print. Every signal light in every screenshot so far has been a list-mode light
 at `pole x,y,z + headz`.
 
+> **Corrected by n02, same day.** Two sentences in this section and in
+> `plugin/src/signalheads.h` went further than the evidence: that the two runs
+> which *did* install the hook (2026-11-11 12:04 and 13:03, `records=0`) showed
+> "the patched call site was never reached". They did not. Those log lines carry
+> no `calls=` counter at all - s19 added it afterwards - and the 13:04 run's Wine
+> trace shows the stub entered with a real `CEntity*` (0x178DEFB4) and head index
+> 1, i.e. the call site **was** reached and our own prologue handed the recorder
+> garbage. What the 12 seconds at the spawn do show is a distance: 79.1 m to the
+> nearest of the 1522 poles, against the game's own 50.0 m corona range, so the
+> game was drawing no signal corona there either and `records=0` proves nothing
+> about the hook. The health test that used that sentence now asks the distance
+> question first; see "Where the lens is" below.
+
 ### The wash is mostly the game's own corona, and it is huge
 
 Measuring the tour's two signal stops (`build/tmp/s30/{shotmetrics,greenmap,bulbs,pairs}.py`,
@@ -949,7 +966,10 @@ the obvious knob, not a measured fact. `corona_radius` is therefore an A/B dial
 (clamped 0.05..1.2 m, `0` = leave the game's code alone) and `bulb_radiance`
 covers the rest. The safety net is `rhyHeadsHealthy()`: if the hook is live but
 has recorded no head within 20 s, the list lights carry the layer instead, so a
-shrunken flare can never be left alone in the dark.
+shrunken flare can never be left alone in the dark. (n02 made that test
+range-aware - a session 79.1 m from the nearest signal keeps the hook, because
+the game draws no head corona out there either - and moved the list-mode light
+from the mast onto the lens; see "Where the lens is" below.)
 
 ## The renderer's own time knobs, measured: which rtx.conf keys decide *when* a change lands (2026-11-12, n01)
 
@@ -1040,3 +1060,96 @@ volumetric accumulation window (16), the TAA new-frame weight (0.35), the exposu
 `scripts/rtxprofile-selftest.sh` proves the byte-for-byte round-trip. The A/B is
 `scripts/lighting-test.sh`, not the tour: the tour takes every shot at a standstill, so it can
 see the look and cannot see a transition.
+
+## Where the lens is: the hook sample, the game's 50 m, and the list's missing 2.10 m (2026-11-12, n02)
+
+rhY's retry of finding 4: *"no light has ever been placed at a lens in any run"*.
+True, and the reason s30 gave for it does not survive the numbers. Everything
+below is offline evidence from `objdump -d -j .text gta-sa.exe` (md5
+`85662cbb5aa3df8251ad7664f7a42929`) and a chunk walk of `models/gta3.img`; the
+scripts are `build/tmp/n02/{corona_sites,dffchunks,measure}.py` and the numbers
+are pinned in `tests/test_signal_hook.py::TestSignalDistanceInRealExe`.
+
+**Every call to the corona thunk.** 28 call sites call `0x6FC580`. Exactly one of
+them, **0x49DD4C**, is inside `CTrafficLights::DisplayActualLight` (0x49DAB0,
+2928 bytes, five callers at 0x536987/0x5369D3/0x536A0D/0x536A68/0x536B5A, all
+inside the renderer function that starts at 0x535FA0 and dispatches on
+`movswl 0x22(%esi)` = `CEntity::m_model_index`). The other 27 sit in 16 other
+functions (0x455720, 0x455E20, 0x4560E0, 0x47E070, 0x48B570, 0x53AF00, 0x6AAB50,
+0x6B9250, 0x6C58E0, 0x6DD130, 0x6E0A50, 0x6E1780, 0x6E1A60, 0x7174F0, 0x73A530),
+which is why patching the thunk itself would have lit police beacons, flares and
+every other corona in the game.
+
+**The 50.0 m range is applied inside the callee, after our patch point.** The
+call site pushes `0x42480000` (50.0f) at **0x49DCF3** as argument 8. The real
+corona function tests it at `0x6FC22E`: `fld [esp+0x4c]; fmul [esp+0x4c];
+fcompp; fnstsw; test ah,0x5; jnp 0x6FC4BB` - squared distance against squared
+range, give up beyond it. Then it fades: full alpha below **35.0 m** (the float
+at 0x85F070), zero at **50.0 m** (0x858B40), `1/15` per metre between them
+(0x863E0C). All of that runs *after* the instruction we detour, so the range
+never gated our recorder - it gates what the **game** draws. That is the fact
+that turns the 2026-11-11 samples inside out: the player was **79.1 m** from the
+nearest of the 1522 poles in both runs, so the game was drawing no signal-head
+corona at all, and `records=0` there is what the game's own range predicts. The
+places where the game's range does allow a head are the tour's signal stops
+(CJ at 1040,-1392 and 1068,-1428: four signals inside 50 m, nearest 14.4 m and
+13.5 m), and no run has ever logged a head there. `rhyHeadsHealthy()` now takes
+the nearest-signal distance and this range, and only falls back to the list when
+a signal is inside the range, the grace has run out and still nothing appeared;
+a signal-free session keeps the hook and logs why.
+
+**Whether a head exists at all is the model's 2DFX count.** `0x49DBDD
+movzx eax,BYTE PTR [edi+0xd]` (CModelInfo+0xD) ... `0x49DC01 jle 0x49DE2C`, and
+0x49DE2C is past the corona call: a model with no 2DFX entries never reaches
+0x49DD4C. Scanning every entry of `models/gta3.img` (16316 entries: 12964 `.dff`,
+164 `.ipl`) finds **no** chunk with id `0x00010105` anywhere in it, and the exe
+contains no ASCII `2dFx` magic (0 hits in the whole file), so the 2DFX records
+are not readable out of the game files - which is what the 13:04 crash's head
+index of 1 makes interesting (the loop did run, at least twice, for one of the
+five model ids this function accepts) and what makes chasing them the wrong task.
+The list file has to carry the lens itself.
+
+**It was carrying a pole.** The lamp table (`moonloader/SARemix_Light_Manager.dat`,
+the same file the shipped `headz` column already comes from) gives a *three*
+number head offset per model, and the v1 file kept only the third:
+
+| model id | name | .ide radius | head offset, model-local | instances |
+|---|---|---|---|---|
+| 1350 | cj_traffic_light4 | 60 | (-2.10, +0.10, +7.60) | 720 |
+| 1351 | cj_traffic_light5 | 60 | (-1.75, 0.00, +6.00) | 61 |
+| 3855 | gay_traffic_light | 50 | (-2.10, +0.12, +7.65) | 23 |
+| 1352 | cj_traffic_light3 | 60 | borrowed from 1350 (radius tie) | 20 |
+| 1315 | trafficlight1 | 64 | borrowed from 1350 (gap 4) | 136 |
+| 1283/1284 | mtraffic1/mtraffic2 | 85 | refused: radius gap 25 | 510/53 |
+
+So the lens sits **1.75-2.10 m sideways** of the mast for 960 of the 1522
+instances (63%), and a light at `pole + (0,0,headz)` was that far from the lens
+it is supposed to be a bulb on. The direction is available and exact: all 1524
+raw traffic instances in the "bnry" IPLs carry a **pure Z-axis quaternion**
+(measured: x = y = 0 and |q| = 1 for every one), so a yaw is the whole rotation,
+and rotating the offset by it is the same rule the game applies to a 2DFX entry
+at 0x59C890 (`out = m->right*e.x + m->up*e.y + m->at*e.z + m->pos`).
+
+**What shipped.** `# rhyremix traffic v2`, eight columns:
+
+```
+x y z headz heading lensx lensy lensz
+```
+
+`heading` is the instance yaw in degrees, `lens*` the head offset in the model's
+own frame; the plugin rotates and adds (`rhySignalLensPos`, `lens_offset=1`).
+Column 4 is still `headz` and still equals `lensz`, and `--v1` writes the old
+four-column file: regenerating with `--v1` reproduces the deployed
+`scripts/rhyremix_traffic.txt` **byte for byte**, which is the compatibility
+proof in `tests/test_traffic_list.py::TestGeneratedFile`. A v1 line parsed by the
+new plugin gets `heading 0, lens (0,0,headz)` and lands exactly where it landed
+before. mtraffic1/2 (562 instances) keep the pole x/y because borrowing a 2 m arm
+across a 25-unit radius gap is not justified; they keep the borrowed height, as
+before.
+
+**One stale gate.** `scripts/check.sh` line 45 asserts
+`awk '!/^#/ && NF!=4'` on the generated traffic list, i.e. the v1 column count,
+and now reports `FAIL 1522 malformed traffic lines` for the eight-column file.
+Rule 4 of the header says never edit `scripts/check.sh`, so it is recorded here
+instead: the assertion needs `NF!=4 && NF!=8`, and `scripts/check-all.sh` - the
+gate this task's Gate line names - passes.

@@ -5,17 +5,27 @@ usage: traffic_list.py --game <GAME_DIR> --out <file>
 
 Sources:
   * the .ide files under <GAME_DIR>/data/maps (model id -> name, bounding radius)
-  * the lamp table (<GAME_DIR>/moonloader/SARemix_Light_Manager.dat): the exact height of a
+  * the lamp table (<GAME_DIR>/moonloader/SARemix_Light_Manager.dat): the exact offset of a
     traffic light head above its instance origin, for the models it covers (that file
     ships with the mod pack and is not copied into this repo)
-  * binary ("bnry") IPLs stored inside <GAME_DIR>/models/gta3.img (model by id)
-Output: header "# rhyremix traffic v1", then one line per light:
-        "x y z headz"   (headz = height of the lamp head above the instance origin,
-                        in game units; the plugin adds it to z when placing the
-                        light, so a wrong headz is a glow in the middle of the
-                        pole instead of in the head)
+  * binary ("bnry") IPLs stored inside <GAME_DIR>/models/gta3.img (model by id, position,
+    rotation quaternion)
+Output: header "# rhyremix traffic v2", then one line per light:
+        "x y z headz heading lensx lensy lensz"
+        headz   = height of the lamp head above the instance origin, game units
+                  (column 4 is unchanged from v1, so an old reader still gets it)
+        heading = the instance yaw in degrees, from the IPL quaternion
+        lens*   = the head offset in the MODEL's own frame; the plugin rotates it by
+                  the heading and adds it to the instance origin, which is exactly
+                  what CTrafficLights does with a head offset (0x59C890 in gta-sa.exe:
+                  out = m->right*e.x + m->up*e.y + m->at*e.z + m->pos)
+        -> the light lands on the lens instead of on the mast. For cj_traffic_light4
+           (720 of the 1522 instances) the head is 2.10 m sideways of the pole.
+  --v1 writes the old four-column "x y z headz" file, byte for byte what shipped
+  before n02; the plugin reads both.
 """
 import argparse
+import math
 import os
 import re
 import struct
@@ -87,6 +97,41 @@ def parse_binary_ipl(data):
         model, interior, lod = struct.unpack_from("<3i", data, base + 28)
         yield (model, interior, lod, pos, rot)
 
+
+# ---------------------------------------------------------------- heading
+
+def heading_deg(rot):
+    """Yaw in degrees (0..360) of an IPL instance quaternion (x, y, z, w).
+
+    Every traffic-light instance in gta3.img carries a pure Z-axis quaternion
+    (measured over all 1524 raw instances: x = y = 0 and |q| = 1 for every one),
+    so the yaw IS the rotation and the model's "right" column is (cos, sin, 0).
+    That is the column the game multiplies a head offset by at 0x59C890, which is
+    why a heading column plus a model-local offset reproduces where the game puts
+    a head.
+    """
+    x, y, z, w = rot
+    fx = 1.0 - 2.0 * (y * y + z * z)
+    fy = 2.0 * (x * y + w * z)
+    # Round first, then fold: rounding 359.96 straight to "360.0" would put a
+    # heading outside the 0..360 the plugin's cos/sin are handed (and read as a
+    # different number than 0.0 in the file for the same lamp).
+    h = round(math.degrees(math.atan2(fy, fx)), 1) % 360.0
+    return 0.0 if h >= 360.0 else h
+
+
+def rotate_yaw(offset, heading):
+    """Rotate a model-local (x, y, z) offset by a heading in degrees.
+
+    Reporting only - the plugin does the same thing in rhySignalLensPos(), and
+    tests/signals_check.cpp asserts the two agree. z is untouched, because the
+    rotation is a yaw.
+    """
+    rad = math.radians(heading)
+    c, s = math.cos(rad), math.sin(rad)
+    x, y, z = offset
+    return (x * c - y * s, x * s + y * c, z)
+
 def read_entry(f, off, sz, sz2):
     size = (sz2 or sz) * 2048
     f.seek(off * 2048)
@@ -97,12 +142,15 @@ def read_entry(f, off, sz, sz2):
 def dedupe(instances):
     """Drop LOD duplicates: same model id, position within 0.1 game units.
 
-    Returns the instances in input order.
+    Each instance is (model, pos) or (model, pos, extra) - n02 carries the IPL
+    rotation through as `extra`, and it is passed through untouched. Returns the
+    instances in input order.
     """
     CELL = 0.1
     grid = {}
     kept = []
-    for model, pos in instances:
+    for inst in instances:
+        model, pos = inst[0], inst[1]
         cx, cy, cz = int(pos[0] // CELL), int(pos[1] // CELL), int(pos[2] // CELL)
         dup = False
         for gx in (cx - 1, cx, cx + 1):
@@ -117,7 +165,7 @@ def dedupe(instances):
                             dup = True
         if not dup:
             grid.setdefault((model, cx, cy, cz), []).append(pos)
-            kept.append((model, pos))
+            kept.append(inst)
     return kept
 
 def headz(radius):
@@ -155,6 +203,44 @@ def headz_for(model, radius, table_heads, radii):
         return headz(radius)
     return round(best[2], 2)
 
+
+def lens_offset_for(model, radius, table_heads, radii, max_gap=10.0):
+    """Full model-local head offset (x, y, z) for one traffic light model, or None.
+
+    The lamp table carries THREE numbers per head, and the shipped headz column
+    throws two of them away: cj_traffic_light4's head is at (-2.10, +0.10, +7.60)
+    in the model's own frame, so the lens sits 2.10 m sideways of the mast, and a
+    light at pole+(0,0,7.60) is 2.10 m from the lens it is supposed to be a bulb
+    on. Rotating that offset by the instance heading is the game's own rule for a
+    head offset (0x59C890), so the sideways part is worth keeping.
+
+    Same borrowing rule as headz_for, with a bound the height does not need: a
+    model the table does not cover takes the offset of the covered model with the
+    closest .ide radius, but only when that gap is <= max_gap. A height can be
+    borrowed across a 25-unit radius gap; a 2 m sideways arm cannot - mtraffic1
+    (r=85) is a different lamp from cj_traffic_light4 (r=60), so it keeps the pole
+    x/y and only the borrowed height. Ties go to the model with the larger
+    sideways offset, which is the one whose head is furthest off the mast.
+    """
+    offs = table_heads.get(model)
+    if offs:
+        return tuple(round(v, 3) for v in max(offs, key=lambda o: o[2]))
+    best = None
+    for mid, other in table_heads.items():
+        if mid not in radii or not other:
+            continue
+        d = abs(radii[mid][1] - radius)
+        if d > max_gap:
+            continue
+        off = max(other, key=lambda o: o[2])
+        lateral = math.hypot(off[0], off[1])
+        if (best is None or d < best[0]
+            or (d == best[0] and lateral > best[2])):
+            best = (d, mid, lateral, off)
+    if best is None:
+        return None
+    return tuple(round(v, 3) for v in best[3])
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -166,6 +252,12 @@ def main():
     ap.add_argument("--table", default=None,
                     help="SARemix_Light_Manager.dat, for exact head heights "
                          "(default: <game>/moonloader/SARemix_Light_Manager.dat)")
+    ap.add_argument("--v1", action="store_true",
+                    help="write the old four-column 'x y z headz' file instead of "
+                         "the v2 eight-column one (A/B: the plugin reads both)")
+    ap.add_argument("--lens-gap", type=float, default=10.0,
+                    help="largest .ide radius gap across which a model may borrow "
+                         "another model's sideways lens offset (default 10)")
     args = ap.parse_args()
 
     # Exact head heights, when the lamp table is readable. Without it every head
@@ -211,9 +303,9 @@ def main():
         data = read_entry(f, off, sz, sz2)
         if not data.startswith(b"bnry"):
             continue
-        for model, interior, _lod, pos, _rot in parse_binary_ipl(data):
+        for model, interior, _lod, pos, rot in parse_binary_ipl(data):
             if model in radii and interior == 0:
-                instances.append((model, pos))
+                instances.append((model, pos, rot))
                 per_model[model] = per_model.get(model, 0) + 1
     f.close()
     print("instances: " + ", ".join(f"{mid} {n}" for mid, n in sorted(per_model.items())))
@@ -221,12 +313,45 @@ def main():
     # 3. drop LOD duplicates: same model, position within 0.1
     kept = dedupe(instances)
 
-    out_lines = ["# rhyremix traffic v1"]
+    # 4. the lens offset per model, once: None means "no number to trust", and
+    # that model's lines keep the pole x/y and the borrowed height.
+    lens = {}
+    for mid, (_name, radius) in radii.items():
+        lens[mid] = lens_offset_for(mid, radius, table_heads, radii, args.lens_gap)
+    print("lens offsets (model-local, from the lamp table or borrowed by radius):")
+    for mid in sorted(radii):
+        nm, radius = radii[mid]
+        off = lens[mid]
+        print(f"  {mid:5d} {nm:18s} r={radius:5.1f} "
+              + (f"lens=({off[0]:+.2f},{off[1]:+.2f},{off[2]:.2f}) "
+                 f"sideways={math.hypot(off[0], off[1]):.2f} m"
+                 if off else "no offset: the light stays on the mast"))
+
+    out_lines = ["# rhyremix traffic v1" if args.v1 else "# rhyremix traffic v2"]
+    if not args.v1:
+        out_lines.append(
+            "# x y z headz heading lensx lensy lensz - headz is the v1 column 4; "
+            "heading is the IPL instance yaw in degrees; lens* is the head offset in "
+            "the model's own frame, rotated by the heading and added to x,y,z by the "
+            "plugin (lens_offset=1 in rhyremix.ini)")
     near = 0
-    for model, pos in kept:
+    with_lens = 0
+    max_move = 0.0
+    for model, pos, rot in kept:
         _name, radius = radii[model]
-        out_lines.append(f"{pos[0]:.3f} {pos[1]:.3f} {pos[2]:.3f} "
-                         f"{headz_for(model, radius, table_heads, radii):.2f}")
+        hz = headz_for(model, radius, table_heads, radii)
+        off = lens[model]
+        if off:
+            with_lens += 1
+            wx, wy, _wz = rotate_yaw(off, heading_deg(rot))
+            max_move = max(max_move, math.hypot(wx, wy))
+        if args.v1:
+            out_lines.append(f"{pos[0]:.3f} {pos[1]:.3f} {pos[2]:.3f} {hz:.2f}")
+        else:
+            lx, ly, lz = off if off else (0.0, 0.0, hz)
+            out_lines.append(
+                f"{pos[0]:.3f} {pos[1]:.3f} {pos[2]:.3f} {hz:.2f} "
+                f"{heading_deg(rot):.1f} {lx:+.3f} {ly:+.3f} {lz:+.3f}")
         dx, dy = pos[0] - 2495.0, pos[1] + 1680.0
         if dx * dx + dy * dy < args.near * args.near:
             near += 1
@@ -234,7 +359,10 @@ def main():
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as ofh:
         ofh.write("\n".join(out_lines) + "\n")
-    print(f"traffic lights written: {len(out_lines) - 1}")
+    print(f"traffic lights written: {len(out_lines) - (2 if not args.v1 else 1)}")
+    if not args.v1:
+        print(f"lines carrying a lens offset: {with_lens} of {len(kept)} "
+              f"(furthest light moved sideways off the mast: {max_move:.2f} m)")
     print(f"lights within {args.near:.0f} m (2D) of (2495, -1680): {near}")
 
 if __name__ == "__main__":

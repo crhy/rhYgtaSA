@@ -24,6 +24,60 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
 
 ### Traffic signals
 
+- **Fixed (n02): the claim that "the patched call site was never reached", and the source decision
+  that was built on it.** The two runs that installed the hook (2026-11-11 12:04, 13:03) logged
+  `records=0`, and `plugin/src/signalheads.h` turned that into "never reached" — which then flipped
+  any session that starts away from a signal onto the list for its whole run. The numbers say
+  otherwise: those log lines carry no `calls=` counter (s19 added it later), the 13:04 run's Wine
+  trace shows the stub entered with a real `CEntity*` (0x178DEFB4) and head index 1, and the game's
+  own **50.0 m** corona range — `push 0x42480000` at `0x49DCF3`, tested inside the callee at
+  `0x6FC22E` (`fld [esp+0x4c]; fmul [esp+0x4c]; fcompp; jnp 0x6FC4BB`), fading from 35.0 m
+  (`0x85F070`) to 50.0 m (`0x858B40`) at 1/15 per metre (`0x863E0C`) — is applied *after* our patch
+  point, so it never gated the recorder. What it does gate is what the game draws, and the player was
+  **79.1 m** from the nearest of the 1522 list entries: the game was drawing no signal-head corona
+  there either, so `records=0` proved nothing.
+- **Changed (n02): `rhyHeadsHealthy()` is range-aware.** It takes the 2D distance to the nearest
+  entry of the loaded list (`rhyNearestSignal2D`) and the game's range, and answers one of four
+  states — recorded, grace still open, nothing inside the range (keep the hook: the sample proves
+  nothing), or a signal was inside the range and still nothing appeared (fall back to the list). The
+  decision, the distance and the counters are logged once: `trafficlights: head source = … (nearest
+  signal 79.1 m, the game's own corona range 50 m, …)`. `source=list` stays the kill switch; the
+  grace is the new ini key `head_grace_ms=20000` (0 = decide immediately).
+- **Added (n02): list-mode bulbs move from the mast onto the lens.** The lamp table that supplies the
+  list's `headz` column always carried a *three* number head offset, and the file kept only the
+  height: `cj_traffic_light4`'s head is at `(-2.10, +0.10, +7.60)` in the model's own frame, so the
+  light sat **2.10 m sideways** from the lens. `tools/traffic_list.py` now writes
+  `# rhyremix traffic v2` — `x y z headz heading lensx lensy lensz` — where `heading` is the IPL
+  instance yaw (all 1524 raw traffic instances carry a pure Z-axis quaternion, so a yaw is exact) and
+  `lens*` is the model-local offset; the plugin rotates it by the heading and adds it
+  (`rhySignalLensPos`), the same rule the game applies to a head offset at `0x59C890`. **960 of the
+  1522** signals get an offset (the three table models plus `cj_traffic_light3` and `trafficlight1`,
+  borrowed across radius gaps of 0 and 4); `mtraffic1`/`mtraffic2` (562) keep the pole x/y because a
+  25-unit radius gap does not justify borrowing a mast arm. New key `lens_offset=1` (0 = the old
+  position).
+- **Kept (n02): the old file format reads byte for byte.** A four-column line parses to `heading 0,
+  lens (0,0,headz)` and lands exactly where it landed before; regenerating with `--v1` reproduces the
+  deployed `scripts/rhyremix_traffic.txt` byte for byte (`tests/test_traffic_list.py`).
+- **Measured (n02): the game's 2DFX head records are not in the game files.** The head loop in
+  `DisplayActualLight` is bounded by the model's 2DFX entry count (`0x49DBDD
+  movzx eax,BYTE PTR [edi+0xd]` … `0x49DC01 jle 0x49DE2C`, past the corona call), and a walk of every
+  entry of `models/gta3.img` (12964 `.dff`, 164 `.ipl`) finds no chunk with id `0x00010105` anywhere,
+  as does a search of the whole exe for the ASCII `2dFx` magic (0 hits). So the offsets cannot be read
+  from the game, and the list file has to carry them — which is what the two entries above do. The
+  28 call sites of the corona thunk, and the one that sits in `DisplayActualLight`, are enumerated in
+  `build/tmp/n02/corona_sites.py` and pinned in `tests/test_signal_hook.py`.
+- **Tests (n02):** `tests/signals_check.cpp` 124 → 150 checks (the four health states against the
+  79.1 m spawn and a 14.4 m tour stop, the nearest-signal distance, v1/v2 line parsing, the lens
+  position at 0/90/180/270 degrees and the 2.10 m it recovers); `tests/test_traffic_list.py` 15 → 35
+  (heading from a quaternion, rigid yaw rotation, the lens-offset borrowing rule and its radius gap,
+  the generated v2 file against the deployed v1 one); `tests/test_signal_hook.py` 28 → 33 (the
+  `push 50.0` at `0x49DCF3`, the 2DFX-count branch that skips the call, the callee's distance test at
+  `0x6FC22E`, and the 35.0/50.0/1-15 floats read out of `.rdata`).
+- **Known (n02): one stale gate assertion.** `scripts/check.sh` line 45 asserts the v1 column count
+  (`awk '!/^#/ && NF!=4'`) on the generated traffic list and now reports `FAIL 1522 malformed traffic
+  lines` for the eight-column file. Header rule 4 forbids editing `scripts/check.sh`, so it is
+  recorded instead: the assertion needs `NF!=4 && NF!=8`. `scripts/check-all.sh` — the gate this task
+  names — passes.
 - **Fixed (s30): the corona hook had not been installable since s19.** `rhySignalHookInstall()`
   asked the source question by calling `rhySignalPatchCheck(source, NULL, NULL, NULL, NULL)`, and
   that function answered a null-byte-window call with `kRhyPatchCallSite` — "the bytes are wrong".

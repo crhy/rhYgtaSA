@@ -95,6 +95,19 @@ If something in the update looks wrong, everything is reversible
   patch is only installed when the game's code at the patch site is exactly what we expect; otherwise
   the plugin logs why and falls back to the old pole-position mode. `source=list` puts the old mode
   back by hand at any time.
+- **When the fallback runs, the bulb now sits on the lens instead of the mast.** The signal list used
+  to carry a pole position and a head height, so a list-mode light hung 1.75–2.10 m sideways from the
+  lens it was meant to be a bulb on — the lamp table the height came from always carried that sideways
+  part, and the file threw it away. The list now also carries each signal's rotation and its head
+  offset, and the plugin turns the offset by the rotation before placing the light: **960 of the 1522
+  signals** move onto the lens. The other 562 (the big `mtraffic1`/`mtraffic2` masts) stay on the mast,
+  because no measured offset covers them. `lens_offset=0` puts the old position back; an old
+  four-column list file still works unchanged.
+- **A session that starts far from a signal no longer gives up on the head hook.** The plugin used to
+  switch to the list for the whole run if the hook had recorded nothing for 20 seconds — and the
+  default spawn is 79 m from the nearest signal, while the game itself draws no signal glow beyond 50 m,
+  so that test could never pass. It now only falls back when a signal is actually within that 50 m and
+  still nothing appeared, and it logs the distance and the decision once (`head source = ...`).
 
 ### Water
 
@@ -201,6 +214,10 @@ What each shot should prove, and the knobs to A/B if it does not, are in
   recognise, plus counters that make a bad run diagnosable. It is still the first thing to suspect if
   the game dies shortly after entering the level, and the way to take it out is one line:
   `[trafficlights] source=list` in `<game>/scripts/rhyremix.ini` (live, no restart).
+  To judge whether it works at all, be near a signal: the log's `head source = ...` line now says
+  how far the nearest one is, and the two tour stops (Marina, 1040,-1392 and 1068,-1428) have four
+  signals inside the distance the game itself draws them at. A run that starts at the Grove Street
+  spawn tells you nothing — the nearest signal there is 79 m away.
 - **The vegetation pack is still pending.** "V Vegetation Mix" froze the RTX copy; the three ranked
   causes are written up in [docs/VEGETATION.md](VEGETATION.md) and the fixes are now switchable
   steps, but no combination has been confirmed working in game yet. Install one step per run, and

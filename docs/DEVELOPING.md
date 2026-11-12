@@ -582,6 +582,56 @@ metre ball in a marble, sixty times over. `tests/signals_check.cpp` now bounds a
 signal's flux under 5% of a mid street luminaire's, computed from the same
 `rhyStreetFixture()`/`rhyRadianceForFlux()` the plugin uses.
 
+## Where a signal light goes when the hook is not the source (n02)
+
+Two decisions live in this area, and both were wrong in ways the numbers could
+reach offline.
+
+**1. Whether the hook is the source.** `rhyHeadsHealthy()` used to answer yes/no
+on one fact - "the hook has recorded nothing for 20 s" - and s30 justified that
+with "the patched call site was never reached". It was reached (the 2026-11-11
+13:04 crash's stack held a real `CEntity*` and head index 1), and the sample was
+taken 79.1 m from the nearest of the 1522 list entries while the game's own
+corona range is 50.0 m (`push 0x42480000` at `0x49DCF3`, tested in the callee at
+`0x6FC22E`, i.e. after our patch point, fading 35.0 m -> 50.0 m). So the sample
+proved nothing and the session spent its whole run on the list. The function now
+returns one of four states (`kRhyHeadSourceGame` / `Grace` / `Far` /
+`kRhyHeadSourceList`) from `(records, tick, now, graceMs, nearestSignalM,
+coronaRangeM)`, `rhyHeadKeepsHook()` turns that into the light layer, and the
+module logs the decision, the distance and the counters once when it changes.
+The distance comes from `rhyNearestSignal2D()` over the same `g_xy` array the
+selection uses; the range is `kRhySignalCoronaRangeM` in `signalheads.h`, and
+`tests/test_signal_hook.py` reads 50.0 / 35.0 / 1-15 out of the exe's `.rdata`
+so the constant cannot drift from the game.
+
+**2. Where a list-mode light goes.** The list file used to be four columns - a
+pole and a height - and the lamp table it was generated from carries a full
+model-local head offset (`cj_traffic_light4`: `-2.10, +0.10, +7.60`), so the
+bulb sat 2.10 m sideways of the lens. `tools/traffic_list.py` now writes
+
+```
+# rhyremix traffic v2
+x y z headz heading lensx lensy lensz
+```
+
+`heading` is the IPL instance yaw in degrees (every traffic instance in
+`gta3.img` carries a pure Z-axis quaternion, so a yaw is the whole rotation),
+`lens*` is the offset in the model's own frame, and the plugin rotates and adds:
+`rhySignalLensPos()` in `plugin/src/signalheads.cpp`, the same rule the game
+applies to a head offset at `0x59C890`. `lens_offset=0`, or a v1 four-column
+line, gives the old `x,y,z+headz` exactly - and `--v1` regenerates the old file
+byte for byte, which `tests/test_traffic_list.py` asserts against the deployed
+`scripts/rhyremix_traffic.txt`. Offsets are only borrowed across a `.ide` radius
+gap of 10 or less, which is why `mtraffic1`/`mtraffic2` (562 of 1522, gap 25)
+keep the pole x/y.
+
+`RhyTrafficLine`, `rhyTrafficParseLine` and `rhyTrafficLightPos` live in
+`signalheads.h/.cpp`, not `trafficlights.h/.cpp`, on purpose: `trafficlights.cpp`
+needs the Remix API headers and cannot be linked by a native test, and the
+parsing plus the position math is exactly what `tests/signals_check.cpp` has to
+measure (the lens position at four headings, the 2.10 m it recovers, and that a
+v1 line does not move).
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen

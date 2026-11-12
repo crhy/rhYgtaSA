@@ -115,15 +115,35 @@ streetlights: N active, N drawn this frame
 sky: sun elev=... rad=... | moon elev=... rad=... (hour=...)
 ```
 
-For the traffic signals (s01, s30) these lines decide everything:
+For the traffic signals (s01, s30, n02) these lines decide everything:
 
 ```
-config: traffic=1/1 source=game ... head_forward=0.15 | bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45 (resizes the game's 15.0 flare)
+config: traffic=1/1 source=game ... head_forward=0.15 head_grace=20000ms lens_offset=1 | bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45 (resizes the game's 15.0 flare)
 signalhook: patched 0x0049DD4C (was 'call 0x6FC580') -> stub at 0x65d55000, cap 256 heads per frame, corona resized to a bulb
 signalhook: signal-head corona radius 15.00 -> 0.45 game units at 0x0049DCDA (the game's own 30 m green flare becomes a lens-sized bulb; corona_radius=0 puts it back)
+trafficlights: loaded 1522 lights from rhyremix_traffic.txt (960 carry the v2 heading/lens columns, 562 are v1 'x y z headz' and stay on the mast)
+trafficlights: #0 at -269.8,1088.1,18.7 head z=26.3 heading=0 lens=(-2.10,+0.10,7.60) -> light -271.9,1088.2,26.3
+trafficlights: head source = hook: no signal inside the game's own corona range, so nothing to record (nearest signal 79.1 m, the game's own corona range 50 m, grace 20000 ms, 21000 ms since the hook went live) | hook: calls=0 records=0 dropped=0 bad=0 reentrant=0
 trafficlights: head light ok id=... phase=0 hash=... pos=-269.83,1088.12,26.30 radiance=2.16,1200.00,410.32 gain=1.00 radius=0.10 flux=67 (bulb: lens nits)
 trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0 reentrant=0
 ```
+
+The `loaded ... (N carry the v2 heading/lens columns, M are v1 ...)` line says
+which file the plugin actually read: a v1 `rhyremix_traffic.txt` (four columns)
+puts every list-mode light on the mast, a v2 one (eight columns, what
+`tools/traffic_list.py` writes now) puts it on the lens. The `#0 at ...` line
+shows both: `head z=` is the old pole-plus-height position, `-> light` is where
+the light really went after the heading and the lens offset.
+
+The `head source =` line is n02's, logged once whenever the answer changes. The
+hook is only given up on when a signal of the loaded list is inside the game's
+own corona range (**50 m**: the call site pushes 50.0 at 0x49DCF3 and the corona
+function tests it at 0x6FC22E, *after* our patch point, fading from 35 m), the
+`head_grace_ms` window has run out and still no record appeared. A session that
+starts 79.1 m from the nearest pole - the default spawn - keeps the hook and
+says so, because the game draws no signal-head corona out there either and
+`records=0` proves nothing. `source=list` in the ini is still the hard kill
+switch.
 
 The `hook:` counters are the whole diagnosis of the s19 hardening: `calls` is
 how often the patched instruction ran, `records` how many heads we kept,
@@ -152,10 +172,19 @@ makes a street go green instead of showing heads.
   different: before that the plugin refused to read them at all and logged that
   reason about a correct exe, on every run from s19 to 2026-11-12 - which is why
   no screenshot so far has ever shown a head light.
-- **`the corona hook is installed but has recorded no signal head in 20000 ms`**
-  (s30): the patch is in, the game never handed us a head, and the module is
-  lighting the list instead so the intersection is not dark. The line carries the
-  hook counters; `calls=0` means the patched instruction never ran at all.
+- **`head source = list: a signal was inside the game's own corona range and
+  still no head appeared`** (n02, replacing s30's `the corona hook is installed
+  but has recorded no signal head in 20000 ms`): the patch is in, a signal was
+  within 50 m of the player for the whole grace window, and the hook handed us
+  nothing, so the module is lighting the list instead and the intersection is not
+  dark. The line carries the distance and the hook counters: `calls=0` there
+  means the patched instruction never ran, `calls>0 records=0` means it ran and
+  we dropped what it gave us.
+- **`head source = hook: no signal inside the game's own corona range, so nothing
+  to record`**: nothing is wrong, the player is simply far from every signal in
+  the list (the default spawn is 79.1 m out). The hook stays live. To judge the
+  hook, drive to a signalised intersection - the tour's stops at 1040,-1392 and
+  1068,-1428 have four signals inside 50 m.
 - **`0 heads lit`** with `calls=0` means the hook is in but the game never
   reached it - the player is not near a signalised intersection, or it is daytime
   with `night_only=1`. With `calls>0` but `records=0` the hook *is* firing and we
@@ -332,7 +361,8 @@ few seconds - no restart.
 | Sky too bright at night | `rtx.conf`: `rtx.skyBrightness = 0.5` |
 | Signals too bright, or the street around them goes green | `[trafficlights] bulb_radiance=600` (the lens luminance in nits; 0 turns the signal lights off), and `bulb_radius` if the sphere itself is too big |
 | The glow around a head is still a street-wide wash, or has vanished altogether | `[trafficlights] corona_radius` is the radius we leave the game's own signal corona, which ships at 15.0 = a 30 m flare: 0.45 default, 1.0 for a bigger halo, 0 to leave the game's code alone |
-| A head is lit in a colour the game is not showing, or the lights land on the pole | `[trafficlights] source=list` puts back the pre-s01 behaviour (one light per pole, colour from a local cycle) and the log line says why the hook is off |
+| A head is lit in a colour the game is not showing, or the lights land on the pole | `[trafficlights] source=list` puts back the pre-s01 behaviour (one light per list line, colour from a local cycle) and the log line says why the hook is off |
+| A list-mode signal sits on the mast instead of on the lens | `[trafficlights] lens_offset=0` puts the old `x,y,z+headz` back; with 1 (the default) the light goes to `instance + rotate(heading, lens)`. It only moves when the file carries the v2 columns - the `loaded N lights ... (M carry the v2 heading/lens columns)` line says how many do, and mtraffic1/2 (562 of the 1522) stay on the mast on purpose: no measured offset covers an 85-unit model |
 | Game dies a few seconds after entering the level, `rhyremix.log` stops mid-frame, `rtx-remix/logs/crash-upload.log` says `type=CPU` | the signal-head hook is the first thing to suspect (it patches game code). `[trafficlights] source=list` takes it out; the log line then says `source=list, no code hook`. Fixed 2026-11-11: the stub had to supply the return address the deleted `call` would have pushed - see docs/FINDINGS.md |
 | A Wine trace (`logs/steam-12120.log`) full of `c0000005` at `eip=0x6FAAE0` during the level load | **not a crash and not ours**: Open Limit Adjuster's `Coronas = unlimited` moves the corona store to a reserved heap block and commits it page by page from its own vectored handler, so `CCoronas::Init`'s clear loop faults once per page - 478 first-chance exceptions, ~10 ms, handled. `Coronas = 0` in `modloader/OLA/III.VC.SA.LimitAdjuster.ini` makes them go away. See docs/FINDINGS.md |
 | Signals go out when you look away and come back slowly | `[trafficlights] head_ttl_ms=4000` (the game only registers the heads it draws, and a head with no corona for 2 s loses its light) |

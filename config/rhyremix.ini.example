@@ -73,6 +73,12 @@ source=game
 head_ttl_ms=2000
 head_normal=0
 head_forward=0.15
+; n02: grace before the module may fall back to the list, and the fallback needs a
+; signal inside the game's own 50.0 m corona range to count at all.
+head_grace_ms=20000
+; n02: 1 = list-mode lights go on the lens (v2 list file: heading + head offset),
+; 0 = the old pole position.
+lens_offset=1
 period=60
 max_lights=100
 max_distance=300

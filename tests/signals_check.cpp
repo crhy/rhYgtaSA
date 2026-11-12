@@ -451,15 +451,128 @@ int main() {
     // And the safety net that goes with it: the corona is only shrunk when the
     // hook is live, so a hook that is live but records nothing must not be left
     // as the only signal layer (that would be dark heads, worse than a flood).
-    ok("a hook that has recorded a head is the source", rhyHeadsHealthy(1, 0, 100000, 20000) == 1);
+    // n02 makes that test range-aware: "no records" only counts when a signal of
+    // the loaded list is inside the distance at which the game itself would draw
+    // one (50.0 m: push $0x42480000 at 0x49DCF3, tested inside the callee at
+    // 0x6FC22E). The 2026-11-11 runs sat 79.1 m from the nearest of the 1522
+    // poles, so their records=0 proved nothing and must not flip the source.
+    const float RANGE = static_cast<float>(kRhySignalCoronaRangeM);
+    ok("a hook that has recorded a head is the source",
+       rhyHeadsHealthy(1, 0, 100000, 20000, 14.4f, RANGE) == kRhyHeadSourceGame);
     ok("a fresh hook with no records yet gets the grace window",
-       rhyHeadsHealthy(0, 100000, 115000, 20000) == 1);
-    ok("a hook with no record after the grace window is not the source",
-       rhyHeadsHealthy(0, 100000, 125001, 20000) == 0);
+       rhyHeadsHealthy(0, 100000, 115000, 20000, 14.4f, RANGE) == kRhyHeadSourceGrace);
+    ok("a signal inside the game's corona range, grace over, no record: use the list",
+       rhyHeadsHealthy(0, 100000, 125001, 20000, 14.4f, RANGE) == kRhyHeadSourceList);
+    ok("the same silence 79.1 m from the nearest pole proves nothing: keep the hook",
+       rhyHeadsHealthy(0, 100000, 125001, 20000, 79.1f, RANGE) == kRhyHeadSourceFar);
+    ok("an empty list (FLT_MAX) is 'nothing to light', not 'the hook is broken'",
+       rhyHeadsHealthy(0, 100000, 125001, 20000, 3.402823466e+38f,
+                       RANGE) == kRhyHeadSourceFar);
+    ok("exactly at the game's range still counts as a signal being near",
+       rhyHeadsHealthy(0, 100000, 125001, 20000, RANGE, RANGE) == kRhyHeadSourceList);
+    ok("the grace still wins over the distance",
+       rhyHeadsHealthy(0, 100000, 115000, 20000, 79.1f, RANGE) == kRhyHeadSourceGrace);
+    ok("grace 0 decides on the spot (and still asks the distance question)",
+       rhyHeadsHealthy(0, 100000, 100001, 0, 14.4f, RANGE) == kRhyHeadSourceList);
     ok("the health check survives the GetTickCount() wraparound",
-       rhyHeadsHealthy(0, 0xFFFFFFF0u, 0x00000100u, 20000) == 1);
+       rhyHeadsHealthy(0, 0xFFFFFFF0u, 0x00000100u, 20000, 14.4f,
+                       RANGE) == kRhyHeadSourceGrace);
     ok("and it is cumulative: one head years ago keeps the source",
-       rhyHeadsHealthy(7, 100000, 10000000, 20000) == 1);
+       rhyHeadsHealthy(7, 100000, 10000000, 20000, 79.1f, RANGE) == kRhyHeadSourceGame);
+    ok("only the list decision gives the hook up",
+       rhyHeadKeepsHook(kRhyHeadSourceFar) == 1 &&
+       rhyHeadKeepsHook(kRhyHeadSourceGrace) == 1 &&
+       rhyHeadKeepsHook(kRhyHeadSourceGame) == 1 &&
+       rhyHeadKeepsHook(kRhyHeadSourceList) == 0);
+    ok("every decision says why in the log line",
+       std::strstr(rhyHeadSourceText(kRhyHeadSourceFar), "corona range") != nullptr &&
+       std::strstr(rhyHeadSourceText(kRhyHeadSourceList), "inside") != nullptr);
+
+    // ---- n02: the distance the decision is made on ----------------------
+    const float xy[] = { 1040.0f, -1392.0f, 1068.0f, -1428.0f, 2520.0f, -1729.2f };
+    const float atStop[] = { 1052.0f, -1400.0f };
+    // Three poles from the shipped list and a point on one of the tour's signal
+    // stops (the 11 Nov tour parked CJ at 1040,-1392 and 1068,-1428, where the
+    // nearest of the 1522 poles is 14.4 m and 13.5 m away).
+    ok("the nearest of three poles, measured exactly (2D)",
+       std::fabs(rhyNearestSignal2D(xy, 3, atStop) -
+                 std::sqrt(12.0f * 12.0f + 8.0f * 8.0f)) < 0.001f);
+    ok("and it is the near one, not the far one",
+       rhyNearestSignal2D(xy, 3, atStop) < 15.0f);
+    ok("an empty list reads as 'nothing near', not 'a signal is here'",
+       rhyNearestSignal2D(nullptr, 0, atStop) > 1e30f);
+    ok("no player position is also 'nothing near'",
+       rhyNearestSignal2D(xy, 3, nullptr) > 1e30f);
+    ok("one pole, and only that pole",
+       std::fabs(rhyNearestSignal2D(xy, 1, atStop) - 14.4222f) < 0.001f);
+
+    // ---- n02: the lens, not the mast -----------------------------------
+    // Lines copied out of the generated rhyremix_traffic.txt. This one is a
+    // cj_traffic_light4 instance (720 of the 1522) heading 0, and the lamp table
+    // says its head sits at (-2.10, +0.10, +7.60) in the model's own frame.
+    RhyTrafficLine v2, v1, five, junk;
+    ok("a v2 line parses all eight columns",
+       rhyTrafficParseLine("-269.781 1088.109 18.711 7.60 0.0 -2.100 +0.100 +7.600",
+                           &v2));
+    ok("the v2 columns are kept", v2.hasLens == 1 && v2.heading == 0.0f &&
+       v2.lens[0] == -2.100f && v2.lens[1] == 0.100f && v2.lens[2] == 7.600f);
+    ok("column 4 is still the v1 headz", v2.headz == 7.60f);
+    ok("a v1 line still parses, and carries no lens columns",
+       rhyTrafficParseLine("-269.781 1088.109 18.711 7.60", &v1) && v1.hasLens == 0);
+    ok("a v1 line's lens is straight up the mast, so nothing moves",
+       v1.lens[0] == 0.0f && v1.lens[1] == 0.0f && v1.lens[2] == 7.60f);
+    ok("a heading with no lens columns is honoured (five numbers)",
+       rhyTrafficParseLine("1 2 3 4 90.0", &five) && five.heading == 90.0f &&
+       five.hasLens == 0);
+    ok("a comment, a blank line and a half-written v2 line are refused",
+       !rhyTrafficParseLine("# rhyremix traffic v2", &junk) &&
+       !rhyTrafficParseLine("", &junk) && !rhyTrafficParseLine("1 2 3 4 5 6", &junk));
+
+    float lensPos[3], polePos[3];
+    rhyTrafficLightPos(v2, 0, polePos);
+    rhyTrafficLightPos(v2, 1, lensPos);
+    ok("lens_offset=0 is the old pole position, byte for byte",
+       polePos[0] == v2.x && polePos[1] == v2.y && polePos[2] == v2.z + v2.headz);
+    ok("the lens is the pole plus the offset rotated by the heading (0 deg here)",
+       std::fabs(lensPos[0] - (v2.x - 2.10f)) < 1e-4f &&
+       std::fabs(lensPos[1] - (v2.y + 0.10f)) < 1e-4f &&
+       std::fabs(lensPos[2] - (v2.z + 7.60f)) < 1e-4f);
+    const float mx = lensPos[0] - polePos[0], my = lensPos[1] - polePos[1];
+    ok("which is 2.10 m off the mast - the part the v1 file threw away",
+       std::fabs(std::sqrt(mx * mx + my * my) - 2.1024f) < 0.001f);
+    RhyTrafficLine old = v1;
+    float a1[3], a2[3];
+    rhyTrafficLightPos(old, 0, a1);
+    rhyTrafficLightPos(old, 1, a2);
+    ok("a v1 file gives the same light either way (the compatibility rule)",
+       a1[0] == a2[0] && a1[1] == a2[1] && a1[2] == a2[2]);
+
+    // The heading is not decoration: the same offset points four different ways.
+    RhyTrafficLine rot = v2;
+    rot.x = 0.0f; rot.y = 0.0f; rot.z = 0.0f;
+    const float wantXY[4][2] = { { -2.10f, 0.10f }, { -0.10f, -2.10f },
+                               { 2.10f, -0.10f }, { 0.10f, 2.10f } };
+    const float deg[4] = { 0.0f, 90.0f, 180.0f, 270.0f };
+    bool rotOk = true, rigid = true;
+    for (int i = 0; i < 4; ++i) {
+        rot.heading = deg[i];
+        float p[3];
+        rhyTrafficLightPos(rot, 1, p);
+        if (std::fabs(p[0] - wantXY[i][0]) > 1e-3f ||
+            std::fabs(p[1] - wantXY[i][1]) > 1e-3f ||
+            std::fabs(p[2] - 7.60f) > 1e-4f) {
+            rotOk = false;
+        }
+        // A rotation is rigid: the lens stays the same distance from the pole.
+        const float d = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        if (std::fabs(d - std::sqrt(2.10f * 2.10f + 0.01f + 7.60f * 7.60f)) > 1e-3f) {
+            rigid = false;
+        }
+    }
+    ok("the offset rotates with the heading (0/90/180/270 deg)", rotOk);
+    ok("and the rotation is rigid: the head stays 7.88 m from the pole base", rigid);
+    ok("the game's own corona range is the 50.0 m the exe pushes",
+       kRhySignalCoronaRangeM == 50 && kRhySignalCoronaFadeM == 35);
 
     // ---- s30: the bulb - radius and intensity of the light WE create -----
     // The 2026-11-12 run created `radius=0.10 radiance=9.64,5400.00,1845.57`:

@@ -52,17 +52,51 @@ int rhySignalPhaseFromGameRgb(int r, int g, int b);
 // wraparound-safe form.
 int rhyHeadStale(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs);
 
-// s30: "the hook is installed" is not "the hook produces heads". The 2026-11-11
-// 13:03 run installed it and read records=0: the patched call site was never
-// reached in the seconds it logged. That matters more now than it did then,
-// because the same install also resizes the game's own signal corona (see
-// rhySignalCoronaRadius): if we shrink the game's flare and then light nothing,
-// the signals go dark, which is worse than the flood. So the module falls back
-// to source=list when the hook has been live for graceMs without a single
-// record, and says so in the log. Cumulative records, not per-frame: a drive
-// through a signal-free district must not flip the source back and forth.
+// n02: "the hook is installed" is not "the hook produces heads", and "the hook
+// produced nothing" is not "the hook is dead" either. s30 read the 2026-11-11
+// 13:03 line `records=0` as "the patched call site was never reached"; the
+// numbers in .strata/notes-n02-signal-bulbs-at-the-lens.md say otherwise (that
+// run's log line has no calls= counter at all, its Wine trace shows the stub
+// entered with a real CEntity* and head index 1, and the recorder was being
+// handed garbage by our own prologue). What that sample DOES show is the thing
+// the health test has to respect: the player was 79.1 m from the nearest signal
+// in the loaded list, and the game's own corona range is 50.0 m, so a session
+// that starts signal-free can never prove anything about the hook.
+//
+// So the test is range-aware. Fall back to source=list only when a signal is
+// actually inside the game's corona range, the grace window has run out and
+// still no record appeared. Otherwise keep the hook and say why. This matters
+// more than it did in s30 because the same install also resizes the game's own
+// signal corona (see rhySignalCoronaRadius): shrinking the game's flare and
+// then lighting nothing leaves the signals dark, which is worse than the flood.
+// Cumulative records, not per-frame: a drive through a signal-free district must
+// not flip the source back and forth.
+enum RhyHeadSource {
+    kRhyHeadSourceGame = 0,   // keep the hook: it has recorded a head
+    kRhyHeadSourceGrace = 1,  // keep the hook: the grace window has not run out
+    kRhyHeadSourceFar = 2,    // keep the hook: nothing in the loaded list is inside
+                              // the game's own corona range, so "no records" is
+                              // not evidence - the game itself draws no head there
+    kRhyHeadSourceList = 3    // fall back to the list: a signal WAS inside the
+                              // range, the grace ran out, still no record
+};
+
+// nearestSignalM: 2D distance to the nearest entry of the loaded traffic list
+// (rhyNearestSignal2D below; FLT_MAX when the list is empty). coronaRangeM: the
+// game's own range, normally kRhySignalCoronaRangeM. graceMs 0 = decide now.
 int rhyHeadsHealthy(unsigned records, uint32_t installedTick, uint32_t nowTick,
-                    uint32_t graceMs);
+                    uint32_t graceMs, float nearestSignalM, float coronaRangeM);
+
+// 1 when the decision keeps the hook (anything but kRhyHeadSourceList).
+int rhyHeadKeepsHook(int decision);
+
+// The decision name, for the log line.
+const char* rhyHeadSourceText(int decision);
+
+// The 2D distance to the nearest entry of a flat x,y pair array (the same array
+// the traffic module keeps for its selection). FLT_MAX when there is none, so a
+// missing list reads as "nothing to light" rather than "a signal is right here".
+float rhyNearestSignal2D(const float* xy, unsigned nPairs, const float* p);
 
 // Where to put the Remix light for this head.
 //
@@ -75,6 +109,53 @@ int rhyHeadsHealthy(unsigned records, uint32_t installedTick, uint32_t nowTick,
 // test the "just in front of the lens" variant in game.
 void rhyHeadLightPos(const RhySignalHead* h, const float* normal,
                      float forward, float* out);
+
+// ---------------------------------------------------------------------------
+// n02: the lens of a list-mode light.
+//
+// The list file's four original columns are a pole: instance origin plus a head
+// height. The head is not on the pole - the lamp table that supplies headz
+// carries a full model-local offset (cj_traffic_light4: -2.10, +0.10, +7.60, so
+// the lens sits 2.10 m sideways of the mast), and the IPL instance carries a
+// rotation that says which way that sideways points. Every traffic instance in
+// gta3.img uses a pure Z-axis quaternion (measured: 1524 of 1524, |q| = 1 and
+// x = y = 0), so a yaw is exact, and rotating the offset through it is the same
+// rule the game applies to a 2DFX entry at 0x59C890
+// (out = m->right*e.x + m->up*e.y + m->at*e.z + m->pos).
+//
+// origin: the instance position (x,y,z). headingDeg: the instance yaw, degrees.
+// local: the head offset in the model's own frame. out: where the lens is.
+// With heading 0 and local = (0,0,headz) this is exactly the old
+// "pole x,y, z+headz", which is what a v1 (4-column) file still gives.
+// ---------------------------------------------------------------------------
+void rhySignalLensPos(const float* origin, float headingDeg, const float* local,
+                      float* out);
+
+// ---------------------------------------------------------------------------
+// n02: the list file, in this header rather than trafficlights.h because the
+// parsing and the position math are pure and the native test (tests/
+// signals_check.cpp) links this file, not trafficlights.cpp - which needs the
+// Remix API headers and cannot be built off Windows.
+//
+// One parsed line of rhyremix_traffic.txt. v1 ("x y z headz") and v2
+// ("x y z headz heading lensx lensy lensz") both parse; a v1 line gets heading 0
+// and lens = (0,0,headz), which reproduces the old position exactly.
+// ---------------------------------------------------------------------------
+struct RhyTrafficLine {
+    float x, y, z;      // the instance origin (the pole base)
+    float headz;        // column 4: head height above the origin, both formats
+    float heading;      // degrees, the instance yaw; 0 when the file has no column
+    float lens[3];      // head offset in the model's own frame
+    int hasLens;        // 1 when the line carried the v2 columns
+};
+
+// Parses one line. Returns false on malformed input: fewer than four numbers, or
+// six or seven (a half-written v2 line is a broken file, not a light).
+bool rhyTrafficParseLine(const char* line, RhyTrafficLine* out);
+
+// Where a list-mode light goes for one line: the lens when the file carries the
+// heading and offset columns and useLens is set, the pole plus headz otherwise.
+void rhyTrafficLightPos(const RhyTrafficLine& L, int useLens, float* out);
 
 // Remix keys lights by hash, so a head's hash has to be stable per (head,
 // phase) and different between them. Mixed rather than added: entity pointers
@@ -177,6 +258,18 @@ enum : uint32_t {
     kRhySignalCoronaPush = 0x49DCD9,
     kRhySignalCoronaRadiusImm = 0x49DCDA
 };
+
+// The distance the game itself uses for a signal-head corona, from the same call
+// site: argument 8 is pushed as 50.0f at 0x49DCF3, and the real corona function
+// 0x6FC180 tests d^2 against range^2 at 0x6FC22E..0x6FC23D (`jnp 0x6FC4BB`, give
+// up) before it writes anything, then fades the alpha from 35.0 m (the float at
+// 0x85F070) to 50.0 m (0x858B40), 1/15 per metre (0x863E0C). Beyond 50 m the game
+// draws no signal-head corona at all.
+//
+// The test is in the CALLEE, after the instruction we patch: our recorder is not
+// gated by it, the game's own drawing is. That is the difference n02 had to get
+// straight before "records=0 at the spawn" could be read as anything.
+enum { kRhySignalCoronaFadeM = 35, kRhySignalCoronaRangeM = 50 };
 
 // The 21-dword argument block of that call, as the callee reads it (position at
 // 6, r/g/b at 2/3/4, alpha at 5, strength at 7, range at 8, corona type at 9,

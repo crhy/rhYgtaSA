@@ -229,6 +229,19 @@ struct RhyConfig {
     int traffic_head_ttl_ms;  // a head with no corona for this long loses its light
     float traffic_head_forward;  // metres to move the light along head_normal
     int traffic_head_normal;     // 1 = use the entity matrix's "at" axis; 0 = no offset
+    // n02: how long the hook may be live without recording a head before the
+    // module considers falling back to the list - and the fallback only happens
+    // when a signal of the loaded list is actually inside the game's own corona
+    // range (50.0 m: push $0x42480000 at 0x49DCF3, tested inside the callee at
+    // 0x6FC22E). A session that starts 79.1 m from the nearest pole - the default
+    // spawn - has no such signal, so it keeps the hook instead of spending the
+    // whole run on the mast. 0 = decide immediately, no grace.
+    int traffic_head_grace_ms;
+    // n02: 1 = put a list-mode light on the LENS (rotate the file's model-local
+    // head offset by the instance heading and add it), 0 = the old pole position
+    // x,y,z+headz. Only a v2 rhyremix_traffic.txt carries those columns; a v1
+    // file gives the same position either way.
+    int traffic_lens_offset;
 
     // --- s28: lighting must never change instantly ([fade] section) ---------
     // Remix bakes a light's radiance at CreateLight time, so a fade is a

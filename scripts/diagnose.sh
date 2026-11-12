@@ -34,9 +34,18 @@ say "active vs drawn (active>0 with drawn=0 means the lights exist only in the p
 # look absent on exactly the runs where the hook was live.
 ts_grep '(streetlights|trafficlights)(\[[^]]*\])?: [0-9]+ (active|heads lit)' 4 || echo "no module lines"
 
-say "signal heads (s01/s19/s30: the patch, the bulb, the hook's own counters; reentrant must stay 0)"
-ts_grep 'signalhook: |trafficlights\source=game\]|corona radius|bulb radius=|hook live but no head' 5 || \
+say "signal heads (s01/s19/s30/n02: the patch, the bulb, the hook's own counters, the source decision; reentrant must stay 0)"
+ts_grep 'signalhook: |trafficlights\source=game\]|corona radius|bulb radius=|hook live but no head|head source =|loaded [0-9]+ lights' 6 || \
   echo "no signal lines: no signalised intersection in range, daytime with night_only=1, or source=list"
+if ts_grep 'head source = list' 1; then
+  echo "  ^ the hook was given up on: a signal was inside the game's own 50 m corona range and still no head"
+  echo "    appeared. 'nearest signal X m' on that line is the number to believe; 79.1 m is the default spawn,"
+  echo "    where the game draws no signal corona either, and then the hook is kept, not dropped."
+fi
+if ts_grep 'are v1 .x y z headz. and stay on the mast' 1; then
+  echo "  ^ the installed rhyremix_traffic.txt is the old four-column file: regenerate it with"
+  echo "    tools/traffic_list.py (v2 adds heading + lens offset, which is what puts the bulb on the lens)."
+fi
 if ts_grep 'the bytes at 0x49DD4C are not' 2; then
   echo "  ^ on the shipped exe that line is a plugin bug, not a game change: the bytes there are E8 2F E8 25 00 (fixed in s30)"
 fi

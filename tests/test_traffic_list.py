@@ -122,5 +122,186 @@ class TestHeadzFor(unittest.TestCase):
             traffic_list.headz_for(1315, 64.0, table, self.RADII), 7.6)
 
 
+class TestHeading(unittest.TestCase):
+    """The IPL instance rotation, as the yaw the v2 file ships.
+
+    Every traffic instance in gta3.img carries a pure Z-axis quaternion (measured
+    over all 1524 raw instances: x = y = 0, |q| = 1), so a yaw is the whole
+    rotation - which is what makes a heading column plus a model-local offset
+    enough to put a light on a lens.
+    """
+
+    def qz(self, deg):
+        """A pure Z-axis quaternion for a yaw of deg degrees."""
+        import math
+        h = math.radians(deg) / 2.0
+        return (0.0, 0.0, math.sin(h), math.cos(h))
+
+    def test_cardinal_yaws(self):
+        for deg in (0.0, 90.0, 180.0, 270.0):
+            self.assertAlmostEqual(traffic_list.heading_deg(self.qz(deg)), deg, 1)
+
+    def test_wraps_to_0_360(self):
+        self.assertAlmostEqual(traffic_list.heading_deg(self.qz(-90.0)), 270.0, 1)
+
+    def test_identity(self):
+        self.assertAlmostEqual(traffic_list.heading_deg((0.0, 0.0, 0.0, 1.0)), 0.0, 1)
+
+    def test_the_real_mix_of_the_shipped_file(self):
+        # 1304 of the 1522 instances are cardinal, 42 are 45-degree, 176 other:
+        # the column is real data, not a constant.
+        self.assertAlmostEqual(traffic_list.heading_deg(self.qz(33.75)), 33.7, 1)  # round() is half-to-even
+
+
+class TestRotateYaw(unittest.TestCase):
+    OFFSET = (-2.1, 0.1, 7.6)     # cj_traffic_light4's head, model-local
+
+    def test_cardinal_rotations(self):
+        want = {0.0: (-2.1, 0.1), 90.0: (-0.1, -2.1),
+                180.0: (2.1, -0.1), 270.0: (0.1, 2.1)}
+        for deg, (x, y) in want.items():
+            out = traffic_list.rotate_yaw(self.OFFSET, deg)
+            self.assertAlmostEqual(out[0], x, 3)
+            self.assertAlmostEqual(out[1], y, 3)
+            self.assertAlmostEqual(out[2], 7.6, 6)   # a yaw leaves z alone
+
+    def test_rotation_is_rigid(self):
+        import math
+        for deg in (0.0, 17.0, 90.0, 137.5, 359.0):
+            out = traffic_list.rotate_yaw(self.OFFSET, deg)
+            self.assertAlmostEqual(math.sqrt(sum(v * v for v in out)),
+                                   math.sqrt(sum(v * v for v in self.OFFSET)), 6)
+
+    def test_the_sideways_part_is_what_the_v1_file_lost(self):
+        import math
+        x, y, _z = self.OFFSET
+        self.assertAlmostEqual(math.hypot(x, y), 2.1024, 3)
+
+
+class TestLensOffsetFor(unittest.TestCase):
+    TABLE = {
+        1350: [(-2.1, 0.1, 7.6)],    # cj_traffic_light4, r=60
+        1351: [(-1.75, 0.0, 6.0)],   # cj_traffic_light5, r=60
+        3855: [(-2.1, 0.12, 7.65)],  # gay_traffic_light, r=50
+    }
+    RADII = {1350: ("cj_traffic_light4", 60.0),
+             1351: ("cj_traffic_light5", 60.0),
+             3855: ("gay_traffic_light", 50.0)}
+
+    def test_a_covered_model_gets_its_own_offset(self):
+        self.assertEqual(traffic_list.lens_offset_for(1350, 60.0, self.TABLE,
+                                                      self.RADII),
+                         (-2.1, 0.1, 7.6))
+
+    def test_a_nearby_radius_borrows_the_offset(self):
+        # trafficlight1 (r=64): 4 units from the 60-unit models, the same lamp
+        # family, so the sideways arm is worth keeping.
+        self.assertEqual(traffic_list.lens_offset_for(1315, 64.0, self.TABLE,
+                                                      self.RADII),
+                         (-2.1, 0.1, 7.6))
+
+    def test_a_distant_radius_does_not_borrow_the_arm(self):
+        # mtraffic1 (r=85) is 25 units out: a height can be borrowed across that,
+        # a 2 m mast arm cannot. None means "keep the pole x/y".
+        self.assertIsNone(traffic_list.lens_offset_for(1283, 85.0, self.TABLE,
+                                                       self.RADII))
+        # ... and the gap is a stated number, not a mood
+        self.assertIsNotNone(traffic_list.lens_offset_for(1283, 85.0, self.TABLE,
+                                                          self.RADII, 25.0))
+
+    def test_a_radius_tie_takes_the_head_furthest_off_the_mast(self):
+        # cj_traffic_light3 (r=60) ties with both 60-unit table models; 1350's
+        # head is 2.10 m sideways, 1351's 1.75 m.
+        self.assertEqual(traffic_list.lens_offset_for(1352, 60.0, self.TABLE,
+                                                      self.RADII),
+                         (-2.1, 0.1, 7.6))
+
+    def test_no_table_no_offset(self):
+        self.assertIsNone(traffic_list.lens_offset_for(1315, 64.0, {}, self.RADII))
+
+    def test_the_offset_is_the_highest_head_of_the_model(self):
+        table = {1350: [(-1.0, 0.0, 4.0), (-2.1, 0.1, 7.6)]}
+        self.assertEqual(traffic_list.lens_offset_for(1350, 60.0, table,
+                                                      {1350: ("x", 60.0)}),
+                         (-2.1, 0.1, 7.6))
+
+    def test_headz_and_the_offset_agree_on_z(self):
+        for mid, radius in ((1350, 60.0), (1315, 64.0), (1352, 60.0)):
+            off = traffic_list.lens_offset_for(mid, radius, self.TABLE, self.RADII)
+            self.assertAlmostEqual(off[2],
+                                   traffic_list.headz_for(mid, radius, self.TABLE,
+                                                          self.RADII))
+
+
+class TestDedupeCarriesTheRotation(unittest.TestCase):
+    def test_three_tuples_pass_through(self):
+        insts = [(1350, (10.0, 20.0, 3.0), (0.0, 0.0, 0.0, 1.0)),
+                 (1350, (10.05, 20.0, 3.0), (0.0, 0.0, 0.7071, 0.7071)),
+                 (1350, (40.0, 20.0, 3.0), (0.0, 0.0, 1.0, 0.0))]
+        kept = traffic_list.dedupe(insts)
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(kept[0][2], (0.0, 0.0, 0.0, 1.0))
+        self.assertEqual(kept[1][2], (0.0, 0.0, 1.0, 0.0))
+
+
+GAME = "/media/rhy/data/Gamez/GTASA-RTX"
+
+
+class TestGeneratedFile(unittest.TestCase):
+    """End to end, against the read-only game folder: the v2 file the plugin will
+    read, and the rule that a v1 file still means exactly what it meant before.
+    Skipped when the game folder is not mounted."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os
+        import subprocess
+        import sys
+        if not os.path.isdir(GAME):
+            raise unittest.SkipTest(f"no game folder at {GAME}")
+        cls.lines = {}
+        for tag, extra in (("v2", []), ("v1", ["--v1"])):
+            out = os.path.join(os.environ.get("TMPDIR", "/tmp"),
+                               f"n02-traffic-{tag}.txt")
+            r = subprocess.run(
+                [sys.executable, os.path.join("tools", "traffic_list.py"),
+                 "--game", GAME, "--out", out] + extra,
+                capture_output=True, text=True)
+            assert r.returncode == 0, r.stdout + r.stderr
+            with open(out) as fh:
+                cls.lines[tag] = [ln.split() for ln in fh.read().splitlines()
+                                  if ln.strip() and not ln.startswith("#")]
+
+    def test_v2_header_and_eight_columns(self):
+        self.assertEqual(len(self.lines["v2"]), len(self.lines["v1"]))
+        self.assertTrue(all(len(f) == 8 for f in self.lines["v2"]),
+                        "a v2 line must carry x y z headz heading lensx lensy lensz")
+        self.assertTrue(all(len(f) == 4 for f in self.lines["v1"]))
+
+    def test_the_first_four_columns_are_unchanged(self):
+        """The compatibility rule: a v1 reader (or lens_offset=0) sees the same
+        file it saw before n02, line for line in the same order."""
+        self.assertEqual([f[:4] for f in self.lines["v2"]], self.lines["v1"])
+
+    def test_headings_are_a_real_mix(self):
+        heads = {round(float(f[4])) for f in self.lines["v2"]}
+        self.assertGreater(len(heads), 4,
+                           f"only {len(heads)} distinct headings: the column is "
+                           "not carrying the IPL rotations")
+        self.assertTrue(all(0.0 <= float(f[4]) < 360.0 for f in self.lines["v2"]))
+
+    def test_the_lens_offset_is_the_lamp_tables(self):
+        # cj_traffic_light4 (720 of the 1522 instances) is covered by the table.
+        offs = {tuple(round(float(v), 2) for v in f[5:8]) for f in self.lines["v2"]}
+        self.assertIn((-2.1, 0.1, 7.6), offs)
+        # and no line moves the light more than the widest arm in the table
+        for f in self.lines["v2"]:
+            self.assertLessEqual(abs(float(f[5])) + abs(float(f[6])), 3.0)
+
+    def test_headz_equals_the_offset_height(self):
+        for f in self.lines["v2"]:
+            self.assertAlmostEqual(float(f[3]), float(f[7]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

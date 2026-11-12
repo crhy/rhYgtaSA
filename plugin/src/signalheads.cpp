@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #include "lamps.h"  // s30: rhySignalLensRgb() for the bulb model
@@ -89,16 +90,123 @@ int rhyHeadStale(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs) {
 }
 
 int rhyHeadsHealthy(unsigned records, uint32_t installedTick, uint32_t nowTick,
-                    uint32_t graceMs) {
+                    uint32_t graceMs, float nearestSignalM, float coronaRangeM) {
     if (records > 0u) {
-        return 1;  // it has produced a head at some point: keep using it
+        return kRhyHeadSourceGame;  // it has produced a head at some point: keep it
     }
-    if (!(graceMs > 0u)) {
-        return 0;
+    // Still inside the grace window: the player may simply not have looked at a
+    // signal yet. Unsigned subtraction is the wraparound-safe form.
+    if (graceMs > 0u && (nowTick - installedTick) <= graceMs) {
+        return kRhyHeadSourceGrace;
     }
-    // Still inside the grace window: the player may simply not have seen a
-    // signal yet (the 2026-11-11 13:03 run logged 12 seconds at the spawn).
-    return (nowTick - installedTick) > graceMs ? 0 : 1;
+    // The grace ran out with nothing recorded. Before that counts as a failure,
+    // ask whether there was anything to record: beyond the game's own corona
+    // range it draws no signal-head corona either, so a session 79.1 m from the
+    // nearest pole (the 2026-11-11 spawn: nearest 79.1 m, range 50.0 m) is not a
+    // test of the hook at all. NaN / FLT_MAX / an empty list all land here.
+    if (!(nearestSignalM <= coronaRangeM)) {
+        return kRhyHeadSourceFar;
+    }
+    return kRhyHeadSourceList;
+}
+
+int rhyHeadKeepsHook(int decision) {
+    return decision == kRhyHeadSourceList ? 0 : 1;
+}
+
+const char* rhyHeadSourceText(int decision) {
+    switch (decision) {
+        case kRhyHeadSourceGame:  return "hook: it has recorded heads";
+        case kRhyHeadSourceGrace: return "hook: grace window still open";
+        case kRhyHeadSourceFar:   return "hook: no signal inside the game's own "
+                                        "corona range, so nothing to record";
+        case kRhyHeadSourceList:  return "list: a signal was inside the game's own "
+                                        "corona range and still no head appeared";
+        default:                  return "unknown";
+    }
+}
+
+float rhyNearestSignal2D(const float* xy, unsigned nPairs, const float* p) {
+    // FLT_MAX, not 0, when there is nothing to measure: the caller reads this as
+    // "no signal is near", and a 0 would say the opposite.
+    float best2 = 3.402823466e+38f;  // FLT_MAX without pulling <cfloat> into the plugin
+    if (!xy || !p || nPairs == 0u) {
+        return best2;
+    }
+    for (unsigned i = 0; i < nPairs; ++i) {
+        const float dx = xy[2 * i] - p[0];
+        const float dy = xy[2 * i + 1] - p[1];
+        const float d2 = dx * dx + dy * dy;
+        if (d2 < best2) {
+            best2 = d2;
+        }
+    }
+    return std::sqrt(best2);
+}
+
+void rhySignalLensPos(const float* origin, float headingDeg, const float* local,
+                      float* out) {
+    if (!origin || !local || !out) {
+        return;
+    }
+    // Pure yaw: every traffic instance in gta3.img is a Z-axis quaternion, so the
+    // model's right/up columns are (cos,sin,0) and (-sin,cos,0) and the offset's
+    // z is untouched - the same three columns 0x59C890 multiplies a 2DFX entry by.
+    const float rad = headingDeg * 0.0174532925199433f;
+    const float c = std::cos(rad);
+    const float s = std::sin(rad);
+    out[0] = origin[0] + local[0] * c - local[1] * s;
+    out[1] = origin[1] + local[0] * s + local[1] * c;
+    out[2] = origin[2] + local[2];
+}
+
+bool rhyTrafficParseLine(const char* line, RhyTrafficLine* out) {
+    if (!line || !out) {
+        return false;
+    }
+    while (*line == ' ' || *line == '\t') {
+        ++line;
+    }
+    if (*line == '#' || *line == '\r' || *line == '\n' || *line == '\0') {
+        return false;
+    }
+    float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
+    float heading = 0.0f, lx = 0.0f, ly = 0.0f, lz = 0.0f;
+    // One sscanf, four or eight numbers. 4 = a v1 file, read exactly as before
+    // n02; 5 = heading only (the lens columns were left out); 8 = a full v2 line.
+    // 6 or 7 means a half-written v2 line, which is a broken file rather than a
+    // light, so it is refused instead of guessed at.
+    const int n = std::sscanf(line, "%f %f %f %f %f %f %f %f",
+                              &a, &b, &c, &d, &heading, &lx, &ly, &lz);
+    if (n != 4 && n != 5 && n != 8) {
+        return false;
+    }
+    out->x = a;
+    out->y = b;
+    out->z = c;
+    out->headz = d;
+    out->hasLens = (n == 8) ? 1 : 0;
+    out->heading = (n >= 5) ? heading : 0.0f;
+    out->lens[0] = (n == 8) ? lx : 0.0f;
+    out->lens[1] = (n == 8) ? ly : 0.0f;
+    out->lens[2] = (n == 8) ? lz : d;  // v1: the head is straight up the mast
+    return true;
+}
+
+// Where the light goes. With the v2 columns and lens_offset=1 the head offset is
+// rotated by the instance heading first - the game's own rule for a head offset
+// (0x59C890) - and a pure yaw is exact here because every traffic instance in
+// gta3.img carries a Z-axis quaternion. Without them this is the pole plus
+// headz, exactly as it shipped before n02.
+void rhyTrafficLightPos(const RhyTrafficLine& L, int useLens, float* out) {
+    if (useLens) {
+        const float origin[3] = { L.x, L.y, L.z };
+        rhySignalLensPos(origin, L.heading, L.lens, out);
+        return;
+    }
+    out[0] = L.x;
+    out[1] = L.y;
+    out[2] = L.z + L.headz;
 }
 
 // ---------------------------------------------------------------- geometry

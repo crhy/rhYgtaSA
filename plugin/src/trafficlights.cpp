@@ -23,13 +23,13 @@
 #include "signalheads.h"
 #include "signalhook.h"
 
-// One traffic light from rhyremix_traffic.txt: "x y z headz".
-struct TrafficLight {
-    float x;
-    float y;
-    float z;
-    float headz;  // metres above the instance origin where the lamp head sits
-};
+// One traffic light from rhyremix_traffic.txt: exactly the parsed line, so the
+// v1/v2 handling lives in one place (rhyTrafficParseLine, signalheads.h).
+// v1 lines are "x y z headz"; v2 lines add "heading lensx lensy lensz" (the
+// instance yaw in degrees and the head offset in the model's own frame), which
+// is what moves the light from the mast onto the lens. See tools/traffic_list.py
+// for how the columns are made.
+using TrafficLight = RhyTrafficLine;
 
 static std::vector<TrafficLight> g_lights;
 static std::vector<float> g_xy;  // x,y pairs of g_lights, for rhySelectLights
@@ -100,10 +100,14 @@ static unsigned g_headSwaps = 0;     // recreations caused by a colour change
 static unsigned g_headExpired = 0;   // heads that stopped registering coronas
 static bool g_hookTried = false;     // install attempted at least once
 static DWORD g_hookTick = 0;         // when the hook went live
-static bool g_hookSilent = false;    // the "installed but records nothing" case
+// n02: the last head-source decision we logged (rhyHeadsHealthy's enum, -1 = not
+// decided yet). The decision is logged when it changes, once, with the distance
+// that made it - not every frame, and not as a bare "records=0".
+static int g_hookDecision = -1;
 
-// s30: how long the hook may live without producing a single head before the
-// module stops treating it as the source of heads. See rhyHeadsHealthy().
+// n02: how long the hook may live without producing a single head before the
+// module asks whether there was anything to produce. See rhyHeadsHealthy(); the
+// value is the ini's head_grace_ms, this is only the default it falls back to.
 static const DWORD kHeadSourceGraceMs = 20000;
 
 // A gain at or below this counts as dark: the handle is retired there.
@@ -135,26 +139,6 @@ int rhyTrafficPhase(int index, double nowSeconds, int mode, int periodS) {
     return 2;  // red
 }
 
-bool rhyTrafficParseLine(const char* line, float* x, float* y, float* z,
-                         float* headz) {
-    while (*line == ' ' || *line == '\t') {
-        ++line;
-    }
-    if (*line == '#' || *line == '\r' || *line == '\n' || *line == '\0') {
-        return false;
-    }
-    float a = 0.0f, b = 0.0f, c = 0.0f, d = 0.0f;
-    int matched = std::sscanf(line, "%f %f %f %f", &a, &b, &c, &d);
-    if (matched != 4) {
-        return false;
-    }
-    *x = a;
-    *y = b;
-    *z = c;
-    *headz = d;
-    return true;
-}
-
 // ---------------------------------------------------------------- loading
 
 static void loadList() {
@@ -165,23 +149,33 @@ static void loadList() {
         return;
     }
     char line[256];
+    unsigned withLens = 0;
     while (std::fgets(line, sizeof line, f)) {
-        float x = 0.0f, y = 0.0f, z = 0.0f, headz = 0.0f;
-        if (!rhyTrafficParseLine(line, &x, &y, &z, &headz)) {
+        RhyTrafficLine ln;
+        if (!rhyTrafficParseLine(line, &ln)) {
             continue;
         }
-        TrafficLight light = {x, y, z, headz};
-        g_lights.push_back(light);
-        g_xy.push_back(x);
-        g_xy.push_back(y);
+        if (ln.hasLens) {
+            ++withLens;
+        }
+        g_lights.push_back(ln);
+        g_xy.push_back(ln.x);
+        g_xy.push_back(ln.y);
     }
     std::fclose(f);
-    rhyLog("trafficlights: loaded %u lights from %s",
-           static_cast<unsigned>(g_lights.size()), cfg->trafficPath.c_str());
+    rhyLog("trafficlights: loaded %u lights from %s (%u carry the v2 heading/lens "
+           "columns, %u are v1 'x y z headz' and stay on the mast)",
+           static_cast<unsigned>(g_lights.size()), cfg->trafficPath.c_str(),
+           withLens, static_cast<unsigned>(g_lights.size()) - withLens);
     for (size_t i = 0; i < g_lights.size() && i < 3; ++i) {
-        rhyLog("trafficlights: #%d at %.1f,%.1f,%.1f head z=%.1f",
+        float p[3];
+        rhyTrafficLightPos(g_lights[i], 1, p);
+        rhyLog("trafficlights: #%d at %.1f,%.1f,%.1f head z=%.1f heading=%.0f "
+               "lens=(%+.2f,%+.2f,%.2f) -> light %.1f,%.1f,%.1f",
                static_cast<int>(i), g_lights[i].x, g_lights[i].y,
-               g_lights[i].z, g_lights[i].z + g_lights[i].headz);
+               g_lights[i].z, g_lights[i].z + g_lights[i].headz,
+               g_lights[i].heading, g_lights[i].lens[0], g_lights[i].lens[1],
+               g_lights[i].lens[2], p[0], p[1], p[2]);
     }
 }
 
@@ -408,17 +402,26 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
     sphere.pNext = nullptr;
-    sphere.position.x = L.x;
-    sphere.position.y = L.y;
-    sphere.position.z = L.z + L.headz;
+    // n02: the lens, not the mast. A v2 line carries the instance heading and the
+    // model-local head offset (cj_traffic_light4: -2.10,+0.10,+7.60 - the head
+    // hangs 2.10 m sideways of the pole), and rotating that offset by the heading
+    // is what the game itself does with a head offset at 0x59C890. A v1 line, or
+    // lens_offset=0, gives the old pole x,y,z+headz byte for byte.
+    float pos[3];
+    rhyTrafficLightPos(L, c.traffic_lens_offset, pos);
+    sphere.position.x = pos[0];
+    sphere.position.y = pos[1];
+    sphere.position.z = pos[2];
     sphere.radius = radius;
     // Deliberately unshaped. A real signal module is strongly directional - the
-    // visor and refractor throw a narrow beam down the approach - but the lamp
-    // list carries only x, y, z and a head offset, with no heading, so there is
-    // nothing to aim a cone with. A wrong cone is worse than none: it would put
-    // a dark side on every signal seen from the cross street. Getting this right
-    // means adding a heading column to rhyremix_traffic.txt from the IPL's
-    // rotation, which is the honest fix and is noted in docs/FINDINGS.md.
+    // visor and refractor throw a narrow beam down the approach - and a v2 list
+    // line now does carry the instance heading, but the heading is the model's,
+    // not the visor's: nothing measured says which way inside the model the beam
+    // faces (the game's own 2DFX entry carries a position and no direction
+    // either - 0x59C890 rotates three floats and adds the translation). A wrong
+    // cone would put a dark face on every signal seen from the cross street, so
+    // the heading ships as a number we do not yet aim with. docs/FINDINGS.md has
+    // the measurements; the light itself has moved onto the lens (just above).
     sphere.shaping_hasvalue = 0;
     sphere.volumetricRadianceScale = 0.0f;
     info.pNext = &sphere;
@@ -725,25 +728,64 @@ void rhyTrafficFrame() {
         }
     }
     const bool hookLive = rhySignalHookInstalled();
-    // s30: installed is not the same as working. The 2026-11-11 13:03 run had
-    // the patch in place and read records=0, and since this build also resizes
-    // the game's own 15 m signal corona, "hook live, no heads" would mean dark
-    // signal heads - worse than the flood we came to fix. So the head source
-    // has to actually produce heads; otherwise the list lights carry the layer.
-    const bool hookProduces = hookLive &&
-        rhyHeadsHealthy(rhySignalHookRecords(), g_hookTick, now,
-                        kHeadSourceGraceMs);
-    if (hookLive && !hookProduces && !g_hookSilent) {
-        g_hookSilent = true;
-        rhyLog("trafficlights: the corona hook is installed but has recorded no "
-               "signal head in %lu ms - lighting the list instead. If the game's "
-               "own flare now looks too small, set [trafficlights] "
-               "corona_radius=0. hook: calls=%u records=%u dropped=%u bad=%u "
-               "reentrant=%u",
-               static_cast<unsigned long>(kHeadSourceGraceMs),
-               rhySignalHookCalls(), rhySignalHookRecords(),
-               rhySignalHookDropped(), rhySignalHookBad(),
-               rhySignalHookReentrant());
+
+    // The player position first: the head-source decision below needs the
+    // distance to the nearest signal, and that needs a position.
+    float pp[3];
+    const RhyPlayerState ps = rhyPlayerPosGrace(
+        pp, static_cast<unsigned>(cfg->player_grace_ms), now);
+    if (ps != kRhyPlayerOk) {
+        ++g_playerGone;
+    }
+
+    // n02: how far the nearest entry of the loaded list is, refreshed twice a
+    // second (1522 entries is cheap, but not 60 times a second). FLT_MAX when
+    // the list is empty, which reads as "nothing to light".
+    static DWORD s_nearestTick = 0;
+    static float s_nearest = 3.402823466e+38f;
+    if (ps == kRhyPlayerOk && (now - s_nearestTick) >= 500u) {
+        s_nearestTick = now;
+        s_nearest = rhyNearestSignal2D(g_xy.empty() ? nullptr : &g_xy[0],
+                                       static_cast<unsigned>(g_xy.size()) / 2u, pp);
+    }
+
+    // s30: installed is not the same as working, and n02: "working but silent" is
+    // not the same as broken either. The 2026-11-11 13:03 run read records=0 for
+    // 12 s at the Grove Street spawn, and that spawn is 79.1 m from the nearest
+    // of the 1522 poles while the game's own corona range is 50.0 m (push
+    // $0x42480000 at 0x49DCF3, tested at 0x6FC22E inside the callee, after our
+    // patch point): the game draws no signal-head corona there either, so the
+    // sample proves nothing. Falling back to the list on such a sample would put
+    // the light back on the mast for the whole run. So the fallback needs a
+    // signal inside the game's own range, the grace over, and still no record -
+    // and every answer is logged once with the distance that produced it.
+    int decision = kRhyHeadSourceList;
+    bool hookProduces = false;
+    if (hookLive) {
+        const unsigned grace = cfg->traffic_head_grace_ms >= 0
+                                   ? static_cast<unsigned>(cfg->traffic_head_grace_ms)
+                                   : kHeadSourceGraceMs;
+        decision = rhyHeadsHealthy(rhySignalHookRecords(), g_hookTick, now, grace,
+                                   s_nearest,
+                                   static_cast<float>(kRhySignalCoronaRangeM));
+        hookProduces = rhyHeadKeepsHook(decision) != 0;
+        if (decision != g_hookDecision) {
+            g_hookDecision = decision;
+            rhyLog("trafficlights: head source = %s (nearest signal %.1f m, the "
+                   "game's own corona range %d m, grace %d ms, %lu ms since the "
+                   "hook went live) | hook: calls=%u records=%u dropped=%u bad=%u "
+                   "reentrant=%u%s",
+                   rhyHeadSourceText(decision), s_nearest,
+                   kRhySignalCoronaRangeM, cfg->traffic_head_grace_ms,
+                   static_cast<unsigned long>(now - g_hookTick),
+                   rhySignalHookCalls(), rhySignalHookRecords(),
+                   rhySignalHookDropped(), rhySignalHookBad(),
+                   rhySignalHookReentrant(),
+                   decision == kRhyHeadSourceList
+                       ? " - lighting the list instead. If the game's own flare now "
+                         "looks too small, set [trafficlights] corona_radius=0"
+                       : "");
+        }
     }
     const bool gameMode = (cfg->traffic_source == 1) && hookLive && hookProduces;
 
@@ -755,13 +797,6 @@ void rhyTrafficFrame() {
                  : 0;
     if (!gameMode) {
         g_recN = 0;
-    }
-
-    float pp[3];
-    const RhyPlayerState ps = rhyPlayerPosGrace(
-        pp, static_cast<unsigned>(cfg->player_grace_ms), now);
-    if (ps != kRhyPlayerOk) {
-        ++g_playerGone;
     }
 
     ++g_frame;
@@ -1123,7 +1158,8 @@ void rhyTrafficFrame() {
                    "remix: live=%u create_fail=%u draw_fail=%u budget_stop=%u "
                    "deferred=%u",
                    gameMode ? "list" : (hookLive
-                       ? "list, hook live but no head recorded"
+                       ? "list, hook live but no head recorded (a signal is inside "
+                         "the game's own corona range)"
                        : "list, source=game requested but the hook is not "
                          "installed"),
                    static_cast<unsigned>(g_active.size()), tl_drawn, green, amber,
@@ -1134,3 +1170,4 @@ void rhyTrafficFrame() {
         }
     }
 }
+

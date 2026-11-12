@@ -172,6 +172,8 @@ static const char* const kIniDefaults =
     "head_ttl_ms=2000\r\n"
     "head_forward=0.15\r\n"
     "head_normal=0\r\n"
+    "head_grace_ms=20000\r\n"
+    "lens_offset=1\r\n"
     "\r\n"
     "[fade]\r\n"
     "in_ms=700\r\n"
@@ -842,6 +844,17 @@ static void loadConfig() {
     if (c.traffic_head_forward > 2.0f) {
         c.traffic_head_forward = 2.0f;  // further than this is not a lens offset
     }
+    // n02: the head-source grace. The default matches the 20 s s30 used; the
+    // fallback it guards is range-aware (rhyHeadsHealthy), so this is only how
+    // long the module waits before it is allowed to conclude anything.
+    c.traffic_head_grace_ms = iniIntSec("trafficlights", "head_grace_ms", 20000);
+    if (c.traffic_head_grace_ms < 0) {
+        c.traffic_head_grace_ms = 0;  // 0 = decide on the first frame
+    }
+    if (c.traffic_head_grace_ms > 600000) {
+        c.traffic_head_grace_ms = 600000;  // 10 minutes: effectively never
+    }
+    c.traffic_lens_offset = iniIntSec("trafficlights", "lens_offset", 1);
     if (c.traffic_max_distance < 0) {
         c.traffic_max_distance = 0;  // 0 = no upper bound
     }
@@ -1038,7 +1051,8 @@ static void loadConfig() {
     }
     rhyLog("config: traffic=%d/%d source=%s list=%s period=%d radiance=%.2f radius=%.2f "
            "max=%d dist=%d..%d phase_near=%d night_only=%d resync=%d "
-           "head_ttl=%dms head_normal=%d head_forward=%.2f | bulb radius=%.3f "
+           "head_ttl=%dms head_normal=%d head_forward=%.2f head_grace=%dms "
+           "lens_offset=%d | bulb radius=%.3f "
            "radiance=%.0f nits (fixture_size=%d) corona_radius=%.2f (%s)",
            c.traffic_enabled, c.traffic_mode,
            c.traffic_source ? "game" : "list", c.trafficPath.c_str(),
@@ -1046,7 +1060,7 @@ static void loadConfig() {
            c.traffic_max_lights, c.traffic_max_distance,
            c.traffic_exit_distance, c.traffic_phase_near, c.traffic_night_only,
            c.traffic_resync_frames, c.traffic_head_ttl_ms, c.traffic_head_normal,
-           c.traffic_head_forward,
+           c.traffic_head_forward, c.traffic_head_grace_ms, c.traffic_lens_offset,
            c.traffic_bulb_radius > 0.0f
                ? c.traffic_bulb_radius
                : rhySignalRadius(c.fixture_scale),

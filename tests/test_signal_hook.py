@@ -40,6 +40,7 @@ if it is not there.
 import os
 import re
 import shutil
+import struct
 import subprocess
 import unittest
 
@@ -489,6 +490,159 @@ class TestPatchSiteInRealExe(unittest.TestCase):
         self.assertTrue(rets, "no ret found in the corona function")
         for _a, raw, text in rets:
             self.assertEqual(raw, b"\xc3", "not a plain ret: %r at 0x%x" % (text, _a))
+
+
+HEAD_LOOP_BOUND = 0x49DBDD     # movzx eax, BYTE PTR [edi+0xd]: the 2DFX entry count
+HEAD_LOOP_TEST = 0x49DC01      # jle past the whole head loop when that count is 0
+RANGE_PUSH = 0x49DCF3          # push 0x42480000: argument 8 of the call, 50.0 m
+CALLEE_RANGE_TEST = 0x6FC22E   # where the callee squares the range and compares
+FLOAT_RANGE = 0x858B40         # 50.0 m: the alpha reaches 0 here
+FLOAT_FADE = 0x85F070          # 35.0 m: full alpha below here
+FLOAT_FADE_RATE = 0x863E0C     # 1/15 per metre between the two
+
+
+def pe_float_at(path, va):
+    """The float stored at a virtual address of a PE file, or None.
+
+    Section-table walk, nothing else: the numbers the game's own distance test
+    uses live in .rdata, and reading them is the only way to pin them without
+    trusting a comment.
+    """
+    with open(path, "rb") as fh:
+        data = fh.read()
+    off = int.from_bytes(data[0x3C:0x40], "little")          # e_lfanew
+    nsec = int.from_bytes(data[off + 6:off + 8], "little")   # NumberOfSections
+    tsz = int.from_bytes(data[off + 20:off + 22], "little")  # SizeOfOptionalHeader
+    base = int.from_bytes(data[off + 52:off + 56], "little")  # ImageBase
+    sec = off + 24 + tsz
+    rva = va - base
+    for i in range(nsec):
+        e = sec + i * 40
+        vsize = int.from_bytes(data[e + 8:e + 12], "little")
+        vaddr = int.from_bytes(data[e + 12:e + 16], "little")
+        rsize = int.from_bytes(data[e + 16:e + 20], "little")
+        rptr = int.from_bytes(data[e + 20:e + 24], "little")
+        if vaddr <= rva < vaddr + max(vsize, rsize):
+            o = rptr + (rva - vaddr)
+            return struct.unpack("<f", data[o:o + 4])[0]
+    return None
+
+
+class TestSignalDistanceInRealExe(unittest.TestCase):
+    """n02: the numbers the head-source decision is now made on.
+
+    s30 read `records=0` at the Grove Street spawn as "the patched call site was
+    never reached" and switched the whole session to the list, which puts the
+    light back on the mast. The exe says the sample was worthless: the game's own
+    signal corona is dropped beyond 50.0 m (argument 8, pushed at 0x49DCF3 and
+    tested inside the callee at 0x6FC22E - after our patch point), and the spawn
+    is 79.1 m from the nearest of the 1522 poles. So the range, the fade distance
+    and the loop bound that decides whether a head exists at all are pinned here
+    against the bytes, and rhyHeadsHealthy() uses them.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.exe = find_exe()
+        cls.rows = {}
+        if cls.exe:
+            for start, stop in ((HEAD_LOOP_BOUND, HEAD_LOOP_TEST + 6),
+                                (RANGE_PUSH, RANGE_PUSH + 5),
+                                (CALLEE_RANGE_TEST, CALLEE_RANGE_TEST + 21),
+                                (CALL_SITE, CALL_SITE + 5)):
+                rows = disasm_range(cls.exe, start, stop)
+                if rows is None:
+                    return
+                for addr, raw, text in rows:
+                    cls.rows[addr] = (raw, text)
+
+    def skip_if_missing(self):
+        if self.exe is None:
+            self.skipTest("gta-sa.exe not found (set RHY_GTA_EXE)")
+        if not self.rows:
+            self.skipTest("no i386 objdump available")
+
+    def test_the_range_argument_is_a_push_of_fifty_metres(self):
+        """The 50.0 that rhyHeadsHealthy() compares the nearest-signal distance
+        against is not a guess: it is argument 8 of the very call we patch."""
+        self.skip_if_missing()
+        raw, text = self.rows[RANGE_PUSH]
+        self.assertEqual(raw, b"\x68\x00\x00\x48\x42")
+        self.assertEqual(text, "push 0x42480000")
+        self.assertEqual(struct.unpack("<f", raw[1:5])[0], 50.0)
+        # it belongs to that call: inside DisplayActualLight, before the call, and
+        # in the same code page, so it is the range of this corona and no other
+        self.assertTrue(0x49DAB0 <= RANGE_PUSH < CALL_SITE)
+        self.assertEqual(RANGE_PUSH & ~0xFFF, CALL_SITE & ~0xFFF)
+
+    def test_the_head_loop_is_bounded_by_the_models_2dfx_count(self):
+        """Whether a head exists at all is decided by the model's 2DFX entry
+        count (CModelInfo+0xD): read at 0x49DBDD, tested at 0x49DBE3, and a
+        count of 0 jumps to 0x49DE2C - past the corona call at 0x49DD4C. That is
+        why "no records" is not automatically "the hook is broken", and why the
+        list file has to carry the lens offsets itself: no .dff in gta3.img and no
+        .ipl in it carries a 0x00010105 (2DFX) chunk (measured over all 12964 .dff
+        and 164 .ipl entries; the exe contains no "2dFx" magic either)."""
+        self.skip_if_missing()
+        raw, text = self.rows[HEAD_LOOP_BOUND]
+        self.assertEqual(raw, b"\x0f\xb6\x47\x0d")
+        self.assertEqual(text, "movzx eax,BYTE PTR [edi+0xd]")
+        raw, text = self.rows[HEAD_LOOP_TEST]
+        self.assertEqual(raw[:2], b"\x0f\x8e")            # jle rel32
+        target = (HEAD_LOOP_TEST + 6 + int.from_bytes(raw[2:6], "little")) & MASK16
+        self.assertEqual(target, 0x49DE2C)
+        self.assertGreater(target, CALL_SITE,
+                           "the zero-count branch must skip the corona call")
+
+    def test_the_range_is_tested_in_the_callee_after_the_patch_point(self):
+        """d^2 against range^2, with `jnp` to the give-up path. It runs inside
+        0x6FC180, i.e. after the instruction we detour: our recorder is not gated
+        by the distance, the game's own drawing is."""
+        self.skip_if_missing()
+        self.assertGreater(CALLEE_RANGE_TEST, CALL_SITE)
+        self.assertEqual(self.rows[CALLEE_RANGE_TEST][1],
+                         "fld DWORD PTR [esp+0x4c]")
+        self.assertEqual(self.rows[CALLEE_RANGE_TEST + 4][1],
+                         "fmul DWORD PTR [esp+0x4c]")
+        self.assertEqual(self.rows[CALLEE_RANGE_TEST + 8][1], "fcompp")
+        self.assertEqual(self.rows[CALLEE_RANGE_TEST + 15][1][:3], "jnp")
+
+    def test_the_fade_and_range_floats_are_35_and_50_metres(self):
+        """Full alpha to 35 m, none at 50 m, 1/15 per metre in between - the
+        distances a player can actually see a head at, read out of .rdata."""
+        if self.exe is None:
+            self.skipTest("gta-sa.exe not found (set RHY_GTA_EXE)")
+        self.assertEqual(pe_float_at(self.exe, FLOAT_RANGE), 50.0)
+        self.assertEqual(pe_float_at(self.exe, FLOAT_FADE), 35.0)
+        rate = pe_float_at(self.exe, FLOAT_FADE_RATE)
+        self.assertAlmostEqual(rate, 1.0 / 15.0, places=6)
+
+    def test_the_code_uses_those_numbers(self):
+        """The decision has to be made on the exe's range, not on a constant that
+        can drift away from it, and it has to keep the hook when there is no
+        signal inside that range to record."""
+        with open(os.path.join(REPO, "plugin", "src", "signalheads.h"),
+                  encoding="utf-8") as fh:
+            hdr = fh.read()
+        self.assertIn("kRhySignalCoronaRangeM = 50", hdr)
+        self.assertIn("kRhySignalCoronaFadeM = 35", hdr)
+        with open(os.path.join(REPO, "plugin", "src", "signalheads.cpp"),
+                  encoding="utf-8") as fh:
+            heads = fh.read()
+        self.assertIn("nearestSignalM <= coronaRangeM", heads)
+        self.assertIn("kRhyHeadSourceFar", heads)
+        with open(os.path.join(REPO, "plugin", "src", "trafficlights.cpp"),
+                  encoding="utf-8") as fh:
+            traffic = fh.read()
+        self.assertIn("kRhySignalCoronaRangeM", traffic)
+        self.assertIn("rhyNearestSignal2D", traffic)
+        self.assertIn("rhyHeadKeepsHook", traffic)
+        # and the grace is a knob, so the decision can be delayed but not hidden
+        with open(os.path.join(REPO, "plugin", "src", "config.cpp"),
+                  encoding="utf-8") as fh:
+            cfg = fh.read()
+        self.assertIn('"head_grace_ms", 20000', cfg)
+        self.assertIn('"lens_offset", 1', cfg)
 
 
 class TestKillSwitch(unittest.TestCase):
