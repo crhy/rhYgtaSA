@@ -80,7 +80,11 @@ TOUR_START_RE = re.compile(r"tour start", re.IGNORECASE)
 LOG_TS_RE = re.compile(r"^\[(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?\]\s*(.*)$")
 LOG_CATEGORIES = (
     ("lights", re.compile(r"^streetlights:\s+\d+\s+active")),
-    ("signals", re.compile(r"^trafficlights:\s+\d+\s+active")),
+    # s01/s19 print a DIFFERENT shape when the corona hook is live:
+    #   trafficlights[source=game]: 7 heads lit, 7 drawn this frame (...) | hook: calls=... records=...
+    # Matching only the old "trafficlights: N active" line left the signals column blank exactly on
+    # the signal-head test (both shapes are in the real 2026-11-11 log: 303 list lines, 4 source=game).
+    ("signals", re.compile(r"^trafficlights(\[[^\]]*\])?:\s+\d+\s+(active|heads lit)")),
     ("sky", re.compile(r"^sky:")),
 )
 

@@ -45,6 +45,7 @@ LOG = """---- log starts ----
 [2026-11-11 09:06:08.100] streetlights: CreateLight ok #4957 hash=4957 pos=2489.9,-1656.0,19.8 radiance=12000.00,10124.71,0.00 radius=0.15 cone=120.0/0.45 focus=0.00
 [2026-11-11 09:07:00.000] streetlights: 320 active, 320 drawn this frame (hour=21, 7002 in list, kept=320 new=0) | remix: live=321 create_fail=0 draw_fail=0 budget_stop=0
 [2026-11-11 09:07:01.000] trafficlights: 39 active, 39 drawn this frame (green=18 amber=5 red=16, 0 awaiting destroy, 1522 in list, hour=21, phase_swaps=8) | remix: live=360 create_fail=0 draw_fail=0 budget_stop=0
+[2026-11-11 09:07:05.000] trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | remix: live=379 create_fail=0 draw_fail=0 budget_stop=0 | hook: calls=412 records=412 dropped=0 bad=0 reentrant=0
 [2026-11-11 09:07:02.000] sky: sun elev=-31.2 az=343.0 airMass=0.00 T=0.000/0.000/0.000 daylight=0.00 | moon elev=+31.2 az=163.0 phase=1.00 | lamps=on (hour=21:05 doy=186 month=63 day=3) | rtx: set=4 unknown=0 badval=0
 not a log line, the plugin wrote something odd
 """
@@ -268,7 +269,7 @@ class TestLog(unittest.TestCase):
 
     def test_only_the_summary_lines_are_candidates(self):
         self.assertEqual(len(self.cats["lights"]), 2)     # the CreateLight line is not one
-        self.assertEqual(len(self.cats["signals"]), 2)
+        self.assertEqual(len(self.cats["signals"]), 3)    # two list-mode lines + the source=game one
         self.assertEqual(len(self.cats["sky"]), 2)
         self.assertGreater(self.total, 0)
 
@@ -287,6 +288,18 @@ class TestLog(unittest.TestCase):
         when = dt.datetime(2026, 11, 11, 9, 6, 8)
         self.assertEqual(T.nearest(self.cats, "lights", when, 5.0), (None, None))
         self.assertEqual(T.nearest({}, "lights", when, 30.0), (None, None))
+
+    def test_the_source_game_hook_line_counts_as_a_signal_line(self):
+        """s01/s19 print 'trafficlights[source=game]: N heads lit', not 'N active'.
+
+        That is the mode docs/NEXT-TEST.md step 2 is about, so a blank signals column there
+        would read as 'the heads never lit' when it only means the reader missed the line.
+        """
+        when = dt.datetime(2026, 11, 11, 9, 7, 6)
+        line, d = T.nearest(self.cats, "signals", when, 30.0)
+        self.assertIn("heads lit", line.text)
+        self.assertIn("reentrant=0", line.text)
+        self.assertAlmostEqual(d, -1.0, places=3)
 
     def test_missing_log_is_not_fatal(self):
         cats, total = T.load_log(os.path.join(TMP, "nope.log"))

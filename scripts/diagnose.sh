@@ -29,7 +29,14 @@ if [ -n "$counters" ]; then echo "$counters"; else
 fi
 
 say "active vs drawn (active>0 with drawn=0 means the lights exist only in the plugin)"
-ts_grep '(streetlights|trafficlights): [0-9]+ active' 4 || echo "no module lines"
+# Both trafficlights shapes: the list mode prints "trafficlights: N active", the s01/s19 corona
+# hook prints "trafficlights[source=game]: N heads lit". Matching only the first made the module
+# look absent on exactly the runs where the hook was live.
+ts_grep '(streetlights|trafficlights)(\[[^]]*\])?: [0-9]+ (active|heads lit)' 4 || echo "no module lines"
+
+say "signal heads (s01/s19: the patch and the hook's own counters; reentrant must stay 0)"
+ts_grep 'signalhook: |trafficlights\[source=game\]' 4 || \
+  echo "no signal lines: no signalised intersection in range, daytime with night_only=1, or source=list"
 
 say "modules that gave up (they retry on the next rhyremix.ini edit)"
 ts_grep 'rejected|disabled until|refusing a light' 6 || echo "none"

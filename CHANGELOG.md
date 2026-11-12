@@ -134,6 +134,36 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   config carries no hash and that the three texture hashes in the s21 table still compute to the
   documented values. Method, parsers and the full usage tables: `.strata/notes-s21-mirror-hash-check.md`.
 
+### Testing (s26) — one page for the next in-game session
+
+- **Added:** [docs/NEXT-TEST.md](docs/NEXT-TEST.md), the run order for the session that has been
+  waiting since the handoff: preflight (LAA check, `rtxprofile.sh status`, install the current tour
+  script) → baseline tour with nothing new → signal heads → water realistic vs calm →
+  `tools/rtxprofile.sh perf` → `tools/vegetation.sh on` (now that the exe is LAA) →
+  `tools/characters.sh on`. Each step is one command, what to look at, what `tools/tour-report.py`
+  should show (against the 2026-11-11 09:06 numbers), and a one-line rollback. It also records what
+  the install actually looks like today: live `rtx.conf` matches no profile (`profile : unknown`),
+  water is already `realistic`, no vegetation/character state dirs, and `characters.sh on` refuses
+  because nothing is staged.
+- **Tests (s26):** `tests/test_next_test_doc.py` (8 checks) is the scripted half of the gate: every
+  command line and inline rollback in the doc is tokenised and resolved — repo paths must exist,
+  subcommands must appear in that script's own usage block, `--flags` in its source, anything else
+  must be allowlisted and on PATH — plus the one-screen bounds and the requirement that the doc send
+  the reader through `scripts/test-session.sh` rather than the launcher. Negative controls (renamed
+  tool, invented action, invented flag, unknown command, direct launcher use, over-long doc,
+  missing rollback) all fail it.
+- **Fixed:** `tools/tour-report.py` matched only `trafficlights: N active` as a signal log line, so
+  on the source=game runs — the mode the signal test is about — the report's signals column was
+  blank. It now also accepts `trafficlights[source=game]: N heads lit … hook: calls=…` (both shapes
+  are in the real 2026-11-11 log: 303 list lines, 4 source=game). `scripts/diagnose.sh` had the same
+  blind spot and gains a read-only "signal heads" section printing the patch line and the hook
+  counters. `tests/test_tour_report.py` 27 → 29 checks.
+- **Found:** the game's `moonloader/SARemix_Tour.lua` is the old 13-stop version and **nothing in
+  `deploy.sh` or `apply.sh` installs it** — only `SARemix_Shot.lua` is copied. A `--tour` run today
+  therefore produces no numbers for the mirror, pedestrian or vegetation stops. The doc carries a
+  one-line `cp` as the preflight; the durable fix (a deploy step for the tour script) belongs in the
+  queue.
+
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 
 ### Installer and launcher

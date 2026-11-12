@@ -1,5 +1,9 @@
 # Testing the lighting changes
 
+**The short version is [NEXT-TEST.md](NEXT-TEST.md)**: one page, six steps, one command each, with
+the rollback and the report numbers next to every step. This file is the long version - why each log
+line matters, and which knob fixes which symptom.
+
 ## Why this test is not run by the assistant
 
 The assistant working on this repo is served by a local LLM server (`strata`,
