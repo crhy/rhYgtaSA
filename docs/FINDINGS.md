@@ -721,3 +721,122 @@ amplifies a step in direct light) both make a lighting step *more* visible. They
 the next lever, but retuning them without an in-game A/B trades a lighting pop for a
 denoiser artifact, and the plugin no longer emits a step large enough to trigger the
 discard path. `scripts/lighting-test.sh` is the harness if that A/B is run.
+
+## Time of day flickered: two calendars, one staircase (2026-11-12, s29)
+
+rhY's number two report from the same session: **"time of day flickers and does not
+progress smoothly"**. s28 had already stopped the *handle* pops (destroy/create bursts,
+one-frame layer swaps, 50x ambient steps), and its rate limiters were still doing their
+job - which is the useful framing for this one: **s28 smoothed what is published, s29 had
+to fix what is sampled.** A rate limiter cannot make a sun that alternates between two
+calendars look like one day.
+
+### Measured, from `scripts/rhyremix.log` (all 9 sessions, 409 `sky:` samples at 10 s)
+
+| what | number |
+|------|--------|
+| wall time per game minute (320 sample pairs) | p50 **2015 ms**, p90 2023, min 1674 - the clock offers one new minute every ~2 s, and the sun moves **0.25 deg** per game minute, so the target was a 0.25 deg staircase |
+| geometry pass rate | 1 Hz - *slower* than the 2 s tick, so every other pass re-published a value that had not changed |
+| samples whose `day_of_year` came from the game's calendar bytes | **20 of 409 (4.9%)** - the rest used the ini's 186 |
+| consecutive-sample pairs with the clock within 12 game minutes but a different `day_of_year` | **31** - sun elevation moved up to **43.4 deg**, median **23.7 deg**, 17 of them over 20 deg, and back again on the next sample |
+| example (2026-11-11) | `08:33:05 doy=186 el=+70.8` -> `08:33:15 doy=62 el=+39.2` -> `08:33:25 doy=186 el=+69.0`: **A/B/A in 20 s**, and two of those pairs also moved `daylight` by >0.05 and flipped `lamps=on/off` |
+| consecutive-sample pairs where the clock went **backwards** | **51 of ~400** (biggest -1435 game min); 18 jumped forward by >12 min (biggest +1372) |
+| the tour's clock pin, 00:49:40 -> 00:51:20 | clock reads 1260,1265,1262,1261,1264,1260,1265,... and the sun elevation wobbles -10.0,-10.8,-10.3,-10.1,-10.6,-10.0 at 10 s |
+
+### Why
+
+`plugin/src/sun.cpp` is the only time-of-day reader in the plugin, and it read the game
+bytes directly:
+
+* `gameClock()` loaded two bytes - hour at `0xB70153`, minute at `0xB70152` - and
+  `solarPosition()` took **ints**, so the sun was a function of a whole-minute clock.
+* `gameDayOfYear()` read `month@0xB70158` / `day@0xB70154` and accepted them whenever
+  they *looked* like a date. They are not one: the "month" byte is a counter that walks
+  25, 41, 57, ... +16 per sample, and "day" sits at 3. Every time that counter passed
+  through 1..12 the sanity check passed and the season became 62 / 246 / 337 / 276 / 34
+  instead of 186 - **the flicker is literally two calendars alternating.** (The first
+  probe dump of those two words read `0 0`, which is how we know they are not a
+  `CTheClock` layout we can trust.)
+* hour and minute were two separate loads, so a sample between the game's two writes
+  gave `6:59 -> 7:00` as **6:00**: the time walked backwards 59 game minutes and forward
+  again. Invisible at a 10 s sampling rate, and exactly a "value goes backwards" case.
+* `SARemix_Tour.lua:110,116` calls `setTimeOfDay()` twice per stop (trainers and missions
+  do the same), which is the sawtooth above. The plugin re-read whatever byte was there.
+* `sun_force_hour` was worse: `gameClock()` wrote the forced hour/minute into the game's
+  bytes and read them back in the same call, so the plugin (1 Hz) and the game's own
+  clock update (every frame) alternated writes - a self-inflicted A/B/A/B. Not active in
+  these runs (`force=-1:-1`).
+* there is **no game weather input at all**, and there cannot be a visible one:
+  `rtx.ignoreGameDirectionalLights = True` (`config/rtx.conf`) already cuts the game's
+  own directional light, so every time-of-day value on screen is one we re-derive. The
+  only weather-ish knob is `[sky] turbidity`, which the ini reloader pushed into
+  `beamRadiance()` unsmoothed - editing the ini stepped the sun's colour between frames.
+
+### What fixed it
+
+One new pure module, `plugin/src/tod.{h,cpp}` (no `windows.h`, no Remix, no game
+pointers, so a whole simulated day can run natively), plus `solarPositionF()` /
+`lunarPositionF()` in `plugin/src/solar.cpp`, which take a **float minute of day**:
+
+* **continuous time.** `rhyTodUpdate()` keeps an anchor (whole game minute + tick) and
+  publishes `minuteOfDay = anchor + elapsed / msPerGameMinute`, with `msPerGameMinute`
+  self-calibrated from the observed ticks (EMA, clamped, seeded from `[clock]
+  ms_per_game_minute`). The bodies are evaluated **every frame** at that minute, so the
+  sun target is the curve the staircase was sampling. The observer (latitude, season,
+  DST) stays a 1 Hz keyframe: it changes on the scale of a game hour.
+* **monotonic.** The published time never decreases. A backwards move inside
+  `[clock] jitter_tolerance_min` (8) is rejected as pin noise and the time keeps
+  advancing; a bigger one is honoured only after it *persists* for `[clock]
+  reanchor_ms` (2000), so a tour pin never walks the sun backwards while a deliberate
+  jump to 13:00 is still followed. The only allowed decrease is the 1440 wrap, which
+  bumps the day index so `absoluteMinute` is monotone.
+* **torn reads repaired**, gated on the previous sample's minute field being 59 - the
+  shape of an actual roll. Without that gate a deliberate `setTimeOfDay(13,0)` was
+  "repaired" an hour off its target, which is worse than the bug.
+* **the calendar must earn trust.** `rhyCalendarUpdate()` accepts the bytes only after
+  `[clock] calendar_stable_reads` (**30**, i.e. 30 s of a still date) identical reads,
+  and only if the day did not step by more than one. A real SA date holds for a whole
+  game day (~48 real minutes at 2000 ms per game minute), the measured counter moves
+  every ~10 s: the window separates them by ~100x, and the day-step rule is the second
+  line of defence. Until it qualifies, the ini's `[sun] day_of_year` is used - one season
+  for the session, not two.
+* **weather is followed, not pushed.** `RhyWeather` rate-limits turbidity and a new
+  `[sky] cloud` (default 0, so the shipped look is unchanged) at `turbidity_per_sec` /
+  `cloud_per_sec`; cloud dims the direct beam (x0.10 at full overcast) and gives part of
+  it back to the ambient (x1.60). This is also where a real `CWeather` read would be
+  plugged in - there is no verified offset for one, and the game's own blend never
+  reaches the renderer anyway.
+* `sun_force_hour` no longer reads back what it wrote, so the plugin and the game cannot
+  alternate.
+
+### Measured, in the test rather than in the game
+
+`tests/tod_check.cpp` (58 checks, wired into `scripts/check-all.sh`) runs a **whole
+simulated 24 h day at 60 fps** - 172 810 frames - twice: once with the s28 sampling and
+once with s29, with the tour's clock pins and a weather front in both. Everything
+downstream of the sampling (the s28 rate limiters, the sky ambient, the lamp decision) is
+identical in the two runs, so the difference is the sampling alone:
+
+```
+old: sun moves up to  3566.28 deg per game minute | worst frame   29.738 deg |
+     morning reversals  5123.50 deg | season changes 2881 | lamp flips 186 | time backwards 4
+new: sun moves up to     0.21 deg per game minute | worst frame   23.612 deg |
+     morning reversals     0.00 deg | season changes    0 | lamp flips   2 | time backwards 0
+```
+
+0.21 deg per game minute is the real sky (the sun's own maximum here is ~0.25 at this
+latitude in July). The 23.6 deg "worst frame" in the new row is the tour's *deliberate*
+two-hour jump at the end of a stop: the clock follows it and the s28 limiters ramp it,
+which is the division of labour the two steps established.
+
+### What was deliberately left alone
+
+The distant-light handle is still rebuilt when the sun moves more than
+`[sun] step_deg` (1.0) or changes luminance by 5% - s28's threshold, bounded and
+monotone, so it is a fine staircase rather than a flicker (the sun's disc is 0.53 deg;
+making the step finer costs one `CreateLight` per body per frame, ~120/s of bridge churn
+against the 2.43/s the log measured). And the in-game calendar is still **not used**
+unless it behaves like a calendar: with the shipped default it never does, so the season
+comes from `rhyremix.ini`. If a future build has a real `CTheClock` date, the counters
+`cal: stable=... accepted=... rejected=...` in the 10 s log line are how that gets
+noticed.

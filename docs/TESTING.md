@@ -174,8 +174,38 @@ streetlights: 318 active, 318 drawn this frame, 0 awaiting destroy (hour=21, 700
 To check it by eye: at night, drive down a long lit street at speed and watch the
 lamps ahead of you. They should **brighten as you approach and dim as you leave**,
 and a street should never arrive all at once. Then flip day to night by editing
-`[sky] force_hour` in `rhyremix.ini` while the game runs: the street should take
+`[sun] force_hour` in `rhyremix.ini` while the game runs: the street should take
 about a second to come up or go down, not one frame.
+
+### The clock counters (s29): proof that time of day moves instead of stepping
+
+The `sky:` line now carries the clock's own bookkeeping:
+
+```
+sky: sun elev=+41.3 az=187.9 airMass=1.53 T=0.712/0.584/0.431 daylight=1.00 | moon elev=-12.4 az=95.1 phase=0.42 | lamps=off (clock=13:07 tod=787.35 min ms/min=2013 doy=186 month=0 day=0) | tod: ticks=394 torn=2 jitter=17 reanchor=0 wraps=0 bad=0 | cal: stable=0 accepted=0 rejected=394 | cloud=0.00 | published: sun 4.28,3.51,2.59 sky=1.000 emissive=1.000 rebuilds=12/4 | rtx: set=41 unknown=0 badval=0
+```
+
+| field | what "correct" looks like |
+|---|---|
+| `tod=` | the game minute the sky is being computed at, **with decimals**. It must change every log line, by about 5.0 between two 10 s lines (10 s / 2013 ms). If it only ever shows `.00`, the interpolation is not running |
+| `ms/min=` | what the plugin measured for one game minute on this machine: 1670-2030 ms is normal (the 2026-11-12 log measured p50 2015). It starts at `[clock] ms_per_game_minute` and converges |
+| `clock=` | the raw bytes, unchanged, for comparison with `tod=`. `clock=13:07 tod=787.35` is consistent (13*60+7 = 787) |
+| `torn=` | hour/minute reads that landed between the game's two byte writes and were repaired. A few per hour is normal; it is the count of times the clock would otherwise have jumped an hour backwards |
+| `jitter=` | backwards clock moves that were refused because they were small - the tour's `setTimeOfDay()` pins, mostly. Non-zero during a tour is expected and is the fix working |
+| `reanchor=` | deliberate jumps the game actually made (a mission setting the time). Should be a small number, and it must not climb every sample - that would mean the plugin and the game are fighting over the clock |
+| `wraps=` | midnight crossings. One per game day (about every 48 real minutes) |
+| `bad=` | clock bytes out of range (hour > 23, minute > 59). Should stay 0 |
+| `doy=` / `month=` / `day=` | the season in use, and the raw calendar bytes. `month=0 day=0` with `doy=186` is the **expected** state: the game's date bytes are a counter, not a date, so `[sun] day_of_year` is used. `cal: accepted=` should stay 0 |
+| `cal: rejected=` | how often the calendar bytes were refused. It climbing while `accepted=` stays 0 is the alternating-calendar bug being held down - that alternation was the 20-40 degree sun swing in the 2026-11-12 log |
+| `cloud=` | the smoothed overcast (0..1). 0.00 is clear sky and the shipped default; it only moves if you edit `[sky] cloud`, and it ramps rather than stepping |
+| `rebuilds=` | how many times each body's handle was re-created (the `[sun] step_deg` threshold). A few per minute is normal |
+
+To check it by eye: stand still and watch the sun's `elev=` across consecutive
+`sky:` lines. It should move by ~0.2 degrees per game minute in the same direction
+all morning; the 2026-11-12 log had it swing up to 43.4 degrees between two lines and
+back again. `scripts/rhyremix.log` from a tour run is the interesting one, because
+`SARemix_Tour.lua` writes the clock twice per stop - `jitter=` climbing while `elev=`
+keeps moving one way is exactly what s29 is for.
 
 ## Step 3 - what to photograph, and what each one proves
 
@@ -231,6 +261,9 @@ few seconds - no restart.
 | Fades feel slow when driving fast | `[fade] step=0.4` (bigger brightness steps) or `creates_per_frame=48`; both trade smoothness for speed, and the log's `deferred=` tells you which one is binding |
 | A traffic signal's colour change looks like a slow cross-fade | `[fade] phase_fade_ms=0` puts back the instant change (a real signal is instant); the light arriving and leaving still fades |
 | Lights still vanish for a second on a cab roof / after wasting | `[fade] player_grace_ms=20000` holds the last player position longer. `player_gone_frames=` in the log says how long the pointer is actually unreadable |
+| The sun jumps, or the sky changes season by itself | look at `doy=` and `cal:` on the `sky:` line. If `doy=` ever differs from `[sun] day_of_year`, the game's date bytes passed the stability test - raise `[clock] calendar_stable_reads` (30 = 30 s of a still date) or set `calendar_stable_reads=0` to ignore them entirely |
+| Time of day still steps instead of sliding | `tod=` must show decimals and change every line. If it does not, `[clock] ms_per_game_minute` is far from the real tick length - `ms/min=` in the log is what this machine actually measures |
+| The tour makes the sky jump backwards | `jitter=` should absorb it; if `reanchor=` climbs every sample instead, `[clock] jitter_tolerance_min` (8) is smaller than the tour's pin - raise it, or `[clock] reanchor_ms` (2000) so a real jump takes longer to be believed |
 | Head light sits just inside the lens instead of on it | `[trafficlights] head_normal=1 head_forward=0.15` - the 2DFX entry has no direction, so this uses the model's own "at" axis and may point the wrong way; it is a knob to A/B, not a fix |
 
 ## Step 5 - send back

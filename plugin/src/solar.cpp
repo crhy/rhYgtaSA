@@ -213,12 +213,16 @@ static float solarHourAngleDeg(const SkyObserver& ob, float localMinutes,
 // ------------------------------------------------------------------ public
 
 void solarPosition(const SkyObserver& ob, int hour, int minute, SkyBody* out) {
+    solarPositionF(ob, static_cast<float>(hour * 60 + minute), out);
+}
+
+void solarPositionF(const SkyObserver& ob, float minuteOfDay, SkyBody* out) {
     const float lambda = solarEclipticLongitudeDeg(ob.dayOfYear);
     float ra = 0.0f, dec = 0.0f;
     eclipticToEquatorial(lambda, &ra, &dec);
 
     float eq = 0.0f;
-    const float ha = solarHourAngleDeg(ob, static_cast<float>(hour * 60 + minute), &eq);
+    const float ha = solarHourAngleDeg(ob, minuteOfDay, &eq);
 
     float elev = 0.0f, az = 0.0f;
     equatorialToAltAz(ob.latitudeDeg, dec, ha, &elev, &az);
@@ -227,6 +231,11 @@ void solarPosition(const SkyObserver& ob, int hour, int minute, SkyBody* out) {
 
 void lunarPosition(const SkyObserver& ob, int hour, int minute, float phase,
                    SkyBody* out) {
+    lunarPositionF(ob, static_cast<float>(hour * 60 + minute), phase, out);
+}
+
+void lunarPositionF(const SkyObserver& ob, float minuteOfDay, float phase,
+                    SkyBody* out) {
     // The moon is the sun's position slid along the ecliptic by its elongation,
     // which is phase * 360 degrees: new moon sits on the sun, first quarter 90
     // degrees behind it, full moon exactly opposite. Working in ecliptic
@@ -252,7 +261,7 @@ void lunarPosition(const SkyObserver& ob, int hour, int minute, float phase,
     // Local sidereal time = the sun's hour angle + the sun's right ascension,
     // because the sun's hour angle is 0 at solar noon. A body's hour angle is
     // then LST - its own right ascension.
-    const float haSun = solarHourAngleDeg(ob, static_cast<float>(hour * 60 + minute), nullptr);
+    const float haSun = solarHourAngleDeg(ob, minuteOfDay, nullptr);
     const float lst = haSun + raSun;
     float haMoon = lst - raMoon;
     while (haMoon > 360.0f) {

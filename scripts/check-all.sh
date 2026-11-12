@@ -100,6 +100,14 @@ run nat-smooth-cc "compile smooth_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/smooth_check.cpp plugin/src/smooth.cpp plugin/src/game.cpp -o build/tmp/smoothc
 warncheck nat-smooth-cc "compile smooth_check"
 run nat-smooth "tests/smooth_check.cpp (smooth.cpp fades/rate limits/budget + game.cpp player grace)" 120 build/tmp/smoothc
+# s29: "time of day flickers and does not progress smoothly". tod.cpp is the time
+# axis - pure C++, no Windows, no Remix - so a whole simulated 24 h day runs here at
+# 60 fps, sampled both the way sun.cpp did it before s29 and the way it does it now,
+# against the clock and calendar byte sequences the 2026-11-12 log recorded.
+run nat-tod-cc "compile tod_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/tod_check.cpp plugin/src/tod.cpp plugin/src/solar.cpp plugin/src/smooth.cpp -o build/tmp/todc
+warncheck nat-tod-cc "compile tod_check"
+run nat-tod "tests/tod_check.cpp (tod.cpp clock/calendar/weather + solar.cpp + smooth.cpp)" 300 build/tmp/todc
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),

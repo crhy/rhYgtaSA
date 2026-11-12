@@ -412,6 +412,61 @@ doubles the daylight: `deploy.sh` renames it to `.dat` whenever the ini has
 - Headlight beam tilt under Remix 1.6 is being tuned.
 - 25 textures referenced by GTASA-Remix are missing from its repository.
 
+## How the clock reaches the light (s29)
+
+rhY's number two complaint, same session as the pops above: **"time of day flickers and does not
+progress smoothly"**. s28 had already bounded what is *published*; this was about what is
+*sampled*, and the distinction is the whole finding - a rate limiter cannot make a sun that
+alternates between two calendars look like one day. `docs/FINDINGS.md` has the measurements; the
+mechanism is in `plugin/src/tod.{h,cpp}`, again pure C++ so a whole simulated day runs natively in
+`tests/tod_check.cpp`.
+
+* **`rhyTodUpdate(rawHour, rawMinute, tickMs)`** — the clock. It keeps an anchor (a whole game
+  minute plus the tick it was read at) and publishes `minuteOfDay = anchor + elapsed /
+  msPerGameMinute`, so the time moves every frame instead of every ~2000 ms. `msPerGameMinute`
+  self-calibrates: every accepted forward tick contributes `elapsed / 1` to an EMA (clamped to
+  200..60000 ms), seeded from `[clock] ms_per_game_minute`, so the interpolation uses the tick
+  length this machine actually runs at (the log measured p50 2015 ms, min 1674). `rhyTodReseed()`
+  is what an ini edit calls: it changes the seed, never the time.
+* **Monotonicity is a rule, not a hope.** A backwards raw move within `[clock] jitter_tolerance_min`
+  is counted as `jitter` and ignored - the time keeps advancing on its own anchor. A bigger one is
+  only believed after it *persists* for `[clock] reanchor_ms`, which is what separates a tour's
+  `setTimeOfDay()` pin (51 of ~400 logged sample pairs went backwards) from a mission genuinely
+  setting the time. Forward moves are always followed: the clock must not disagree with the game,
+  and the s28 limiters are what ramp the world. The 1440 wrap bumps `day`, so `absoluteMinute`
+  never decreases.
+* **Torn reads.** Hour and minute are two byte loads, and SA writes them in two steps, so a sample
+  between the writes reads `6:59 -> 7:00` as **6:00**. The repair tries `±60` against the expected
+  minute, but only when the previous sample's minute field was 59 - the shape of an actual roll.
+  Without that gate a deliberate `setTimeOfDay(13,0)` gets "repaired" an hour off its target, which
+  the test caught and the re-anchor path recovers from in 2 s anyway.
+* **`rhyCalendarUpdate(month, day, neededStable)`** — the season. `month@0xB70158` and
+  `day@0xB70154` are not a calendar (the month byte walks +16, the day sits at 3, and the first
+  probe dump of those words read `0 0`), so they are trusted only after 30 consecutive identical
+  reads at the 1 Hz keyframe rate and only if the day does not step by more than one. A real SA
+  date holds for a game day (~48 real minutes); the counter moves every ~10 s. Until it qualifies,
+  `[sun] day_of_year` is used, so the session has one season instead of two.
+* **`RhyWeather`** — turbidity and `[sky] cloud` are followed at `[sky] turbidity_per_sec` /
+  `cloud_per_sec`, because `rhyConfigReloadIfChanged()` re-reads the ini live and turbidity goes
+  straight into the sun's colour. `rhyCloudTransmission()` dims the direct beam and
+  `rhyCloudAmbientGain()` gives part of it back to the sky; `cloud=0` keeps both at exactly 1.0.
+  This is also where a real `CWeather` read would go - there is no verified offset for one, and
+  `rtx.ignoreGameDirectionalLights = True` already means the game's own blend never reaches the
+  renderer.
+* **`solarPositionF()` / `lunarPositionF()`** in `plugin/src/solar.cpp` take a **float minute of
+  day**; the integer versions are still there for the tests and the legacy path. `sun.cpp` calls the
+  float versions every frame, so the sun target is the curve the 0.25 deg staircase was sampling.
+
+The knobs are `[clock] ms_per_game_minute`, `jitter_tolerance_min`, `reanchor_ms`,
+`calendar_stable_reads` (0 = never trust the game's date) and `[sky] cloud`, `turbidity_per_sec`,
+`cloud_per_sec`. The log line carries the proof: `tod=… ms/min=… ticks=… torn=… jitter=…
+reanchor=… wraps=… bad=…` and `cal: stable=… accepted=… rejected=…`.
+
+What is deliberately **not** changed: the distant-light rebuild threshold (`[sun] step_deg = 1.0`,
+s28's) is a bounded monotone staircase, not a flicker, and tightening it costs a `CreateLight` per
+body per frame. And the in-game calendar stays unused unless it behaves like a date - with the
+shipped default it never does, which is the correct outcome for this build, not a fallback.
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen

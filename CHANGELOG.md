@@ -44,6 +44,40 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   fake memory, page cache) and `tests/test_signal_hook.py` 25 checks (stub encoding at every stack
   alignment, the real exe's bytes, no-throw discipline).
 
+### Sun and sky (s29) — time of day stopped flickering
+
+- **Fixed:** the sun no longer swings tens of degrees and back. The two bytes next to the game clock
+  (`month@0xB70158`, `day@0xB70154`) are not a calendar — the month byte is a counter walking +16 —
+  and `gameDayOfYear()` accepted them whenever they looked like one: 20 of 409 logged sky samples
+  used such a date, and 31 consecutive-sample pairs moved the sun by up to 43.4 degrees (median
+  23.7) and straight back. `rhyCalendarUpdate()` now requires `[clock] calendar_stable_reads` (30,
+  i.e. 30 s of a still date) identical reads and a day that does not step, so the season stays
+  `[sun] day_of_year` for the session.
+- **Added:** `plugin/src/tod.cpp`, the time axis. The clock bytes only offer a new minute every
+  ~2000 ms (measured p50 2015) and the sun moves 0.25 deg per game minute, so the target was a
+  staircase; `rhyTodUpdate()` publishes a continuous game minute (`anchor + elapsed/msPerGameMinute`,
+  self-calibrated), repairs the torn hour/minute read that made the clock walk backwards 59 minutes
+  at every hour roll, and refuses backwards moves that do not persist — the tour's
+  `setTimeOfDay()` pins made 51 of ~400 logged sample pairs go backwards. The only allowed decrease
+  is the midnight wrap.
+- **Changed:** the sun and moon are computed **every frame** at that continuous minute
+  (`solarPositionF()` / `lunarPositionF()` take a float minute of day) instead of once a second at a
+  whole minute; the observer (latitude, season, DST) stays a 1 Hz keyframe. `sun_force_hour` no
+  longer reads back the bytes it wrote, which had put the plugin and the game's own clock update in a
+  write fight.
+- **Added:** `[sky] cloud` (0 = clear, so the shipped look is unchanged) and a weather follower that
+  rate-limits turbidity and cloud cover (`[sky] turbidity_per_sec`, `cloud_per_sec`): an ini edit
+  ramps the sun's colour instead of stepping it between two frames, and an overcast dims the direct
+  beam (×0.10) while giving part of it back to the ambient (×1.60).
+- **Added:** the clock's own counters in the 10 s log line — `tod=… ms/min=… ticks=… torn=…
+  jitter=… reanchor=… wraps=… bad=…` and `cal: stable=… accepted=… rejected=…` — explained in
+  [docs/TESTING.md](docs/TESTING.md).
+- **Tests:** `tests/tod_check.cpp`, 58 native checks, including a **whole simulated 24 h day at
+  60 fps** run twice — once with the old sampling, once with the new, with the tour's clock pins and
+  a weather front in both. The sun used to move up to **3566 deg per game minute** between frames
+  with 2881 season changes and 186 lamp flips in a day; now **0.21** (the real sky is 0.25), with 0,
+  0 and 2.
+
 ### Tools
 
 - **Added:** `tools/remix_texhash.py` — decodes a `.txd` / `gta3.img` raster the way D3D9 receives

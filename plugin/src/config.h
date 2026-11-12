@@ -131,6 +131,16 @@ struct RhyConfig {
     int   sun_force_hour;
     int   sun_force_minute;
 
+    // --- the game clock, s29; [clock] section. See plugin/src/tod.h for what each
+    // one protects against and .strata/notes-s29-time-of-day-smooth.md for the
+    // measurements that picked the numbers.
+    float clock_ms_per_game_minute;   // seed for the tick calibration (measured p50 2015)
+    float clock_jitter_min;           // backwards clock moves up to this are noise: hold
+    int   clock_reanchor_ms;          // ... a bigger one is followed after this long
+    int   clock_calendar_stable_reads; // consecutive identical (month,day) reads (one per
+                                      // second, from the sky module) before the in-game
+                                      // date is trusted; 0 = always use sky_day_of_year
+
     // --- the renderer's own ambient layer; [sky] section ---
     int   sky_apply;          // 1 = push rtx.* settings to match the sky
     float sky_day;            // rtx.skyBrightness in full daylight
@@ -140,6 +150,16 @@ struct RhyConfig {
     float sky_dawn_deg;       // ... and where daylight is back (upward)
     float sky_emissive_day;   // rtx.emissiveIntensity by day
     float sky_emissive_night; // ... at night; 0 = leave rtx.conf's value alone
+    // Cloud cover, 0 = clear, 1 = overcast. There is no verified offset for the
+    // game's CWeather, so this is an ini knob (s29); it is what the weather
+    // follower smooths, and a real weather read would be plugged in at the same
+    // place. 0 leaves the shipped look exactly as it was.
+    float sky_cloud;
+    // How fast the atmosphere is allowed to change: per second, for turbidity and
+    // cloud cover. A weather front is minutes wide; a value that moves faster than
+    // this is a step wearing a weather name.
+    float weather_turbidity_per_sec;
+    float weather_cloud_per_sec;
     std::string sky_settings; // extra "key = value" file to push ("" = none)
     int   sky_probe;          // 1 = probe which rtx.* keys this build accepts
 

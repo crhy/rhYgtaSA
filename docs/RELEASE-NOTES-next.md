@@ -51,9 +51,19 @@ If something in the update looks wrong, everything is reversible
 
 ### Sun, moon and sky
 
-- The sun and moon are now computed from real astronomy for Los Santos' latitude and the in-game
-  date: sunrise and sunset match the US Naval Observatory tables to about three minutes, and the red
+- The sun and moon are now computed from real astronomy for Los Santos' latitude and the season:
+  sunrise and sunset match the US Naval Observatory tables to about three minutes, and the red
   of a low sun comes from the path length through the atmosphere rather than from a tuned orange.
+- **Time of day runs smoothly.** The clock in the game only offers a new minute every two seconds,
+  and the two bytes next to it that look like a date are not one, so the sun used to step by a
+  quarter of a degree every two seconds — and every so often jump 20 to 40 degrees and straight
+  back, because the plugin was alternating between the real season and a garbage one. It now runs on
+  one continuous clock: the sun moves the way the sky moves, the season stays the same all session,
+  and a script that writes the clock (the tour mod does it twice per stop) can no longer make time
+  run backwards.
+- **A tour no longer breaks the sky.** While the tour mod pins the clock at a stop, the sun holds
+  still instead of wobbling; when the tour deliberately jumps two hours ahead, the world changes
+  over about a second rather than one frame.
 - The moon has a **phase** (it was permanently full) and is placed by lunar position, so a midsummer
   full moon sits at a believable height instead of near the zenith.
 - **Summer time**: a July sunset now lands near 20:05 game time instead of 19:05.

@@ -45,6 +45,13 @@ struct SkyBody {
 // kept so callers pass the real game minute.
 void solarPosition(const SkyObserver& ob, int hour, int minute, SkyBody* out);
 
+// The same position at a CONTINUOUS local clock time, in game minutes from
+// midnight (0..1440, fractional). s29: the game clock only ticks whole minutes
+// (one every ~2000 ms), so the int form above makes the sun a 0.25 degree
+// staircase; plugin/src/tod.cpp turns the same bytes into a continuous minute and
+// the sky module evaluates the bodies with this form every frame.
+void solarPositionF(const SkyObserver& ob, float minuteOfDay, SkyBody* out);
+
 // The moon, modelled as a second body on the SAME diurnal circle, offset in
 // hour angle by (phase - 0.5) * 360 degrees. phase 0.5 (full) therefore puts it
 // exactly opposite the sun - rising at sunset, highest at midnight - and phase
@@ -55,6 +62,10 @@ void solarPosition(const SkyObserver& ob, int hour, int minute, SkyBody* out);
 // 18.6 year node cycle to improve on).
 void lunarPosition(const SkyObserver& ob, int hour, int minute, float phase,
                    SkyBody* out);
+
+// Continuous-time form, see solarPositionF.
+void lunarPositionF(const SkyObserver& ob, float minuteOfDay, float phase,
+                    SkyBody* out);
 
 // Illumination fraction of the lunar disc: 0 at new, 1 at full. This is the
 // phase angle integral, not a linear ramp, because a half moon is a quarter as

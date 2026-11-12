@@ -196,6 +196,22 @@ value the plugin publishes may move by more than a small amount in one frame, wh
 or the renderer does underneath. See `docs/FINDINGS.md`, "Lighting changed instantly, everywhere at
 once".
 
+**Time of day runs on a continuous clock.** The game's clock bytes only offer a new minute every
+~2000 ms, and the sun moves 0.25 degrees per game minute, so reading those bytes directly makes the
+sun a staircase; and the two bytes next to the clock that look like a date are not one (the "month"
+byte is a counter). `plugin/src/tod.cpp` turns the bytes into one continuous, never-backwards game
+minute - interpolated between ticks, self-calibrated to the tick length this machine actually runs
+at, with torn hour/minute reads repaired and a script pinning the clock (`SARemix_Tour.lua` does it
+twice per stop) absorbed as noise instead of walked backwards - and the sun and moon are then
+recomputed every frame at that minute instead of once a second at a whole minute. The season comes
+from `[sun] day_of_year` unless the game's date proves it is a date (`[clock] calendar_stable_reads`
+identical reads, one per second). `[clock]` holds `ms_per_game_minute`, `jitter_tolerance_min`,
+`reanchor_ms` and `calendar_stable_reads`; `[sky] cloud` (0 = clear) and the `*_per_sec` follow rates
+make a weather change a ramp. The bounds are asserted in `tests/tod_check.cpp`, which replays a whole
+simulated 24 h day at 60 fps through the old sampling and the new one: the sun used to move up to
+3566 degrees per game minute between frames, now 0.21 (the real sky is 0.25). See `docs/FINDINGS.md`,
+"Time of day flickered: two calendars, one staircase".
+
 **Too bright, lamps dark, or lamps blink.** First find out whether it is ours at all:
 
 ```

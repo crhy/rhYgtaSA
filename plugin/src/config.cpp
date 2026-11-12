@@ -120,6 +120,12 @@ static const char* const kIniDefaults =
     "track_date=1\r\n"
     "turbidity=0.12\r\n"
     "\r\n"
+    "[clock]\r\n"
+    "ms_per_game_minute=2000\r\n"
+    "jitter_tolerance_min=8\r\n"
+    "reanchor_ms=2000\r\n"
+    "calendar_stable_reads=30\r\n"
+    "\r\n"
     "[moon]\r\n"
     "enabled=1\r\n"
     "radiance=0.10\r\n"
@@ -140,6 +146,9 @@ static const char* const kIniDefaults =
     "dawn_deg=4\r\n"
     "emissive_day=1.0\r\n"
     "emissive_night=1.0\r\n"
+    "cloud=0\r\n"
+    "turbidity_per_sec=0.05\r\n"
+    "cloud_per_sec=0.05\r\n"
     "settings=rhyremix-rtx.conf\r\n"
     "probe=0\r\n"
     "\r\n"
@@ -524,6 +533,12 @@ static void loadConfig() {
     c.sky_turbidity = iniFloatSec("sun", "turbidity", 0.12f);
     c.sun_force_hour = iniIntSec("sun", "force_hour", -1);
     c.sun_force_minute = iniIntSec("sun", "force_minute", -1);
+
+    // --- the game clock (s29). See plugin/src/tod.h.
+    c.clock_ms_per_game_minute = iniFloatSec("clock", "ms_per_game_minute", 2000.0f);
+    c.clock_jitter_min = iniFloatSec("clock", "jitter_tolerance_min", 8.0f);
+    c.clock_reanchor_ms = iniIntSec("clock", "reanchor_ms", 2000);
+    c.clock_calendar_stable_reads = iniIntSec("clock", "calendar_stable_reads", 30);
     if (c.sun_force_hour > 23) {
         c.sun_force_hour = 23;
     }
@@ -554,6 +569,32 @@ static void loadConfig() {
     if (c.sky_turbidity > 1.0f) {
         c.sky_turbidity = 1.0f;  // beyond this the sun simply vanishes
     }
+    // A game minute shorter than a fifth of a second or longer than a minute of real
+    // time is a typo, not a clock speed; the calibration in tod.cpp refuses those too.
+    if (!(c.clock_ms_per_game_minute >= 200.0f)) {
+        c.clock_ms_per_game_minute = 2000.0f;
+    }
+    if (c.clock_ms_per_game_minute > 60000.0f) {
+        c.clock_ms_per_game_minute = 60000.0f;
+    }
+    if (!(c.clock_jitter_min >= 0.0f)) {
+        c.clock_jitter_min = 0.0f;
+    }
+    if (c.clock_jitter_min > 720.0f) {
+        c.clock_jitter_min = 720.0f;  // more than this is not jitter, it is a second clock
+    }
+    if (c.clock_reanchor_ms < 0) {
+        c.clock_reanchor_ms = 0;  // 0 = follow a deliberate backwards set at once
+    }
+    if (c.clock_reanchor_ms > 60000) {
+        c.clock_reanchor_ms = 60000;
+    }
+    if (c.clock_calendar_stable_reads < 0) {
+        c.clock_calendar_stable_reads = 0;  // 0 = never trust the in-game date
+    }
+    if (c.clock_calendar_stable_reads > 600) {
+        c.clock_calendar_stable_reads = 600;
+    }
 
     // --- sky layer: the renderer's own ambient, driven from the sun ---
     c.sky_apply = iniIntSec("sky", "apply", 1);
@@ -564,6 +605,9 @@ static void loadConfig() {
     c.sky_dawn_deg = iniFloatSec("sky", "dawn_deg", 4.0f);
     c.sky_emissive_day = iniFloatSec("sky", "emissive_day", 1.0f);
     c.sky_emissive_night = iniFloatSec("sky", "emissive_night", 1.0f);
+    c.sky_cloud = iniFloatSec("sky", "cloud", 0.0f);
+    c.weather_turbidity_per_sec = iniFloatSec("sky", "turbidity_per_sec", 0.05f);
+    c.weather_cloud_per_sec = iniFloatSec("sky", "cloud_per_sec", 0.05f);
     c.sky_settings = iniStringSec("sky", "settings", "rhyremix-rtx.conf");
     c.sky_probe = iniIntSec("sky", "probe", 0);
     if (c.sky_day < 0.0f) {
@@ -592,6 +636,26 @@ static void loadConfig() {
     }
     if (c.sky_emissive_night < 0.0f) {
         c.sky_emissive_night = 0.0f;  // 0 = do not touch rtx.conf's value
+    }
+    if (!(c.sky_cloud >= 0.0f)) {  // also catches NaN
+        c.sky_cloud = 0.0f;
+    }
+    if (c.sky_cloud > 1.0f) {
+        c.sky_cloud = 1.0f;
+    }
+    // A weather rate of 0 freezes the atmosphere; the follower would then never reach
+    // the value the ini asks for, which is a worse surprise than a fast front.
+    if (!(c.weather_turbidity_per_sec > 0.0f)) {
+        c.weather_turbidity_per_sec = 0.001f;
+    }
+    if (c.weather_turbidity_per_sec > 10.0f) {
+        c.weather_turbidity_per_sec = 10.0f;
+    }
+    if (!(c.weather_cloud_per_sec > 0.0f)) {
+        c.weather_cloud_per_sec = 0.001f;
+    }
+    if (c.weather_cloud_per_sec > 10.0f) {
+        c.weather_cloud_per_sec = 10.0f;
     }
 
     // --- lamp switching by twilight rather than by wall clock ---
@@ -945,10 +1009,18 @@ static void loadConfig() {
            c.sun_force_hour, c.sun_force_minute, c.moon_phase,
            c.lamp_mode ? "twilight" : "hours", c.lamp_dusk_deg, c.lamp_dawn_deg);
     rhyLog("config: sky_apply=%d day=%.3f night=%.3f moon=%.3f twilight=%.1f..%.1f "
-           "emissive=%.2f(day)/%.2f(night) settings=%s probe=%d",
+           "emissive=%.2f(day)/%.2f(night) cloud=%.2f weather=%.3f/%.3f per s "
+           "settings=%s probe=%d",
            c.sky_apply, c.sky_day, c.sky_night, c.sky_moon, c.sky_dusk_deg,
-           c.sky_dawn_deg, c.sky_emissive_day, c.sky_emissive_night,
+           c.sky_dawn_deg, c.sky_emissive_day, c.sky_emissive_night, c.sky_cloud,
+           c.weather_turbidity_per_sec, c.weather_cloud_per_sec,
            c.sky_settings.c_str(), c.sky_probe);
+    // s29: the time axis, on one line, because "why does the time of day flicker?"
+    // is answered by these four numbers plus the doy the sky module is using.
+    rhyLog("config: clock seed=%.0f ms/game-min jitter<=%.0f min reanchor=%dms "
+           "calendar_stable_reads=%d",
+           c.clock_ms_per_game_minute, c.clock_jitter_min, c.clock_reanchor_ms,
+           c.clock_calendar_stable_reads);
     // s28: the anti-pop knobs, on one line, because "why did the street take a
     // second to come on?" and "why did it still pop?" are both answered here.
     rhyLog("config: fade in=%dms out=%dms step=%.2f creates/frame=%d "

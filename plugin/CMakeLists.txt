@@ -12,6 +12,7 @@ add_library(rhyremix SHARED
   src/delayed.cpp
   src/game.cpp
   src/smooth.cpp
+  src/tod.cpp
   src/probe.cpp
   src/rtxconf.cpp
   src/solar.cpp
