@@ -342,18 +342,27 @@ class TestAgainstTheGame(unittest.TestCase):
                 self.assertIn(want, conf, "%s is not in rtx.conf at all" % name)
                 self.assertIn(key, conf[want], "%s: expected %s, got %s" % (name, key, conf[want]))
 
-    def test_mirror_hashes_match_the_config_file(self):
-        """config/mirror-hashes.txt must carry exactly what the game's .txd produces."""
+    def test_mirror_config_has_no_unverified_hash(self):
+        """s21: no GTA SA texture is mirror-only, so config/mirror-hashes.txt must stay empty.
+
+        The two hashes s18 shipped are the *environment map* of the whole car body (xvehicleenv128:
+        env slot of 4197 materials on 179 of 209 stock models; vehicleenvmap128: 495 on 81), never a
+        diffuse texture, and the mirror glass itself uses vehiclelights128 - which is also every car
+        light. Table: .strata/notes-s21-mirror-hash-check.md.
+        """
         cfg = os.path.join(os.path.dirname(__file__), "..", "config", "mirror-hashes.txt")
         lines = [l.strip() for l in open(cfg, encoding="utf-8") if l.strip() and not l.startswith("#")]
         live = [l.split("#")[0].strip() for l in lines if not l.startswith("#")]
-        self.assertEqual(sorted(live), ["0x45DF1EA60BB202B5", "0x6BAFC5F6AEE0A6B5"],
-                         "config/mirror-hashes.txt has no (or wrong) live hashes")
+        self.assertEqual(live, [], "config/mirror-hashes.txt must carry no hash until a texture is "
+                                  "verified mirror-only; see docs/MIRRORS.md section 7")
         blob = open(os.path.join(GAME, "models/generic/vehicle.txd"), "rb").read()
         by_name = {t.name.lower(): t for t in R.parse_txd(blob, "vehicle.txd")}
-        for name in ("xvehicleenv128", "vehicleenvmap128"):
-            want = "%016X" % R.xxh3_64bits(by_name[name].d3d9_mip0(blob))
-            self.assertIn("0x" + want, live, "%s hash in the config is not the game's" % name)
+        for name, want in (("xvehicleenv128", "45DF1EA60BB202B5"),
+                           ("vehicleenvmap128", "6BAFC5F6AEE0A6B5"),
+                           ("vehiclelights128", "5AD92DBA0F2D1BCA")):
+            got = "%016X" % R.xxh3_64bits(by_name[name].d3d9_mip0(blob))
+            self.assertEqual(got, want, "%s hash changed?" % name)
+            self.assertNotIn("0x" + got, live, "%s must not be a mirror hash" % name)
 
 
 if __name__ == "__main__":

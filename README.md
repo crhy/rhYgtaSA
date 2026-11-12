@@ -140,6 +140,18 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   ```
   GTASA_RTX_DIR="/path/to/your/GTASA-RTX" bash launcher/launch-rtx.sh
   ```
+- If the frame rate is the problem rather than the lighting, switch the renderer's startup
+  settings wholesale instead of hand-editing `rtx.conf` (that file also carries the asset pack's
+  texture-hash lists, and one mistyped 1246-character line breaks the pack):
+  ```
+  tools/rtxprofile.sh check                      # audit: does every key exist in this runtime?
+  tools/rtxprofile.sh perf    "/path/to/GTASA-RTX"   # the 60 fps profile (config/rtx.conf.perf)
+  tools/rtxprofile.sh status  "/path/to/GTASA-RTX"
+  tools/rtxprofile.sh restore "/path/to/GTASA-RTX"  # the exact bytes that were there before
+  ```
+  Every switch keeps `<game>/.rhys-rtxprofile/rtx.conf.prev` and one never-overwritten
+  `rtx.conf.pristine`; `orig` puts back the runtime's own first-launch file. Evidence and the
+  per-key reasoning: `.strata/notes-s22-60fps-budget.md`.
 
 ## Troubleshooting
 

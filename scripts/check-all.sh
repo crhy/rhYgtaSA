@@ -11,7 +11,10 @@
 # the six "characters" packs of deps/manifest.json staged synthetically, installed in the
 # documented order with their priorities written inside [Profiles.Default.Priority], and an
 # on/off round-trip that hashes back byte-identical), the test-session stub test (s15: fake
-# Strata/game/nvidia-smi under build/tmp, never the real ones) and a syntax check of every
+# Strata/game/nvidia-smi under build/tmp, never the real ones), the rtx profile audit +
+# switch round-trip (s22: every key of config/rtx.conf.perf looked up in the option-name
+# vocabulary generated from `strings` on the runtime's d3d9.dll, then perf/current/orig/restore
+# against a fake game tree, hashing the whole file back) and a syntax check of every
 # shell script we ship. One PASS/FAIL line per check,
 # then either the list of failures or "ALL GATES PASSED".
 #
@@ -117,6 +120,9 @@ run characters "scripts/characters-selftest.sh" 600 bash scripts/characters-self
 
 echo "== test-session (stubs only: no game, no GPU, no real Strata) =="
 run testsess "scripts/test-session-selftest.sh" 300 bash scripts/test-session-selftest.sh
+
+echo "== rtx profiles (config/rtx.conf.perf keys audited against the runtime's own option names; tools/rtxprofile.sh round-trip on a fake tree) =="
+run rtxprofile "scripts/rtxprofile-selftest.sh" 300 bash scripts/rtxprofile-selftest.sh
 
 echo "== shell syntax (bash -n) =="
 # Every .sh in the tree except generated output (build/, rule 2) and git internals. A

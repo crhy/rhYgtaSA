@@ -62,6 +62,77 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
 - **Tests:** `tests/test_remix_texhash.py` (19 checks: the python xxHash implementations against
   published xxHash test vectors, a synthetic `.txd` with 32-bit / 16-bit / DXT5 rasters, the
   `rtx.conf` hash-list parser; the real-game table check skips when the game is not installed).
+- **Added (s22):** `tools/rtxprofile.sh {perf|current|orig|status|restore|check} [GAME_DIR]` and
+  `config/rtx.conf.perf`, a 60 fps profile for the 4070 Ti SUPER 16 GB install. The audit tooling
+  is the durable part: `tools/rtx-runtime-keys.py` turns `strings` on `<game>/.trex/d3d9.dll`
+  into `config/rtx-runtime-keys.txt` (246 dotted option paths + 1345 bare option names), and
+  `tools/rtxkeycheck.py` grades every key of a profile as `dotted` / `leaf+category` / `leaf`.
+  That found two keys the shipped `rtx.conf` has been carrying for weeks which **this build does
+  not contain at all** — `grep -c` on the 282 MB runtime and on every other `.trex` module returns
+  0 for `rtx.enableVolumetricLighting` and `rtx.minReplacementTextureMipMapLevel`; the name this
+  runtime has is `rtx.volumetrics.enable`. The log of the last run also settles what is actually
+  running: `[RTX] Integrate Indirect Mode: Spatially Hashed Radiance Cache - activated`, so the
+  eleven `rtx.restirGI.*` keys in `rtx.conf` are inert tuning, and the profile's biggest lever is
+  `rtx.spatiallyHashedRadianceCache.qualityPreset = 0` (tooltip: "Lower presets reduce update
+  tracing cost but slow cache convergence and lighting response"). Switching keeps
+  `<game>/.rhys-rtxprofile/rtx.conf.{prev,pristine}`; `perf`→`current` and `perf`→`restore` hash
+  back byte-identical, on a copy of the real file as well as in the fake tree.
+- **Tests (s22):** `scripts/rtxprofile-selftest.sh` (37 checks, wired into `scripts/check-all.sh`):
+  the key audit plus a negative control (the two legacy keys must still fail), byte-identical
+  round-trips through `perf`/`current`/`orig`/`restore`, refusal to write outside a game dir or
+  inside the repo, and a check that every texture-hash list and every look-critical key survives
+  the switch.
+- **Added (s23):** `tools/tour-report.py GAME_DIR [--since TIME]` — the tour's output becomes a
+  judgement instead of a folder of 1920x1080 PNGs. It joins `screenshots/tour-manifest.txt` to
+  `screenshots/shots/*.png` **by time** (the Lua `note()` line and the file are written a second
+  apart, at second resolution, with manual F12 shots sitting in the same directory), then writes
+  `<game>/screenshots/report-<tour start>/`: labelled contact sheets, 4 shots each, and `report.md`
+  with objective numbers per shot — Rec.709 mean luma plus p05/p50/p95, % clipped white
+  (`max(R,G,B) >= 250`), % black (`<= 4`), mean HSV saturation, and for the signal stops the
+  fraction of red / amber / green pixels (hue bands gated on S>=0.45 and V>=0.25, so grey tarmac
+  never reads as a signal) — each shot followed by the `rhyremix.log` line nearest it in each of
+  three categories: `streetlights: N active, N drawn this frame`, `trafficlights: … (green=…
+  amber=… red=…)` and `sky: sun elev=… lamps=… (hour=…)`. On the real 2026-11-11 tour: **13 of 13**
+  manifest entries paired, 18 of 31 shot files correctly left as unclaimed manual shots, and the
+  numbers say what the eye only guessed — `03-sodium-lamp-closeup-2100` mean luma 26.2 with 6.7 %
+  crushed black, `11-water-santa-maria-2100` mean 6.1 with 40.8 % black, and the two signal stops
+  at 2.24 %/0.09 % red, 23.0 %/2.4 % amber, 5.7 %/21.2 % green.
+- **Tests (s23):** `tests/test_tour_report.py` (27 checks on synthetic PNGs, a hand-written
+  manifest and a fake log under `build/tmp/`): manifest parsing, filename timestamps and the
+  mtime fallback, pairing (tolerance, one file cannot be claimed twice — the closer entry wins,
+  unclaimed files listed), every `--since` form, the metric definitions on flat grey/white/black
+  images, signal fractions (and that dim or desaturated head pixels count 0 %), the pure-python
+  fallback agreeing with the numpy path, nearest-log-line selection with the per-category window,
+  and one end-to-end run: report-dir naming from the `tour start` event, `ceil(n/4)` sheets of the
+  right pixel size, and the markdown rows.
+
+### Mirrors (s21) — the two "mirror hashes" were never mirror-only
+
+- **Fixed:** `config/mirror-hashes.txt` is **empty on purpose**. s21 parsed every stock vehicle
+  `.dff` (209 models of `models/gta3.img`, i.e. everything named in `data/vehicles.ide`, plus the 50
+  `.dff` under `modloader/`) with a real RenderWare clump parser and recorded, per material, which
+  *slot* each texture sits in and which atomic/frame it hangs on:
+  `xvehicleenv128` is the env/reflection slot of **4197 materials on 179 of 209 models** (body
+  `chassis`, all four doors ok+damaged, bonnet, boot, bumpers, windscreens, bikes, boats) and
+  `vehicleenvmap128` the same on 81 models — **205 828 and 19 589 triangles** respectively, and
+  neither is ever a diffuse or specular texture. The entry above (s18) is therefore superseded:
+  `tools/mirrors.py` with those hashes would have made a mirror out of every painted car panel.
+- **Added:** the mirror geometry was located geometrically instead — car-space frame chain, then "the
+  small cluster that sticks out past the front-door skin" — and its own diffuse texture is
+  `vehiclelights128` (`0x5AD92DBA0F2D1BCA`), which is also every head/tail/indicator lens (1146
+  materials, 163 models). No GTA SA texture is mirror-only, so `docs/MIRRORS.md` gains section 7:
+  override the mirror **mesh** (`mesh_<MESHHASH>`, the pack's own recipe for its re-authored
+  taxi/police mirrors), with the measured geometry to look for (4–8 triangles, ≈0.04 m², |x|
+  1.05–1.3 m, z 0.2–0.6 m, just ahead of the front door).
+- **Changed:** `tools/mirrors.py` now refuses any hash whose line in the list file does not carry
+  `# verified-mirror-only`, prints why, and exits with an explanation instead of writing a layer
+  when nothing is verified; `--hash` needs the marker in the same argument or
+  `--verified-mirror-only`.
+- **Tests:** `tests/test_mirrors.py` (9 checks against a fake game tree: unmarked hash refused,
+  marked hash accepted, mixed file, `--hash` marker rule, shipped config yields zero overrides,
+  generated layer contains only verified hashes); `tests/test_remix_texhash.py` now asserts the
+  config carries no hash and that the three texture hashes in the s21 table still compute to the
+  documented values. Method, parsers and the full usage tables: `.strata/notes-s21-mirror-hash-check.md`.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

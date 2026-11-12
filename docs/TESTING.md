@@ -41,6 +41,22 @@ streaming hang). If the mirror shot frames an empty curb, that stop's numbers ar
 nudge in `plugin/lua/SARemix_Tour.lua` - parked street cars come from the compiled main
 script, so their position is not readable out of the game's data files.
 
+When the tour is done, one more command turns the folder into something you can judge instead
+of flip through:
+
+```bash
+python3 tools/tour-report.py /media/rhy/data/Gamez/GTASA-RTX      # or --since 21:00 for the last run
+```
+
+It joins `screenshots/tour-manifest.txt` to `screenshots/shots/*.png` by timestamp (the manifest
+line and the file are written a second apart, so it matches by nearest time, never by name), and
+writes `<game>/screenshots/report-<tour start>/`: labelled contact sheets, 4 shots each, and
+`report.md` with objective numbers per shot - Rec.709 mean/percentile luma, % clipped white,
+% black, mean saturation, and for the signal stops the fraction of red/amber/green pixels -
+next to the `scripts/rhyremix.log` lines nearest each shot (streetlights, trafficlights with
+their green/amber/red counts, and the sky line with sun elevation and the game clock). That is
+how "the lamp looks dim" becomes "mean luma 26, 6.7 % crushed black, 320/320 drawn".
+
 ---
 
 ## Step 1 - deploy the conservative config

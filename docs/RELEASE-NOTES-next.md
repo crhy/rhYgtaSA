@@ -89,10 +89,14 @@ If something in the update looks wrong, everything is reversible
 
 ### Mirrors, characters, vegetation
 
-- **Rear-view mirrors really reflect.** SA paints its mirrors — no stock car has a mirror surface —
-  so a Remix material (metallic 1, roughness 0.02) is applied to the mirror texture by hash. The
-  hashes are now computed offline by `tools/remix_texhash.py`, so this no longer needs you to read a
-  hash out of the running game. `tools/mirrors.py --dry-run` reports what it would change.
+- **Rear-view mirrors: measured, and deliberately not changed.** SA paints its mirrors, and the
+  obvious fix — a Remix material (metallic 1, roughness 0.02) keyed to the mirror *texture* — turned
+  out to be wrong: parsing all 209 stock vehicle `.dff` shows `xvehicleenv128` / `vehicleenvmap128`
+  are the reflection map of the whole car body (4197 materials on 179 cars / 495 on 81), and the
+  mirror glass itself uses `vehiclelights128`, which is also every car light. No stock texture is
+  mirror-only, so `config/mirror-hashes.txt` is empty and `tools/mirrors.py` refuses unverified
+  hashes rather than re-materialising your car. [docs/MIRRORS.md](docs/MIRRORS.md) section 7 documents
+  the route that does work — overriding the mirror **mesh** — and the geometry to pick.
 - **Character packs are one switchable step**: `tools/characters.sh on|off|status` installs the
   recommended set in the right order and removes exactly what it added. The doc lists which of the
   pack's CJ material overrides stop applying after a CJ retex and how to re-point them.
@@ -155,9 +159,11 @@ What each shot should prove, and the knobs to A/B if it does not, are in
 4. **The traffic-signal hook counters** in the log:
    `hook: calls=… records=… dropped=… bad=… reentrant=…` — `reentrant` must stay 0, a rising `bad`
    is a symptom to report rather than a reason to stop playing.
-5. **The mirror shot**: does the mirror show the road that is actually behind the car? If it frames an
-   empty curb, that stop's coordinates are the ones to nudge — parked cars are placed by the compiled
-   script, so their position is not readable from the game's data files.
+5. **The mirror shot**: on a stock car the mirror is painted (a pre-baked gradient strip), so it will
+   *not* show the road behind you — that is expected until the mesh override of
+   [docs/MIRRORS.md](docs/MIRRORS.md) section 7 is done. What this shot is for is the framing: if the
+   mirror frames an empty curb, that stop's coordinates are the ones to nudge — parked cars are placed
+   by the compiled script, so their position is not readable from the game's data files.
 6. **Water**: try `tools/water.sh realistic` first, then `calm`, then `pack`.
 
 ---
@@ -236,7 +242,7 @@ cp -a "<game>/rhYgtaSA-backup/." "<game>/"        # pristine pre-patch copies ba
 tools/water.sh pack "<game>"                      # the pack's water material
 tools/characters.sh off "<game>"                  # character packs out again
 tools/vegetation.sh off "<game>"                  # vegetation pack out, every edited byte back
-tools/mirrors.py --remove "<game>"                # mirror material out
+tools/mirrors.py --remove "<game>"                # mirror material layer out (none exists by default)
 rm "<game>/scripts/rhyremix.asi"                  # our plugin only
 ```
 

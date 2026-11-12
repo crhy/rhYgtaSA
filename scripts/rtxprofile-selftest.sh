@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# s22 gate for tools/rtxprofile.sh: a fake game tree under build/tmp/, never the real one.
+#
+# What it proves, in order:
+#   1  the key audit passes for config/rtx.conf.perf against the runtime's own option-name
+#      vocabulary (config/rtx-runtime-keys.txt, generated from `strings` on .trex/d3d9.dll),
+#      and the same audit still FAILS on the two legacy keys in config/rtx.conf - the audit is
+#      not vacuous.
+#   2  perf -> current and perf -> restore are BYTE-IDENTICAL round-trips (sha256 of the whole
+#      file, not a diff), and orig installs the runtime's first-launch file byte for byte.
+#   3  backups: a pristine copy is written once and survives repeated switches; prev always
+#      holds the previous bytes.
+#   4  the switcher refuses a directory with no rtx.conf, and refuses anything inside the repo.
+#   5  the perf profile really changes the keys it claims to, and keeps every texture-hash
+#      list the asset pack needs.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+REPO="$PWD"
+
+T="build/tmp/rtxprofile-selftest"
+G="$T/game"
+rm -rf "$T"; mkdir -p "$G/rtx-remix/logs"
+
+pass=0; fails=()
+ok()   { pass=$((pass+1)); echo "PASS $1"; }
+bad()  { fails+=("$1"); echo "FAIL $1${2:+  ($2)}"; }
+sha()  { sha256sum "$1" | awk '{print $1}'; }
+
+# --- fake install: the shipped rtx.conf, plus a synthetic runtime first-launch file ---------
+cp config/rtx.conf "$G/rtx.conf"
+sed 's/rtx.emissiveIntensity = .*/rtx.emissiveIntensity = 10/' config/rtx.conf > "$G/rtx.conf.orig"
+ORIG=$(sha "$G/rtx.conf")
+PERF=$(sha config/rtx.conf.perf)
+TOOL="tools/rtxprofile.sh"
+
+# --- 1 key audit --------------------------------------------------------------------------
+if $TOOL check > "$T/check.log" 2>&1; then ok "rtxprofile.sh check: every key of rtx.conf.perf is in the runtime's strings"; else bad "rtxprofile.sh check" "see $T/check.log"; fi
+if grep -q "rtx.conf.perf: [1-9][0-9]* keys, 0 unknown" "$T/check.log"; then ok "audit counted the perf keys and found 0 unknown"; else bad "audit did not report 0 unknown for the perf profile"; fi
+if grep -q "rtx.enableVolumetricLighting" "$T/check.log"; then ok "audit still flags the legacy key in config/rtx.conf (negative control)"; else bad "audit is vacuous: legacy key not flagged"; fi
+
+# --- 2/3 switching and round-trips --------------------------------------------------------
+$TOOL status "$G" > "$T/status0.log" 2>&1
+if grep -q "^profile  : current" "$T/status0.log"; then ok "status identifies the shipped file as 'current'"; else bad "status did not identify 'current'"; fi
+
+$TOOL perf "$G" > "$T/perf.log" 2>&1 || bad "perf switch exited nonzero"
+[ "$(sha "$G/rtx.conf")" = "$PERF" ] && ok "perf installed the perf profile byte for byte" || bad "perf did not install the perf profile"
+[ -f "$G/.rhys-rtxprofile/rtx.conf.pristine" ] && [ "$(sha "$G/.rhys-rtxprofile/rtx.conf.pristine")" = "$ORIG" ] \
+  && ok "pristine backup holds the original bytes" || bad "pristine backup missing or wrong"
+[ -f "$G/.rhys-rtxprofile/rtx.conf.prev" ] && [ "$(sha "$G/.rhys-rtxprofile/rtx.conf.prev")" = "$ORIG" ] \
+  && ok "prev backup holds the previous bytes" || bad "prev backup missing or wrong"
+
+$TOOL restore "$G" > "$T/restore.log" 2>&1 || bad "restore exited nonzero"
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "perf -> restore is byte-identical" || bad "perf -> restore changed the file"
+
+$TOOL perf "$G" >/dev/null 2>&1
+$TOOL current "$G" > "$T/current.log" 2>&1 || bad "current switch exited nonzero"
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "perf -> current round-trip is byte-identical" || bad "perf -> current changed the file"
+
+$TOOL orig "$G" > "$T/orig.log" 2>&1 || bad "orig switch exited nonzero"
+[ "$(sha "$G/rtx.conf")" = "$(sha "$G/rtx.conf.orig")" ] && ok "orig installs rtx.conf.orig byte for byte" || bad "orig did not install rtx.conf.orig"
+$TOOL restore "$G" >/dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "orig -> restore is byte-identical" || bad "orig -> restore changed the file"
+
+# repeated switches must not churn the pristine copy; restore is a ONE-STEP undo, so after two
+# perf switches it puts the perf file back again and `current` is what returns the original
+$TOOL perf "$G" >/dev/null 2>&1; $TOOL perf "$G" >/dev/null 2>&1
+[ "$(sha "$G/.rhys-rtxprofile/rtx.conf.pristine")" = "$ORIG" ] && ok "pristine copy survives repeated switches" || bad "pristine copy was overwritten"
+[ "$(sha "$G/.rhys-rtxprofile/rtx.conf.prev")" = "$PERF" ] && ok "prev holds the last switch source" || bad "prev is wrong after repeated switches"
+$TOOL restore "$G" >/dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$PERF" ] && ok "restore is a one-step undo" || bad "restore did not undo one step"
+$TOOL current "$G" >/dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "current returns the original bytes after repeated switches" || bad "current did not return the original bytes"
+
+# --- 4 refusals ---------------------------------------------------------------------------
+mkdir -p "$T/notagame"
+$TOOL perf "$T/notagame" >/dev/null 2>&1 && bad "accepted a dir with no rtx.conf" || ok "refuses a dir with no rtx.conf"
+$TOOL perf "$REPO" >/dev/null 2>&1 && bad "accepted a path inside the repo" || ok "refuses to write inside the repo"
+
+# --- 5 what the profile actually changes --------------------------------------------------
+$TOOL perf "$G" > /dev/null 2>&1
+get() { grep -m1 -E "^[[:space:]]*$2[[:space:]]*=" "$1" | tr -d '\r' | sed 's/.*=[[:space:]]*//'; }
+[ "$(get "$G/rtx.conf" rtx.pathMinBounces)" = "1" ] && ok "pathMinBounces 0 -> 1" || bad "pathMinBounces not raised to 1"
+[ "$(get "$G/rtx.conf" rtx.spatiallyHashedRadianceCache.qualityPreset)" = "0" ] && ok "SHaRC qualityPreset = 0 (Medium)" || bad "SHaRC preset missing"
+[ "$(get "$G/rtx.conf" rtx.neuralRadianceCache.qualityPreset)" = "0" ] && ok "NRC qualityPreset = 0 (Medium)" || bad "NRC preset missing"
+[ "$(get "$G/rtx.conf" rtx.volumetrics.froxelGridResolutionScale)" = "2" ] && ok "froxel grid resolution scale = 2" || bad "froxel scale missing"
+[ "$(get "$G/rtx.conf" rtx.texturemanager.budgetPercentageOfAvailableVram)" = "40" ] && ok "texture VRAM budget 50% -> 40%" || bad "texture budget missing"
+[ "$(get "$G/rtx.conf" rtx.opacityMicromap.cache.maxBudgetSizeMB)" = "768" ] && [ "$(get "$G/rtx.conf" rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate)" = "2048" ] \
+  && ok "OMM caps tightened (1024->768 MB, 1536->2048 MB free)" || bad "OMM caps wrong"
+[ "$(get "$G/rtx.conf" rtx.volumetrics.enable)" = "True" ] && ok "volumetrics kept on under the name this build knows" || bad "volumetrics key wrong"
+for k in decalTextures ignoreTextures uiTextures skyBoxTextures particleTextures animatedWaterTextures lightmapTextures; do
+  a=$(grep -m1 "rtx.$k = " "$G/rtx.conf" | sha256sum)
+  c=$(grep -m1 "rtx.$k = " config/rtx.conf | tr -d '\r' | sha256sum)
+  [ "$a" = "$c" ] && ok "texture list rtx.$k carried through unchanged" || bad "texture list rtx.$k changed"
+done
+for k in sceneScale zUp skyBrightness emissiveIntensity localtonemap.shadows translucentMaterial.normalIntensity; do
+  a=$(get "$G/rtx.conf" "rtx.$k"); b=$(get config/rtx.conf "rtx.$k")
+  [ "$a" = "$b" ] && ok "look-critical rtx.$k unchanged ($a)" || bad "look-critical rtx.$k changed ($b -> $a)"
+done
+
+echo
+echo "$pass checks passed, ${#fails[@]} failed"
+if [ "${#fails[@]}" -ne 0 ]; then echo "FAILURES:"; for f in "${fails[@]}"; do echo "  - $f"; done; exit 1; fi
+echo "RTX PROFILE SELFTEST OK"

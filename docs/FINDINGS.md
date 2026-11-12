@@ -553,6 +553,18 @@ hash-named replacement textures** the pack ships — e.g. `waterclear256` →
 (`xvehicleenv128 = 0x45DF1EA60BB202B5`, also present in the pack as `mat_45DF1EA60BB202B5`, and
 `vehicleenvmap128 = 0x6BAFC5F6AEE0A6B5`) no longer require running the game.
 
+**s21 correction, and it is a dead end worth recording.** Those two hashes are computed correctly but
+they were the wrong targets: parsing the material tree of all 209 stock vehicle `.dff` shows both sit
+in the **env/reflection slot** of the whole car — `xvehicleenv128` on 4197 materials across 179
+models (body, doors, bonnet, boot, bumpers, windscreens, bikes, boats; 205 828 triangles),
+`vehicleenvmap128` on 495 materials across 81 — and neither is ever a diffuse texture. The mirror
+glass's own diffuse is `vehiclelights128 = 0x5AD92DBA0F2D1BCA`, which is also every head/tail/
+indicator lens (1146 materials, 163 models). **No GTA SA texture is mirror-only**, so a `mat_<HASH>`
+"mirror material" cannot be done by texture at all; the mesh route is in
+[MIRRORS.md](MIRRORS.md) section 7 and the scan behind all of this in
+`.strata/notes-s21-mirror-hash-check.md`. A texture hash tells you *which texture*, never *which
+surface of which model* — that was the trap.
+
 Two things the .txd side taught us, both of which break a naive reader over all 32949 textures of
 the game:
 
