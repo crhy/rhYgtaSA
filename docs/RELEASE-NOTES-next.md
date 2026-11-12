@@ -108,6 +108,16 @@ If something in the update looks wrong, everything is reversible
   default spawn is 79 m from the nearest signal, while the game itself draws no signal glow beyond 50 m,
   so that test could never pass. It now only falls back when a signal is actually within that 50 m and
   still nothing appeared, and it logs the distance and the decision once (`head source = ...`).
+- **A lit signal is a bulb AND a glow.** Your correction on the last test round: the soft glow around
+  a signal was wanted, the bulbs were missing — "both like real life". The newest build puts both on
+  every lit head at the same spot, in the same colour, switching together: a small very bright bulb
+  the size of the lens (what you look at), and a soft glow that carries the signal's colour a few
+  metres onto the pole, the wall, the road and the peds under it. The glow's strength is the one you
+  had on 2026-11-12 (measured, not re-tuned by hand), spread over a bigger sphere instead of squeezed
+  into the lens, and it is capped so a signal can never out-light the street lamp over its head. It
+  keeps its strength through the red/amber/green cycle and only changes colour. `glow_flux=0` in
+  `rhyremix.ini` gives the bulb-only look back for comparison; `glow_radius` sets how far the spill
+  reaches.
 
 ### Water
 

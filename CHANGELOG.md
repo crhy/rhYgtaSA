@@ -24,6 +24,31 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
 
 ### Traffic signals
 
+- **Added (n02b): a lit signal is two lights again — the bulb at the lens AND the glow around it.**
+  rhY, 2026-11-12 08:50: *"We wanted the glow from the traffic light and the bulb. It should be both
+  like real life."* The 2026-11-12 00:48 run had the ambient and no bulb; s30 fixed the bulb and
+  removed the ambient twice over — our light's flux went **304 → 67** (radiance 5400 → 1200 nits at
+  the same 0.10 m sphere) and the game's own signal corona went from **15.0 to 0.45 game units**
+  (area ÷1111) — and n02 moved that one light 2.10 m onto the lens without ever adding a second one.
+  Now `rhySignalGlow()` adds a soft sphere at the same lens: `glow_radius=3` m carrying
+  `glow_flux=304`, the flux the 2026-11-12 00:48 glow measured, so the spill onto the pole, the wall,
+  the road and the peds is the strength rhY saw and wants at 1/900th the surface brightness. It is
+  solved for flux, not radiance, so the spill keeps its strength through the red/amber/green cycle
+  and only changes colour; it takes the same lens colour (`rhySignalLensRgb`), the same position and
+  the same fade envelope as the bulb, and `config.cpp` caps it at **3473** — one mid street
+  luminaire's flux, which `rhyLuminaireFlux()` reproduces from `radiance_big=2.0`, `radius_ref=15`
+  and the shipped 2100 K / 5000 K lamp colours (3462 measured, s30's 3473). 304 is 8.8 % of that, so
+  the reference strength needed no take-down. Both handles are created, drawn and destroyed together
+  in both light paths, the glow's hash carries a fixed bias so it cannot collide with its own bulb's,
+  and the 10 s summary now logs `N heads lit (N with a glow), N bulbs + N glows drawn`.
+  `glow_flux=0` is the bulb-only A/B. Tests: `tests/signals_check.cpp` 150 → 166,
+  `tests/test_signal_glow.py` new (17 checks).
+
+- **Fixed (n02b): the claim in the 2026-11-12 report that finding 4 was "no green street flood".**
+  It was worded wrong: the ambient glow rhY saw is WANTED, the bulbs are what is missing. Corrected
+  in `.strata/test-2026-11-12.md` and in the signal step of `docs/NEXT-TEST.md`, which now asks for
+  a bulb AND a glow at every lit head.
+
 - **Fixed (n02): the claim that "the patched call site was never reached", and the source decision
   that was built on it.** The two runs that installed the hook (2026-11-11 12:04, 13:03) logged
   `records=0`, and `plugin/src/signalheads.h` turned that into "never reached" — which then flipped

@@ -79,6 +79,14 @@ head_grace_ms=20000
 ; n02: 1 = list-mode lights go on the lens (v2 list file: heading + head offset),
 ; 0 = the old pole position.
 lens_offset=1
+; n02b: every lit signal gets two lights at the lens - the bulb (bulb_radius /
+; bulb_radiance nits) and a soft glow (glow_radius metres, glow_flux total, the
+; 2026-11-12 00:48 look; 0 = bulb only). Same colour, same phase, one envelope.
+bulb_radius=0
+bulb_radiance=1200
+glow_radius=3
+glow_flux=304
+corona_radius=0.45
 period=60
 max_lights=100
 max_distance=300

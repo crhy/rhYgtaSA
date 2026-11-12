@@ -26,17 +26,17 @@ remixapi_InitializeLibrary v0.6.5 -> 0` — without it the card was not free (do
 manifest entries`; numbers to beat: 00-baseline 128.6, 03-sodium-lamp 26.3 / 6.6 % black, 11-water-2100 6.8 / 29.2 %,
 12-car-mirror 145.1, 13-ped 134.2, 14-veg 168.1. Rollback: nothing changed — this is the reference run.
 
-## 2. signal heads: bulbs, not a green street (s01 + s19 + s30)
+## 2. signal heads: the bulb AND the glow (s30 + n02 + n02b)
 ```bash
 grep -E 'signalhook|trafficlights\[|config: traffic' $G/scripts/rhyremix.log | tail -6
 ```
-Look: a **small bright bulb at each lens** — not a glow around the pole, not a green wash on road and walls. The sodium-lamp
-stops (0-5) are the control. Log: `| bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45`, `signalhook:
-patched 0x0049DD4C`, `corona radius 15.00 -> 0.45 game units at 0x0049DCDA`, `N heads lit ... calls=N records=N dropped=0
-bad=0`. Report: stops 06/07 green 5.7 % / 21.2 % (2026-11-11) and 33.4 % / 3.9 % (2026-11-12) — both with **zero green pixels
-above luma 200**: wash, no bulb; s30 inverts it. Rollback: live ini edits under `[trafficlights]`. `corona_radius=0` puts the
-game's own 15 m flare back, `bulb_radiance=0` turns our signal lights off, `source=list` takes the hook out; undo by deleting
-the line.
+Look: at each lit head **both** — a small bright bulb on the lens, AND a soft red/amber/green glow colouring pole, wall, road
+and peds a few metres around the head (rhY: "both like real life"). Not a 30 m wash, not a bare dot. Stops 0-5 (sodium) are
+the control. Log: `glow radius=3.00 flux=304 (cap 3473 = one street luminaire)`, an `ok bulb` line AND an `ok glow` line per
+lit signal, `N heads lit (N with a glow), N bulbs + N glows drawn`, `signalhook: patched 0x0049DD4C`, `corona radius 15.00 ->
+0.45`. Report: stops 06/07 — green pixels above luma 200 must appear (the bulb; none on 2026-11-12) and the road/wall green
+stay near the 2026-11-12 level (the glow, wanted). Rollback: live ini edits under `[trafficlights]`: `glow_flux=0` = bulb only,
+`bulb_radiance=0` = no signal lights, `corona_radius=0` = the game's own 15 m flare, `source=list` = no hook.
 
 ## 3. water — the regenerated normal sheet, then the A/B (s02, s32)
 ```bash
@@ -82,5 +82,5 @@ bash tools/characters.sh on $G
 ```
 Look: stop 13-ped-crowd-pershing-noon — faces and hands at 2 m; CJ: the pack's PBR is keyed to his four texture hashes, so a
 retex can leave him matte (note it, that is s25). Report: stop 13 sat up (clothing; step 1: 0.264) and mean within ~10 % of
-134.2; a big mean drop on CJ is s25's symptom. Rollback: `bash tools/characters.sh off $G`. `on` refuses today — nothing is
-staged in `/media/rhy/data/Gamez/GTAmods/x/characters/stage`; stage them, then re-run this step.
+134.2; a big mean drop on CJ is s25's symptom. Rollback: `bash tools/characters.sh off $G`. `on` refuses until packs are staged
+in `/media/rhy/data/Gamez/GTAmods/x/characters/stage`.

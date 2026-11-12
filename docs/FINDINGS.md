@@ -1153,3 +1153,65 @@ and now reports `FAIL 1522 malformed traffic lines` for the eight-column file.
 Rule 4 of the header says never edit `scripts/check.sh`, so it is recorded here
 instead: the assertion needs `NF!=4 && NF!=8`, and `scripts/check-all.sh` - the
 gate this task's Gate line names - passes.
+
+## The glow was wanted: what s30 removed and n02b puts back (2026-11-12, n02b)
+
+rhY's correction, 2026-11-12 08:50, on the wording of his own finding 4:
+
+> "We wanted the glow from the traffic light and the bulb. It should be both
+> like real life."
+
+The 2026-11-12 report line had been read as "no green street flood", and s30
+acted on that reading. The glow rhY saw at the signal stops is not the defect;
+the missing bulbs are. So the question for n02b was not "how dim is the signal
+now" but "what exactly did the two commits take away, and what did the 00:48
+glow measure?"
+
+### What the 00:48 run had, and what each commit did to it
+
+Two glows were on screen at every signal. Measured, with the file:line of each
+number (the 00:48 build is the s29 tree, `9e67d91`; s30 is `bd7fdf4`, n02 is
+`ee59b87`):
+
+| | 2026-11-12 00:48 | s30 | n02 (HEAD before n02b) |
+|---|---|---|---|
+| our light, radius | 0.10 m (`9e67d91:trafficlights.cpp:375-377`) | 0.10 m, `bulb_radius` added | 0.10 m |
+| our light, radiance | 5400 nits (`:379-380`, `rhyRadianceForFlux(1.5, 0.10, 6.0)`) | **1200 nits** (`signalheads.cpp:391-396`) | 1200 |
+| our light, flux (green) | **303.9** (amber 269.2, red 226.2) | **67.5** — a 4.5× cut | 67.5 |
+| our light, colour | `rhySignalLensRgb` passbands | same | same |
+| our light, position | pole `x,y,z+headz` (`:402-404`) | pole | **the lens**, up to 2.10 m sideways |
+| lights created per signal | 1 | 1 | 1 |
+| the game's corona radius | **15.0** game units (imm32 at `0x49DCDA`) | **0.45** (`signalhook.cpp:278-330`) | 0.45 |
+| the game's corona area | 1× | **÷1111** | ÷1111 |
+
+So s30 cut our light's output by 4.5 and the game's flare by three orders of
+magnitude in area, and n02 moved the remaining light onto the lens. Neither ever
+added a second light. A 0.10 m / 1200-nit / flux-67 sphere is a lens you can look
+at and it colours nothing: a point light is not visible geometry, it only lights
+what is near it. That is the "bulb, no glow" half of the complaint, and it is the
+mirror image of the "glow, no bulb" rhY had reported.
+
+### The numbers the glow is built from
+
+* Reference strength: the flux our own light had at 00:48 — **304** (green; 269
+  amber, 226 red), `4π(0.10)²·mean(lens colour × 5400 nits)`. That is the look
+  rhY is asking to keep, so it is the default, not a value picked by eye.
+* Ceiling: one mid street luminaire, the same `4πr²·mean(radiance)` convention.
+  With the shipped ini (`radius_ref=15`, `radiance_big=2.0`, `kelt_warm=2100`,
+  `kelt_cold=5000`, `rhyStreetFixture(1)` r=0.15) that is **2413** warm, **4510**
+  cold, **3462** for the warm+cold mix the street actually carries — s30's 3473.
+  304 is 8.8 % of it, so the reference strength needs no take-down; the cap is
+  there for a hand-edited `glow_flux`.
+* Shape: "spill a few metres, strongest near the head" → a **3.0 m** sphere at
+  the lens, radiance solved *from* the flux (`base = flux / (4πr²·mean(colour))`
+  = 6.0 nits green at 3 m, against the bulb's 1200 at 0.10 m). Same flux as
+  2026-11-12 over 900× the area: soft, near-field, and it never out-drives the
+  sodium lamp over the intersection.
+* Solving for flux rather than radiance also means the three phases carry the
+  same flux (the old light did not: 304/269/226, because its radiance was
+  constant). The spill under a signal therefore changes colour through the cycle,
+  not strength.
+
+The game's own flare stays at 0.45 (that is what makes the head read as a bulb);
+the ambient is now ours, a few metres wide, the same colour as the lens, cycling
+with it. `glow_flux=0` is the A/B back to bulb-only.

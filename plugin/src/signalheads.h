@@ -163,6 +163,12 @@ void rhyTrafficLightPos(const RhyTrafficLine& L, int useLens, float* out);
 // collide constantly.
 uint64_t rhyHeadLightHash(uint64_t id, int phase, uint64_t base);
 
+// n02b: a signal now holds two lights, and they must not share a hash. The list
+// path uses light_hash_base + (index<<2) + phase (index < 1522, so < 6092) and
+// the street lamps use light_hash_base + index (index < 7003); the glow sits a
+// fixed bias above both, far enough that no list of either kind reaches it.
+constexpr uint64_t kRhySignalGlowHashBias = 0x20000000ull;
+
 // ---------------------------------------------------------------------------
 // s30: the bulb - how big our signal light is, and how much light it puts out.
 //
@@ -200,6 +206,76 @@ struct RhySignalBulb {
 void rhySignalBulb(int phase, int fixtureSize, float lensRadius,
                    float bulbRadiance, float radianceAtRef, float radiusRef,
                    float radianceScale, RhySignalBulb* out);
+
+// ---------------------------------------------------------------------------
+// n02b: the glow - the SECOND light every lit signal needs (rhY, 2026-11-12
+// 08:50: "We wanted the glow from the traffic light and the bulb. It should be
+// both like real life.")
+//
+// s30 fixed the bulb half and, in doing so, removed the glow half:
+//   * our light's flux went 304 -> 67 (radiance 5400 -> 1200 nits at the same
+//     0.10 m sphere: .strata/notes-n02b-signal-glow-and-bulb.md step 2a), and
+//   * the game's own 15.0-unit (30 m) signal corona went to 0.45 units, an area
+//     1111 times smaller (signalhook.cpp rhySignalCoronaApply).
+// Both were the "ambient signal glow" rhY wants kept. A 0.10 m / 1200-nit sphere
+// is a lens you can look at; it is 8.8% of a street luminaire's output and it
+// colours nothing around it - a point light is not visible geometry, it only
+// lights what is near it. So a lit signal gets TWO lights, same position, same
+// colour, same phase, one envelope driving both:
+//
+//   bulb: 0.10 m, 1200 nits  - the head you see
+//   glow: 3.0 m,  ~6 nits    - the colour that lands on the pole, the wall, the
+//                              road and the peds within a few metres, strongest
+//                              at the head and falling off from there
+//
+// The glow's flux is set to what the 2026-11-12 00:48 glow measured (304 flux
+// units, the flux of the light we created then), spread over 900 times the area
+// instead of squeezed into the lens. The ceiling is one street luminaire: a
+// signal must not out-light the lamp over its head. Measured with the shipped
+// ini (radius_ref=15, radiance_big=2.0, kelt 2100/5000, rhyStreetFixture(1)) a
+// mid luminaire puts out 2413 (warm) / 4510 (cold) / 3462 (the warm+cold mix the
+// street carries); s30 quoted 3473 for the same fixture. 304 is 8.8% of that, so
+// the reference strength needs no take-down - the cap is there for a hand-edited
+// glow_flux.
+// ---------------------------------------------------------------------------
+
+// The 2026-11-12 00:48 glow, measured: 4*pi*(0.10 m)^2 * mean(lens colour x 5400
+// nits) = 303.9 (green), 269.2 (amber), 226.2 (red). The green number is the
+// reference the glow is built to.
+constexpr float kRhySignalGlowFluxRef = 304.0f;
+// The ceiling: one mid street luminaire's flux (3462-3473 with the shipped ini,
+// see rhyLuminaireFlux below).
+constexpr float kRhySignalGlowFluxCap = 3473.0f;
+// "Spill a few metres": the glow sphere is 3 m across the head, not the 15 m
+// flare the game used to draw (that one flooded whole streets).
+constexpr float kRhySignalGlowRadius = 3.0f;
+
+struct RhySignalGlow {
+    float radius;        // emitting sphere radius, game units (~metres)
+    float radiance[3];   // nits per channel, the same lens colour the bulb uses
+    float flux;          // 4*pi*r^2 * mean radiance, after radiance_scale
+    float cap;           // the luminaire flux it was clamped to
+    int clamped;         // 1 when the requested flux exceeded the cap
+};
+
+// phase: 0 green, 1 amber, 2 red - the SAME numbering and the SAME colour
+// function rhySignalBulb uses, which is what makes the glow the same colour as
+// the bulb it belongs to.
+// radiusM: the ini's trafficlights glow_radius (<= 0 -> kRhySignalGlowRadius).
+// wantFlux: the ini's glow_flux (<= 0 -> no glow at all, the off switch).
+// capFlux: the ceiling (<= 0 -> kRhySignalGlowFluxCap).
+// radianceScale: the global [streetlights] radiance_scale, applied to the
+// radiance exactly as rhySignalBulb applies it, so one dial moves both halves.
+void rhySignalGlow(int phase, float radiusM, float wantFlux, float capFlux,
+                   float radianceScale, RhySignalGlow* out);
+
+// The flux of one street luminaire, the same 4*pi*r^2*mean(radiance) the two
+// signal functions report, so the two are comparable numbers rather than two
+// conventions. radianceAtRef/radiusRef are the ini's radiance_* / radius_ref pair
+// (the flux-preserving rule makes the result independent of the fixture radius),
+// rgb the lamp's colour. With the shipped ini and the 2100 K / 5000 K pair that
+// is 2413 / 4510 / 3462 - the 3473 of the s30 notes.
+float rhyLuminaireFlux(float radianceAtRef, float radiusRef, const float* rgb);
 
 // One head chosen to have a light this pass.
 struct RhyHeadWant {

@@ -40,7 +40,8 @@ static std::vector<float> g_xy;  // x,y pairs of g_lights, for rhySelectLights
 // ramps down while the new colour's ramps up, and because the hash carries the
 // phase the two can exist at the same time.
 struct SignalState {
-    remixapi_LightHandle handle;
+    remixapi_LightHandle handle;  // the bulb at the lens (s30/n02)
+    remixapi_LightHandle glow;    // the soft glow around the head (n02b)
     RhyFade fade;
 };
 static int signalKey(int index, int phase) { return index * 4 + (phase & 3); }
@@ -85,7 +86,8 @@ struct HeadKey {
     }
 };
 struct HeadState {
-    remixapi_LightHandle handle;
+    remixapi_LightHandle handle;  // the bulb at the lens (s30/n02)
+    remixapi_LightHandle glow;    // the soft glow around the head (n02b)
     RhyFade fade;
     float pos[3];  // where the lens was when this light was created: a re-create
                    // keeps it, so a fade never moves the light
@@ -356,13 +358,73 @@ static void bulbFor(int phase, const RhyConfig& c, RhySignalBulb* out) {
                   out);
 }
 
+// n02b: the glow, the other half of "both like real life" (rhY 2026-11-12
+// 08:50). Same head, same colour, same phase, same gain envelope as the bulb -
+// a bigger sphere at a much lower radiance, so the signal colours the pole, the
+// wall, the road and the peds under it instead of being a bright dot that lights
+// nothing. The flux default (304) is what the 2026-11-12 00:48 glow measured, and
+// rhySignalGlow clamps it to one street luminaire's (3473). See signalheads.h.
+static void glowFor(int phase, const RhyConfig& c, RhySignalGlow* out) {
+    rhySignalGlow(phase, c.traffic_glow_radius, c.traffic_glow_flux,
+                  kRhySignalGlowFluxCap, c.radiance_scale, out);
+}
+
+// n02b: glow_flux=0 means "bulb only": no second handle exists at all, so the
+// A/B costs nothing and no dark light is carried around. The radiance-0 path
+// inside rhySignalGlow is what a fade uses; this is the off switch.
+static bool glowWanted(const RhyConfig& c) { return c.traffic_glow_flux > 0.0f; }
+
+// n02b: a signal is two handles, so the second create needs its own credit:
+// this frame's CreateLight budget (creates_per_frame) and our own light cap.
+static bool canCreateAnother(unsigned attempts, unsigned frameBudget) {
+    return (frameBudget == 0 || attempts < frameBudget) &&
+           rhyCreateBudgetLeft() && rhyCanCreateLight();
+}
+
+// The two halves of one signal, resolved in one place so the pair cannot drift
+// apart on colour, phase or gain: kind selects WHICH one, and nothing else.
+enum SignalLightKind { kSignalBulb = 0, kSignalGlow = 1 };
+
+struct SignalLightSpec {
+    float radius;
+    float radiance[3];
+    float flux;
+    const char* what;   // tail of the CreateLight log line
+};
+
+static void specFor(int phase, const RhyConfig& c, int kind,
+                    SignalLightSpec* out) {
+    if (kind == kSignalGlow) {
+        RhySignalGlow g;
+        glowFor(phase, c, &g);
+        out->radius = g.radius;
+        for (int i = 0; i < 3; ++i) {
+            out->radiance[i] = g.radiance[i];
+        }
+        out->flux = g.flux;
+        out->what = g.clamped ? " (glow: flux capped at one street luminaire)"
+                              : (g.flux > 0.0f ? " (glow: soft spill at the head)"
+                                               : " (glow: off, glow_flux=0)");
+        return;
+    }
+    RhySignalBulb b;
+    bulbFor(phase, c, &b);
+    out->radius = b.radius;
+    for (int i = 0; i < 3; ++i) {
+        out->radiance[i] = b.radiance[i];
+    }
+    out->flux = b.flux;
+    out->what = b.legacy ? " (bulb: legacy blob, flux-preserving)"
+                         : " (bulb: lens nits)";
+}
+
 // Radiance is baked at CreateLight time, so a phase change means a second handle
 // with a different hash - and s28 makes the swap a cross-fade between the two.
 // The colour of each handle comes from rhySignalBulb()/rhySignalLensRgb(): the
 // passbands of real signal lenses, not three hand-picked triples (see lamps.h).
 
 static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c,
-                                        float gain) {
+                                        float gain, int kind) {
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->CreateLight) {
         return nullptr;
@@ -378,9 +440,12 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
     // lens luminance at that radius (bulb_radiance nits), NOT the six-metre
     // blob's output squeezed into it - that x3600 is what made sixty signals
     // light a whole street green instead of showing sixty small bright heads.
-    RhySignalBulb bulb;
-    bulbFor(phase, c, &bulb);
-    const float radius = bulb.radius;
+    // n02b: `kind` says which half of the signal this handle is. The bulb and
+    // the glow are created by this one function, at this one position, with this
+    // one gain, and differ only in radius and radiance (specFor).
+    SignalLightSpec spec;
+    specFor(phase, c, kind, &spec);
+    const float radius = spec.radius;
     if (gain < 0.0f) {
         gain = 0.0f;
     }
@@ -391,13 +456,16 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     // Distinct hash per (index, phase): the Remix runtime keys lights by hash.
-    // With light_hash_base=0 the lights are anonymous instead.
+    // With light_hash_base=0 the lights are anonymous instead. n02b: the glow is
+    // a second light on the same signal, so it carries a fixed bias above both
+    // the traffic range (index<<2 < 6092) and the street range (index < 7003).
     info.hash = c.light_hash_base +
                 (static_cast<uint64_t>(index) << 2) +
-                static_cast<uint64_t>(phase & 3);
-    info.radiance.x = bulb.radiance[0] * gain;
-    info.radiance.y = bulb.radiance[1] * gain;
-    info.radiance.z = bulb.radiance[2] * gain;
+                static_cast<uint64_t>(phase & 3) +
+                (kind == kSignalGlow ? kRhySignalGlowHashBias : 0ull);
+    info.radiance.x = spec.radiance[0] * gain;
+    info.radiance.y = spec.radiance[1] * gain;
+    info.radiance.z = spec.radiance[2] * gain;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -432,33 +500,36 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
         if (reason == 2) {
             g_apiBroken = true;
             g_brokenTick = GetTickCount();
-            rhyLog("trafficlights: CreateLight refused by the bridge #%d phase %d "
+            rhyLog("trafficlights: CreateLight refused by the bridge #%d %s phase %d "
                    "(bridge create failures so far: %u), traffic lights off until "
                    "the next rhyremix.ini edit",
-                   index, phase, rhyCreateFailures());
+                   index, kind == kSignalGlow ? "glow" : "bulb", phase,
+                   rhyCreateFailures());
             return nullptr;
         }
         if (reason == 3) {
             return nullptr;  // frame budget spent: this fade step runs next frame
         }
         if (++g_budgetStop <= 3) {
-            rhyLog("trafficlights: no slot for #%d phase %d, max_total_lights reached "
-                   "(live=%u, refusals so far: %u)", index, phase, rhyLiveLights(),
+            rhyLog("trafficlights: no slot for #%d %s phase %d, max_total_lights reached "
+                   "(live=%u, refusals so far: %u)", index,
+                   kind == kSignalGlow ? "glow" : "bulb", phase, rhyLiveLights(),
                    g_budgetStop);
         }
         return nullptr;
     }
     // Log the exact numbers of the first few lights once, to compare against
-    // probe_radius / probe_radiance when tuning.
-    static int createdLogs = 0;
-    if (createdLogs < 3) {
-        ++createdLogs;
-        rhyLog("trafficlights: CreateLight ok #%d phase %d hash=%llu pos=%.1f,%.1f,%.1f "
+    // probe_radius / probe_radiance when tuning. Per kind, so the log always
+    // shows a bulb line AND a glow line for the same signal.
+    static int createdLogs[2] = {0, 0};
+    if (createdLogs[kind == kSignalGlow ? 1 : 0] < 3) {
+        ++createdLogs[kind == kSignalGlow ? 1 : 0];
+        rhyLog("trafficlights: CreateLight ok #%d %s phase %d hash=%llu pos=%.1f,%.1f,%.1f "
                "radiance=%.2f,%.2f,%.2f gain=%.2f radius=%.2f flux=%.0f%s",
-               index, phase, info.hash, sphere.position.x, sphere.position.y,
+               index, kind == kSignalGlow ? "glow" : "bulb", phase, info.hash,
+               sphere.position.x, sphere.position.y,
                sphere.position.z, info.radiance.x, info.radiance.y,
-               info.radiance.z, gain, sphere.radius, bulb.flux,
-               bulb.legacy ? " (legacy blob: flux-preserving)" : " (bulb: lens nits)");
+               info.radiance.z, gain, sphere.radius, spec.flux, spec.what);
     }
     return handle;
 }
@@ -497,16 +568,20 @@ static int headTag(uint64_t id, int phase) {
 // state, so a mast-arm head is lit where it is and in the colour it shows.
 static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
                                             const float* pos,
-                                            const RhyConfig& c, float gain) {
+                                            const RhyConfig& c, float gain,
+                                            int kind) {
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->CreateLight) {
         return nullptr;
     }
     // Same bulb as the list path: the lens radius, and lens luminance rather
-    // than blob flux squeezed into it.
-    RhySignalBulb bulb;
-    bulbFor(phase, c, &bulb);
-    const float radius = bulb.radius;
+    // than blob flux squeezed into it. n02b: and the same glow - a head the game
+    // registered gets the soft second light too, at the same position, in the
+    // same colour the game chose for that head. specFor is shared by both paths
+    // so a head light and a list light for the same phase are the same pair.
+    SignalLightSpec spec;
+    specFor(phase, c, kind, &spec);
+    const float radius = spec.radius;
     if (gain < 0.0f) {
         gain = 0.0f;
     }
@@ -519,10 +594,13 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
 
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
-    info.hash = rhyHeadLightHash(id, phase, c.light_hash_base);
-    info.radiance.x = bulb.radiance[0] * gain;
-    info.radiance.y = bulb.radiance[1] * gain;
-    info.radiance.z = bulb.radiance[2] * gain;
+    info.hash = rhyHeadLightHash(id, phase,
+                                 c.light_hash_base +
+                                 (kind == kSignalGlow ? kRhySignalGlowHashBias
+                                                      : 0ull));
+    info.radiance.x = spec.radiance[0] * gain;
+    info.radiance.y = spec.radiance[1] * gain;
+    info.radiance.z = spec.radiance[2] * gain;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -546,32 +624,35 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
             g_apiBroken = true;
             g_brokenTick = GetTickCount();
             rhyLog("trafficlights: CreateLight refused by the bridge for head "
-                   "%016llx phase %d (bridge create failures so far: %u), traffic "
+                   "%016llx %s phase %d (bridge create failures so far: %u), traffic "
                    "lights off until the next rhyremix.ini edit",
-                   static_cast<unsigned long long>(id), phase, rhyCreateFailures());
+                   static_cast<unsigned long long>(id),
+                   kind == kSignalGlow ? "glow" : "bulb", phase,
+                   rhyCreateFailures());
             return nullptr;
         }
         if (reason == 3) {
             return nullptr;
         }
         if (++g_budgetStop <= 3) {
-            rhyLog("trafficlights: no slot for head %016llx phase %d, "
+            rhyLog("trafficlights: no slot for head %016llx %s phase %d, "
                    "max_total_lights reached (live=%u, refusals so far: %u)",
-                   static_cast<unsigned long long>(id), phase, rhyLiveLights(),
+                   static_cast<unsigned long long>(id),
+                   kind == kSignalGlow ? "glow" : "bulb", phase, rhyLiveLights(),
                    g_budgetStop);
         }
         return nullptr;
     }
-    static int headLogs = 0;
-    if (headLogs < 3) {
-        ++headLogs;
-        rhyLog("trafficlights: head light ok id=%016llx phase=%d hash=%llu "
+    static int headLogs[2] = {0, 0};
+    if (headLogs[kind == kSignalGlow ? 1 : 0] < 3) {
+        ++headLogs[kind == kSignalGlow ? 1 : 0];
+        rhyLog("trafficlights: head light ok %s id=%016llx phase=%d hash=%llu "
                "pos=%.2f,%.2f,%.2f radiance=%.2f,%.2f,%.2f "
                "gain=%.2f radius=%.2f flux=%.0f%s",
+               kind == kSignalGlow ? "glow" : "bulb",
                static_cast<unsigned long long>(id), phase, info.hash, pos[0], pos[1],
                pos[2], info.radiance.x, info.radiance.y, info.radiance.z, gain,
-               sphere.radius, bulb.flux,
-               bulb.legacy ? " (legacy blob: flux-preserving)" : " (bulb: lens nits)");
+               sphere.radius, spec.flux, spec.what);
     }
     return handle;
 }
@@ -831,6 +912,7 @@ void rhyTrafficFrame() {
 
     // --- list-mode lights -----------------------------------------------------
     unsigned tl_drawn = 0;
+    unsigned tl_glowDrawn = 0;
     for (std::map<int, SignalState>::iterator it = g_active.begin();
          it != g_active.end();) {
         const int index = it->first / 4;
@@ -865,8 +947,15 @@ void rhyTrafficFrame() {
                                               kGainFloor);
             if (op == kRhyFadeRetire) {
                 rhySpendCreateSlot();  // a destroy counts against the frame budget
+                // n02b: both halves of the signal go together - one envelope,
+                // one tag, one fade. A signal that kept its glow after its bulb
+                // was retired would be the "ambient glow, no bulb" of the
+                // 2026-11-12 report back again.
                 if (it->second.handle) {
                     rhyDelayDestroy(it->second.handle, kTagTraffic + it->first);
+                }
+                if (it->second.glow) {
+                    rhyDelayDestroy(it->second.glow, kTagTraffic + it->first);
                 }
                 g_active.erase(it++);
                 ++g_retired;
@@ -880,25 +969,52 @@ void rhyTrafficFrame() {
                 if (it->second.handle) {
                     rhyDelayDestroy(it->second.handle, kTagTraffic + it->first);
                 }
+                if (it->second.glow) {
+                    rhyDelayDestroy(it->second.glow, kTagTraffic + it->first);
+                }
                 rhyFlushDelayedTag(kTagTraffic + it->first);  // same hash: delayed.h
                 remixapi_LightHandle h = createLight(index, phase, *cfg,
-                                                     it->second.fade.published);
+                                                     it->second.fade.published,
+                                                     kSignalBulb);
+                remixapi_LightHandle g = nullptr;
+                if (h && glowWanted(*cfg) && canCreateAnother(attempts, frameBudget)) {
+                    ++attempts;
+                    g = createLight(index, phase, *cfg, it->second.fade.published,
+                                    kSignalGlow);
+                }
+                it->second.handle = h;
+                it->second.glow = g;
                 if (h) {
-                    it->second.handle = h;
                     ++g_fadeSteps;
-                } else {
-                    // The old handle is already destroyed by here, so it must not be
-                    // drawn again; null makes the next frame ask for a new one.
-                    it->second.handle = nullptr;
-                    if (g_apiBroken) {
-                        ++it;
-                        break;
-                    }
+                } else if (g_apiBroken) {
+                    // The old handles are already destroyed by here, so they must
+                    // not be drawn again; null makes the next frame ask for new
+                    // ones.
+                    ++it;
+                    break;
                 }
             }
         }
 
+        // n02b: a bulb whose glow is still missing (a create our cap or this
+        // frame's budget refused, or an ini edit that turned the glow back on)
+        // gets the glow on its own. The bulb is NOT destroyed to attach it:
+        // destroying a working light to add a second one is the pop s28 removed.
+        if (it->second.handle && !it->second.glow && glowWanted(*cfg) &&
+            canCreateAnother(attempts, frameBudget)) {
+            ++attempts;
+            it->second.glow = createLight(index, phase, *cfg,
+                                          it->second.fade.published, kSignalGlow);
+        }
+
+        bool drawOk = true;
         if (it->second.handle && !rhyDrawLight(it->second.handle)) {
+            drawOk = false;
+        }
+        if (drawOk && it->second.glow && !rhyDrawLight(it->second.glow)) {
+            drawOk = false;
+        }
+        if (!drawOk) {
             g_apiBroken = true;
             g_brokenTick = GetTickCount();
             rhyLog("trafficlights: DrawLightInstance rejected for #%d (draw "
@@ -909,6 +1025,9 @@ void rhyTrafficFrame() {
         }
         if (it->second.handle) {
             ++tl_drawn;
+        }
+        if (it->second.glow) {
+            ++tl_glowDrawn;
         }
         ++it;
     }
@@ -928,6 +1047,7 @@ void rhyTrafficFrame() {
         }
         SignalState st;
         st.handle = nullptr;
+        st.glow = nullptr;
         rhyFadeInit(st.fade, static_cast<float>(cfg->fade_in_ms) / 1000.0f,
                     static_cast<float>(cfg->fade_out_ms) / 1000.0f);
         st.fade.target = w->second;
@@ -953,7 +1073,13 @@ void rhyTrafficFrame() {
         }
         ++attempts;
         rhyFlushDelayedTag(kTagTraffic + key);  // destroy-before-create: same hash
-        st.handle = createLight(index, phase, *cfg, st.fade.published);
+        st.handle = createLight(index, phase, *cfg, st.fade.published, kSignalBulb);
+        // n02b: the glow rides with the bulb - same key, same envelope, same
+        // phase - so a signal appears as a bulb AND a glow, never as one half.
+        if (st.handle && glowWanted(*cfg) && canCreateAnother(attempts, frameBudget)) {
+            ++attempts;
+            st.glow = createLight(index, phase, *cfg, st.fade.published, kSignalGlow);
+        }
         if (st.handle) {
             g_active[key] = st;
         } else if (g_apiBroken) {
@@ -963,6 +1089,7 @@ void rhyTrafficFrame() {
 
     // --- head lights (source=game) -------------------------------------------
     unsigned hd_drawn = 0;
+    unsigned hd_glowDrawn = 0;
     for (std::map<HeadKey, HeadState>::iterator it = g_headLights.begin();
          it != g_headLights.end();) {
         std::map<HeadKey, float>::iterator w = g_wantHead.find(it->first);
@@ -999,6 +1126,10 @@ void rhyTrafficFrame() {
                     rhyDelayDestroy(it->second.handle,
                                     headTag(it->first.id, it->first.phase));
                 }
+                if (it->second.glow) {
+                    rhyDelayDestroy(it->second.glow,
+                                    headTag(it->first.id, it->first.phase));
+                }
                 g_headLights.erase(it++);
                 ++g_retired;
                 continue;
@@ -1017,24 +1148,51 @@ void rhyTrafficFrame() {
                     rhyDelayDestroy(it->second.handle,
                                     headTag(it->first.id, it->first.phase));
                 }
+                if (it->second.glow) {
+                    rhyDelayDestroy(it->second.glow,
+                                    headTag(it->first.id, it->first.phase));
+                }
                 rhyFlushDelayedTag(headTag(it->first.id, it->first.phase));
                 remixapi_LightHandle h = createHeadLight(
                     it->first.id, it->first.phase, pos, *cfg,
-                    it->second.fade.published);
+                    it->second.fade.published, kSignalBulb);
+                remixapi_LightHandle g = nullptr;
+                if (h && glowWanted(*cfg) && canCreateAnother(attempts, frameBudget)) {
+                    ++attempts;
+                    g = createHeadLight(it->first.id, it->first.phase, pos, *cfg,
+                                        it->second.fade.published, kSignalGlow);
+                }
+                it->second.handle = h;
+                it->second.glow = g;
                 if (h) {
-                    it->second.handle = h;
                     ++g_fadeSteps;
-                } else {
-                    it->second.handle = nullptr;  // destroyed: see above
-                    if (g_apiBroken) {
-                        ++it;
-                        break;
-                    }
+                } else if (g_apiBroken) {
+                    // both handles were destroyed above: do not draw them again
+                    ++it;
+                    break;
                 }
             }
         }
 
+        // n02b: same glow-only repair as the list path: a head whose second
+        // handle is missing gets it without the bulb being destroyed.
+        if (it->second.handle && !it->second.glow && glowWanted(*cfg) &&
+            canCreateAnother(attempts, frameBudget)) {
+            ++attempts;
+            it->second.glow = createHeadLight(it->first.id, it->first.phase,
+                                              it->second.pos, *cfg,
+                                              it->second.fade.published,
+                                              kSignalGlow);
+        }
+
+        bool headDrawOk = true;
         if (it->second.handle && !rhyDrawLight(it->second.handle)) {
+            headDrawOk = false;
+        }
+        if (headDrawOk && it->second.glow && !rhyDrawLight(it->second.glow)) {
+            headDrawOk = false;
+        }
+        if (!headDrawOk) {
             g_apiBroken = true;
             g_brokenTick = GetTickCount();
             rhyLog("trafficlights: DrawLightInstance rejected for head %016llx "
@@ -1046,6 +1204,9 @@ void rhyTrafficFrame() {
         }
         if (it->second.handle) {
             ++hd_drawn;
+        }
+        if (it->second.glow) {
+            ++hd_glowDrawn;
         }
         ++it;
     }
@@ -1076,6 +1237,7 @@ void rhyTrafficFrame() {
         }
         HeadState st;
         st.handle = nullptr;
+        st.glow = nullptr;
         rhyFadeInit(st.fade, static_cast<float>(cfg->fade_in_ms) / 1000.0f,
                     static_cast<float>(cfg->fade_out_ms) / 1000.0f);
         st.fade.target = w->second;
@@ -1104,7 +1266,14 @@ void rhyTrafficFrame() {
                         cfg->traffic_head_forward, st.pos);
         rhyFlushDelayedTag(headTag(key.id, key.phase));  // same hash: see delayed.h
         st.handle = createHeadLight(key.id, key.phase, st.pos, *cfg,
-                                    st.fade.published);
+                                    st.fade.published, kSignalBulb);
+        // n02b: the head gets both halves, same position, same colour the game
+        // chose, same envelope: the bulb at the lens and the glow around it.
+        if (st.handle && glowWanted(*cfg) && canCreateAnother(attempts, frameBudget)) {
+            ++attempts;
+            st.glow = createHeadLight(key.id, key.phase, st.pos, *cfg,
+                                      st.fade.published, kSignalGlow);
+        }
         if (st.handle) {
             g_headLights[key] = st;
         } else if (g_apiBroken) {
@@ -1117,6 +1286,7 @@ void rhyTrafficFrame() {
         g_lastCountTick = now;
         if (gameMode) {
             int green = 0, amber = 0, red = 0;
+            unsigned glows = 0;
             for (std::map<HeadKey, HeadState>::iterator it = g_headLights.begin();
                  it != g_headLights.end(); ++it) {
                 if (it->first.phase == 0) {
@@ -1126,14 +1296,22 @@ void rhyTrafficFrame() {
                 } else {
                     ++red;
                 }
+                if (it->second.glow) {
+                    ++glows;
+                }
             }
-            rhyLog("trafficlights[source=game]: %u heads lit, %u drawn this frame "
+            // n02b: bulbs and glows are counted separately, because "every lit
+            // head has both" is the thing the 2026-11-12 report was about. A
+            // head count with fewer glows than heads names a create that failed.
+            rhyLog("trafficlights[source=game]: %u heads lit (%u with a glow), "
+                   "%u bulbs + %u glows drawn this frame "
                    "(green=%d amber=%d red=%d, %u coronas registered this frame, "
                    "colour_swaps=%u expired=%u steps=%u retired=%u "
                    "player_gone_frames=%u) | remix: live=%u create_fail=%u "
                    "draw_fail=%u budget_stop=%u deferred=%u | hook: calls=%u "
                    "records=%u dropped=%u bad=%u reentrant=%u",
-                   static_cast<unsigned>(g_headLights.size()), hd_drawn, green, amber,
+                   static_cast<unsigned>(g_headLights.size()), glows, hd_drawn,
+                   hd_glowDrawn, green, amber,
                    red, g_recN, g_headSwaps, g_headExpired, g_fadeSteps, g_retired,
                    g_playerGone, rhyLiveLights(), rhyCreateFailures(),
                    rhyDrawFailures(), g_budgetStop, rhyCreateDeferred(),
@@ -1142,6 +1320,7 @@ void rhyTrafficFrame() {
                    rhySignalHookReentrant());
         } else {
             int green = 0, amber = 0, red = 0;
+            unsigned glows = 0;
             for (std::map<int, SignalState>::iterator it = g_active.begin();
                  it != g_active.end(); ++it) {
                 if ((it->first & 3) == 0) {
@@ -1151,8 +1330,12 @@ void rhyTrafficFrame() {
                 } else {
                     ++red;
                 }
+                if (it->second.glow) {
+                    ++glows;
+                }
             }
-            rhyLog("trafficlights[%s]: %u active, %u drawn this frame (green=%d "
+            rhyLog("trafficlights[%s]: %u active (%u with a glow), "
+                   "%u bulbs + %u glows drawn this frame (green=%d "
                    "amber=%d red=%d, %u awaiting destroy, %u in list, hour=%d, "
                    "phase_swaps=%u steps=%u retired=%u player_gone_frames=%u) | "
                    "remix: live=%u create_fail=%u draw_fail=%u budget_stop=%u "
@@ -1162,7 +1345,8 @@ void rhyTrafficFrame() {
                          "the game's own corona range)"
                        : "list, source=game requested but the hook is not "
                          "installed"),
-                   static_cast<unsigned>(g_active.size()), tl_drawn, green, amber,
+                   static_cast<unsigned>(g_active.size()), glows, tl_drawn,
+                   tl_glowDrawn, green, amber,
                    red, rhyDelayedPending(), static_cast<unsigned>(g_lights.size()),
                    rhyGameHour(), g_phaseSwap, g_fadeSteps, g_retired, g_playerGone,
                    rhyLiveLights(), rhyCreateFailures(), rhyDrawFailures(),

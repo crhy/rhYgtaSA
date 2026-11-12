@@ -207,6 +207,18 @@ struct RhyConfig {
     // one per lit head at radius 15.0 = a 30 m green flare). 0 = do not touch
     // the game's code beyond the hook itself.
     float traffic_corona_radius;
+    // n02b: the SECOND light of every lit signal - the glow. rhY 2026-11-12
+    // 08:50: "We wanted the glow from the traffic light and the bulb. It should
+    // be both like real life." s30 took the glow away twice over (our light's
+    // flux 304 -> 67, the game's own 15 m corona -> 0.45) to get the bulb, and
+    // nothing was put back, so a lit signal stopped colouring the pole, the wall,
+    // the road and the peds under it. glow_radius is the soft sphere around the
+    // head in metres, glow_flux is its total output in the same units the log
+    // prints (4*pi*r^2*mean radiance): 304 is what the 2026-11-12 00:48 glow
+    // measured, and config.cpp clamps it to one street luminaire's flux (3473).
+    // glow_flux=0 = no glow light at all, the A/B switch.
+    float traffic_glow_radius;
+    float traffic_glow_flux;
     int traffic_period;     // seconds per full red/amber/green cycle
     int traffic_max_lights; // cap on simultaneous traffic light Remix lights
     int traffic_max_distance; // metres, 2D (new lights)

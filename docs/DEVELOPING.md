@@ -632,6 +632,38 @@ parsing plus the position math is exactly what `tests/signals_check.cpp` has to
 measure (the lens position at four headings, the 2.10 m it recovers, and that a
 v1 line does not move).
 
+## A lit signal is two lights: the bulb and the glow (n02b)
+
+rhY's correction on the 2026-11-12 report: the ambient glow around a signal was
+**wanted**; the bulbs were the missing half ("both like real life"). s30 had
+removed the ambient on the way to the bulb - our light's flux 304 -> 67, the
+game's own 15.0-unit corona -> 0.45 - and n02 never added a second light, so a
+lit signal became a bright dot that colours nothing. The rule now, in one place:
+
+- `rhySignalGlow()` (`signalheads.*`) is the glow's only decision point, the
+  mirror of `rhySignalBulb()`. Same `rhySignalLensRgb(phase)` colour, and the
+  radiance is **solved from a flux**: `base = glow_flux / (4*pi*r^2 * mean(col))`.
+  Defaults `glow_radius=3` m, `glow_flux=304` - the flux the 2026-11-12 00:48
+  light measured (`4*pi*(0.10)^2 * mean(lens x 5400 nits)`) - and
+  `rhyLuminaireFlux()` derives the ceiling (3473, one mid street luminaire) that
+  `config.cpp` clamps to. Solving for flux rather than radiance also keeps the
+  spill's strength constant through the red/amber/green cycle.
+- `trafficlights.cpp` carries **two handles per signal** (`SignalState` /
+  `HeadState`: `handle` + `glow`), and `createLight`/`createHeadLight` take a
+  `kind` (`kSignalBulb`/`kSignalGlow`) that changes only the spec and the hash
+  (`kRhySignalGlowHashBias`, above both the traffic and the street hash ranges).
+  One fade envelope drives both, so they cannot disagree about phase or gain;
+  retire and recreate destroy both under the same tag; a missing glow is re-added
+  on its own without destroying the bulb (destroying a working light to attach a
+  second one is the pop s28 removed). `glow_flux=0` means no second handle at all.
+- The 10 s summary logs `N heads lit (N with a glow), N bulbs + N glows drawn`,
+  and `scripts/diagnose.sh` flags it when the glow count lags the head count.
+
+The bounds live in `tests/signals_check.cpp` (bulb small + hot, glow big + soft,
+same colour in all three phases, flux 304 under a luminaire's 3473) and the
+wiring in `tests/test_signal_glow.py` (both paths, both halves, drawn and
+destroyed together, no hash collision, the ini keys and the test doc).
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen

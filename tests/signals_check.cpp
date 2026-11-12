@@ -21,6 +21,7 @@
 
 #include "../plugin/src/lamps.h"
 #include "../plugin/src/signalheads.h"
+#include "../plugin/src/solar.h"  // n02b: colorTemperatureToRgb for the lamp flux
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -662,6 +663,112 @@ int main() {
     ok("and its centre is the lens the game drew, to the millimetre",
        lpos[0] == lensHead.pos[0] && lpos[1] == lensHead.pos[1] &&
            lpos[2] == lensHead.pos[2]);
+
+    // ---- n02b: the glow - the SECOND light every lit signal needs --------
+    // rhY 2026-11-12 08:50: "We wanted the glow from the traffic light and the
+    // bulb. It should be both like real life." s30 fixed the bulb and, in doing
+    // it, removed the glow twice over (our light's flux 304 -> 67, the game's own
+    // 15.0-unit corona -> 0.45: .strata/notes-n02b-signal-glow-and-bulb.md step
+    // 2). These are the four bounds the task asked for: the bulb stays small and
+    // hot, the glow is bigger and softer, the two are the same colour and phase,
+    // and the glow's total output stays under one street luminaire's.
+    RhySignalBulb b0;
+    rhySignalBulb(0, 1, rhySignalRadius(1.0f), 1200.0f, 1.5f, 6.0f, 1.0f, &b0);
+    RhySignalGlow g0;
+    rhySignalGlow(0, 3.0f, kRhySignalGlowFluxRef, kRhySignalGlowFluxCap, 1.0f,
+                  &g0);
+    ok("the glow is a bigger sphere than the bulb (3 m of spill vs a 0.10 m lens)",
+       g0.radius > 10.0f * b0.radius);
+    ok("and far softer per unit area (6 nits against the bulb's 1200)",
+       g0.radiance[1] < b0.radiance[1] / 100.0f);
+    ok("the glow carries the flux the 2026-11-12 00:48 glow measured (304)",
+       std::fabs(g0.flux - 304.0f) < 1.0f);
+    ok("which is more total light than the s30 bulb, at a fraction of its radiance",
+       g0.flux > b0.flux && g0.radiance[1] < b0.radiance[1]);
+    // Same colour, by construction: both halves take their triple from
+    // rhySignalLensRgb(phase), so the ratio between them is one constant.
+    bool sameColour = true;
+    bool fluxSteady = true;
+    for (int p = 0; p < 3; ++p) {
+        RhySignalBulb bb;
+        RhySignalGlow gg;
+        rhySignalBulb(p, 1, rhySignalRadius(1.0f), 1200.0f, 1.5f, 6.0f, 1.0f, &bb);
+        rhySignalGlow(p, 3.0f, kRhySignalGlowFluxRef, kRhySignalGlowFluxCap, 1.0f,
+                      &gg);
+        int bmax = 0, gmax = 0;
+        for (int i = 1; i < 3; ++i) {
+            if (bb.radiance[i] > bb.radiance[bmax]) bmax = i;
+            if (gg.radiance[i] > gg.radiance[gmax]) gmax = i;
+        }
+        if (bmax != gmax) sameColour = false;
+        // every channel must sit at the same fraction of the bulb's
+        float ratio = -1.0f;
+        for (int i = 0; i < 3; ++i) {
+            if (bb.radiance[i] <= 0.0f) {
+                if (gg.radiance[i] != 0.0f) sameColour = false;
+                continue;
+            }
+            const float r = gg.radiance[i] / bb.radiance[i];
+            if (ratio < 0.0f) ratio = r;
+            else if (std::fabs(r - ratio) > 1e-4 * ratio) sameColour = false;
+        }
+        if (!(gg.flux > 0.0f && gg.flux <= kRhySignalGlowFluxCap)) sameColour = false;
+        // The glow is solved for FLUX, not for base radiance, so the spill under
+        // a signal keeps its strength through the cycle and only changes colour.
+        if (std::fabs(gg.flux - kRhySignalGlowFluxRef) > 1.0f) fluxSteady = false;
+    }
+    ok("and the glow is the SAME colour as the bulb in all three phases",
+       sameColour);
+    ok("the spill does not brighten when the aspect changes: flux is constant",
+       fluxSteady);
+    // The ceiling, derived rather than asserted: the same 4*pi*r^2*mean the two
+    // signal functions report, applied to a mid street luminaire with the shipped
+    // ini (radiance_big=2.0 at radius_ref=15, the 2100 K / 5000 K lamp pair).
+    float warm[3], cold[3], mix[3];
+    colorTemperatureToRgb(2100.0f, warm);
+    colorTemperatureToRgb(5000.0f, cold);
+    for (int i = 0; i < 3; ++i) mix[i] = (warm[i] + cold[i]) / 2.0f;
+    const float lampFlux = rhyLuminaireFlux(2.0f, 15.0f, mix);
+    ok("one mid street luminaire puts out the 3473 the s30 notes quote",
+       std::fabs(lampFlux - 3473.0f) < 0.01f * 3473.0f);
+    ok("a signal's glow is under a tenth of that: it must not out-light its lamp",
+       g0.flux < lampFlux / 10.0f);
+    RhySignalGlow gCap;
+    rhySignalGlow(0, 3.0f, 999999.0f, 0.0f, 1.0f, &gCap);
+    ok("a hand-edited glow_flux is capped at one luminaire, and says so",
+       gCap.clamped == 1 && std::fabs(gCap.flux - kRhySignalGlowFluxCap) < 1.0f);
+    RhySignalGlow gOff;
+    rhySignalGlow(0, 3.0f, 0.0f, 0.0f, 1.0f, &gOff);
+    ok("glow_flux=0 publishes no glow (the bulb-only A/B)",
+       gOff.flux == 0.0f && gOff.radiance[0] == 0.0f &&
+           gOff.radiance[1] == 0.0f && gOff.radiance[2] == 0.0f);
+    RhySignalGlow gDef;
+    rhySignalGlow(0, 0.0f, 304.0f, 0.0f, 1.0f, &gDef);
+    ok("glow_radius=0 falls back to the 3 m spill rather than a zero-area light",
+       gDef.radius == kRhySignalGlowRadius && gDef.flux > 0.0f);
+    RhySignalGlow gBig;
+    rhySignalGlow(0, 500.0f, 304.0f, 0.0f, 1.0f, &gBig);
+    ok("a glow_radius that would rebuild the 30 m flood is clamped",
+       gBig.radius <= 20.0f && gBig.flux > 0.0f);
+    RhySignalGlow g1m, g3m;
+    rhySignalGlow(0, 1.0f, 304.0f, 0.0f, 1.0f, &g1m);
+    rhySignalGlow(0, 3.0f, 304.0f, 0.0f, 1.0f, &g3m);
+    ok("the flux is the knob and the radius only moves it: same flux, 9x radiance",
+       std::fabs(g1m.flux - g3m.flux) < 1.0f &&
+           std::fabs(g1m.radiance[1] - 9.0f * g3m.radiance[1]) <
+               0.01f * g1m.radiance[1]);
+    RhySignalGlow gScaled;
+    rhySignalGlow(0, 3.0f, 304.0f, 0.0f, 0.5f, &gScaled);
+    ok("[streetlights] radiance_scale scales the glow too",
+       std::fabs(gScaled.flux - g0.flux / 2.0f) < 1.0f);
+    RhySignalGlow gBad;
+    rhySignalGlow(0, 3.0f, 304.0f, 0.0f, -2.0f, &gBad);
+    ok("a nonsense radiance_scale does not make the glow negative",
+       gBad.flux > 0.0f && gBad.radiance[1] > 0.0f);
+    // The glow sits on the lens too: it is the light that lens throws, so it has
+    // no business being anywhere else (and the pair must not be 3 m apart).
+    ok("the glow is centred on the same lens as the bulb (one signal, one place)",
+       2.0f * g0.radius < 7.6f);  // smaller than the head's height above the road
 
     // ---- the recorder: fake memory, then every path ----------------------
     // Windows-side rhyReadable() is "plausible range + committed page"; here it

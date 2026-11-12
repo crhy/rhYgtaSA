@@ -115,17 +115,18 @@ streetlights: N active, N drawn this frame
 sky: sun elev=... rad=... | moon elev=... rad=... (hour=...)
 ```
 
-For the traffic signals (s01, s30, n02) these lines decide everything:
+For the traffic signals (s01, s30, n02, n02b) these lines decide everything:
 
 ```
-config: traffic=1/1 source=game ... head_forward=0.15 head_grace=20000ms lens_offset=1 | bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45 (resizes the game's 15.0 flare)
+config: traffic=1/1 source=game ... head_forward=0.15 head_grace=20000ms lens_offset=1 | bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45 (resizes the game's 15.0 flare) | glow radius=3.00 flux=304 (cap 3473 = one street luminaire)
 signalhook: patched 0x0049DD4C (was 'call 0x6FC580') -> stub at 0x65d55000, cap 256 heads per frame, corona resized to a bulb
 signalhook: signal-head corona radius 15.00 -> 0.45 game units at 0x0049DCDA (the game's own 30 m green flare becomes a lens-sized bulb; corona_radius=0 puts it back)
 trafficlights: loaded 1522 lights from rhyremix_traffic.txt (960 carry the v2 heading/lens columns, 562 are v1 'x y z headz' and stay on the mast)
 trafficlights: #0 at -269.8,1088.1,18.7 head z=26.3 heading=0 lens=(-2.10,+0.10,7.60) -> light -271.9,1088.2,26.3
 trafficlights: head source = hook: no signal inside the game's own corona range, so nothing to record (nearest signal 79.1 m, the game's own corona range 50 m, grace 20000 ms, 21000 ms since the hook went live) | hook: calls=0 records=0 dropped=0 bad=0 reentrant=0
-trafficlights: head light ok id=... phase=0 hash=... pos=-269.83,1088.12,26.30 radiance=2.16,1200.00,410.32 gain=1.00 radius=0.10 flux=67 (bulb: lens nits)
-trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0 reentrant=0
+trafficlights: head light ok bulb id=... phase=0 hash=... pos=-269.83,1088.12,26.30 radiance=2.16,1200.00,410.32 gain=1.00 radius=0.10 flux=67 (bulb: lens nits)
+trafficlights: head light ok glow id=... phase=0 hash=... pos=-269.83,1088.12,26.30 radiance=0.01,6.00,2.05 gain=1.00 radius=3.00 flux=304 (glow: soft spill at the head)
+trafficlights[source=game]: 7 heads lit (7 with a glow), 7 bulbs + 7 glows drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0 reentrant=0
 ```
 
 The `loaded ... (N carry the v2 heading/lens columns, M are v1 ...)` line says
@@ -157,6 +158,15 @@ s30 bulb: the emitting sphere's radius in game units and its total output. At th
 shipped defaults a signal is `radius=0.10 flux=67` where a mid street luminaire
 is `radius=0.15 flux=3473`; a signal whose flux comes out near a lamp's is what
 makes a street go green instead of showing heads.
+
+n02b: every lit signal logs **two** of those lines, `bulb` and `glow`, at the same
+position with the same colour and gain - the bulb is the head you look at
+(`radius=0.10 flux=67`), the glow is the light that colours the pole, the wall,
+the road and the peds (`radius=3.00 flux=304`, the flux the 2026-11-12 00:48 glow
+measured, capped at one street luminaire's 3473). The 10 s summary says
+`N heads lit (N with a glow), N bulbs + N glows drawn`: **fewer glows than heads
+names a create that failed**, and `glow_flux=0` (bulb-only) is the A/B that tells
+you what the glow is doing on a given street.
 
 - **No `signalhook: patched` line**, and instead
   `trafficlights: source=game requested but the hook was not installed: ...` means
@@ -306,7 +316,7 @@ without restarting the game.
 | 3 | Any warm (sodium) lamp close up | the spectrum fix | **yellow-orange**, no red halo, no blue. Compare against a 2000 K incandescent in shot 4 |
 | 4 | An interior or tungsten-lit shopfront | thermal vs discharge | tungsten should be visibly **redder/deeper** than the sodium street lamp. If they look the same colour the family mapping is not reaching the lights |
 | 5 | A Burger Shot or Pizza at night | the emissive gain fix | window readable as a bright rectangle with a **visible falloff onto the pavement**. Blown white with no readable interior means `emissiveIntensity` is still high |
-| 6 | A signalised intersection, close, all three aspects visible | the signal-head fix (s01) | **every head is lit where it is and in the colour the game is showing it**: the light sits at the head, not at the top of the pole, and on a mast-arm signal the head hanging out over the road is the one that glows. Each head matches its own corona - red is **red**, not orange; green is distinctly **blue-green**; amber sits between. Small points, not glowing blobs, and no red spill on the tree next to the pole |
+| 6 | A signalised intersection, close, all three aspects visible | the signal-head fix (s01) + the bulb (s30) + the glow (n02b) | **every head is lit where it is and in the colour the game is showing it**: the light sits at the head, not at the top of the pole, and on a mast-arm signal the head hanging out over the road is the one that glows. Each head matches its own corona - red is **red**, not orange; green is distinctly **blue-green**; amber sits between. **Both halves**: a small bright point at the lens (the bulb - bright pixels, not a soft blob) AND a few metres of that same colour on the pole, the wall, the road and any ped under it (the glow, wanted: rhY "both like real life"). A street-wide wash, or a bright dot that colours nothing, are both wrong |
 | 7 | Same intersection from the cross street | the unshaped-light limitation | both faces readable, and the face pointing at you shows the same aspect the game's corona shows. If one face goes dark, that is the missing lens direction (see below) - not a wrong position |
 | 8 | Sunset, facing east | the solar model + Beer-Lambert | horizon glow strongly red/orange, zenith still blue. The red comes from path length, it is not tuned |
 | 9 | Any street at ~05:30 with lamps still on | the twilight switching | lamps on before the sun clears the horizon, off shortly after |
@@ -359,8 +369,9 @@ few seconds - no restart.
 | Cool lamps too blue | `lamp_cold=halide` (metal halide is much more neutral than mercury) |
 | Shopfronts blown out | `rtx.conf`: `rtx.emissiveIntensity = 0.5` |
 | Sky too bright at night | `rtx.conf`: `rtx.skyBrightness = 0.5` |
-| Signals too bright, or the street around them goes green | `[trafficlights] bulb_radiance=600` (the lens luminance in nits; 0 turns the signal lights off), and `bulb_radius` if the sphere itself is too big |
-| The glow around a head is still a street-wide wash, or has vanished altogether | `[trafficlights] corona_radius` is the radius we leave the game's own signal corona, which ships at 15.0 = a 30 m flare: 0.45 default, 1.0 for a bigger halo, 0 to leave the game's code alone |
+| Signals too bright, or the street around them goes green | `[trafficlights] bulb_radiance=600` (the lens luminance in nits; 0 turns the signal lights off), `bulb_radius` if the sphere itself is too big, and `glow_flux=150` (or `0`) for the spill - the log's `flux=` on the `glow` line is the number to compare with a street lamp's 3473 |
+| A signal is a bright dot that colours nothing around it (no glow on pole/wall/road) | n02b: `[trafficlights] glow_radius` (metres of spill, default 3) and `glow_flux` (default 304 = the 2026-11-12 00:48 look, capped at 3473 = one street luminaire). The log must show a `glow` line per lit signal and `N heads lit (N with a glow)` with the two numbers equal |
+| The glow around a head is still a street-wide wash, or has vanished altogether | `[trafficlights] corona_radius` is the radius we leave the game's own signal corona, which ships at 15.0 = a 30 m flare: 0.45 default, 1.0 for a bigger halo, 0 to leave the game's code alone. Our own spill is `glow_radius`/`glow_flux`, not this |
 | A head is lit in a colour the game is not showing, or the lights land on the pole | `[trafficlights] source=list` puts back the pre-s01 behaviour (one light per list line, colour from a local cycle) and the log line says why the hook is off |
 | A list-mode signal sits on the mast instead of on the lens | `[trafficlights] lens_offset=0` puts the old `x,y,z+headz` back; with 1 (the default) the light goes to `instance + rotate(heading, lens)`. It only moves when the file carries the v2 columns - the `loaded N lights ... (M carry the v2 heading/lens columns)` line says how many do, and mtraffic1/2 (562 of the 1522) stay on the mast on purpose: no measured offset covers an 85-unit model |
 | Game dies a few seconds after entering the level, `rhyremix.log` stops mid-frame, `rtx-remix/logs/crash-upload.log` says `type=CPU` | the signal-head hook is the first thing to suspect (it patches game code). `[trafficlights] source=list` takes it out; the log line then says `source=list, no code hook`. Fixed 2026-11-11: the stub had to supply the return address the deleted `call` would have pushed - see docs/FINDINGS.md |

@@ -415,6 +415,93 @@ void rhySignalBulb(int phase, int fixtureSize, float lensRadius,
     out->flux = 4.0f * 3.14159265358979f * radius * radius * mean;
 }
 
+// ---------------------------------------------------------------- n02b: glow
+
+float rhyLuminaireFlux(float radianceAtRef, float radiusRef, const float* rgb) {
+    if (!rgb) {
+        return 0.0f;
+    }
+    if (!(radiusRef > 0.0f)) {
+        radiusRef = 15.0f;  // what the shipped radiance_* values were tuned at
+    }
+    if (!(radianceAtRef > 0.0f)) {
+        return 0.0f;
+    }
+    // Same convention as rhySignalBulb's flux: 4*pi*r^2 * mean(radiance), with
+    // the radiance the flux-preserving rule puts on a fixture of ANY radius. The
+    // r^2 and the (radiusRef/radius)^2 cancel, which is the point: this is the
+    // lamp's output, not its size.
+    const float mean = (rgb[0] + rgb[1] + rgb[2]) / 3.0f;
+    return 4.0f * 3.14159265358979f * radiusRef * radiusRef * radianceAtRef *
+           mean;
+}
+
+void rhySignalGlow(int phase, float radiusM, float wantFlux, float capFlux,
+                   float radianceScale, RhySignalGlow* out) {
+    if (!out) {
+        return;
+    }
+    // The SAME lens passband as the bulb (lamps.h rhySignalLensRgb): the glow is
+    // the light that lens throws, so it cannot be a different colour from it.
+    float col[3];
+    rhySignalLensRgb(phase, col);
+
+    float radius = radiusM > 0.0f ? radiusM : kRhySignalGlowRadius;
+    if (radius < 0.2f) {
+        radius = 0.2f;   // at this size it is a second bulb, not a glow
+    }
+    if (radius > 20.0f) {
+        radius = 20.0f;  // the game's own 15 m flare is what this replaced
+    }
+    const float cap = capFlux > 0.0f ? capFlux : kRhySignalGlowFluxCap;
+
+    out->radius = radius;
+    out->cap = cap;
+    out->clamped = 0;
+    if (!(wantFlux > 0.0f)) {
+        // glow_flux=0: the off switch. This publishes no light (all radiance 0);
+        // trafficlights.cpp checks glowWanted() first and does not create a
+        // second handle at all, so the A/B costs nothing and no dark light is
+        // carried around. The zeros are also what a fade to dark leaves behind.
+        out->flux = 0.0f;
+        for (int i = 0; i < 3; ++i) {
+            out->radiance[i] = 0.0f;
+        }
+        return;
+    }
+    float flux = wantFlux;
+    if (flux > cap) {
+        flux = cap;
+        out->clamped = 1;   // a signal must not out-light the lamp over its head
+    }
+    if (!(radianceScale > 0.0f)) {
+        radianceScale = 1.0f;
+    }
+    // Radiance is what Remix takes; the flux is what the street feels. Solve the
+    // flux for a sphere of THIS radius: base = flux / (4*pi*r^2 * mean(colour)),
+    // which is the exact inverse of the flux rhySignalBulb reports - so the glow
+    // can carry the 2026-11-12 flux at 3 m without becoming a flood, and the
+    // flux= the log prints is the glow_flux= the ini asked for.
+    //
+    // Holding the FLUX constant across the three phases (rather than the base
+    // radiance, which is what the old light did and why its flux was 304 green /
+    // 269 amber / 226 red) is deliberate: the spill under a signal must not
+    // brighten and dim as the aspect changes, only change colour.
+    float colMean = (col[0] + col[1] + col[2]) / 3.0f;
+    if (!(colMean > 0.0f)) {
+        colMean = 1.0f / 3.0f;  // unreachable for a lens colour; never divide by 0
+    }
+    float base = flux / (4.0f * 3.14159265358979f * radius * radius * colMean);
+    base *= radianceScale;
+    float mean = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        out->radiance[i] = col[i] * base;
+        mean += out->radiance[i];
+    }
+    mean /= 3.0f;
+    out->flux = 4.0f * 3.14159265358979f * radius * radius * mean;
+}
+
 int rhySignalPatchCheck(int sourceIsGame, const uint8_t* callSite,
                         const uint8_t* callee, const uint8_t* cleanup,
                         uint32_t* calleeTarget) {

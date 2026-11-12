@@ -17,7 +17,7 @@ say() { printf '\n== %s ==\n' "$1"; }
 
 say "ini (what the running build was configured with)"
 if [ -f "$INI" ]; then
-  grep -nE '^\[|^(enabled|max_lights|max_total_lights|probe|probe_follow|probe_scale|probe_hash|probe_sweep|radiance_scale)=' "$INI" || true
+  grep -nE '^\[|^(enabled|max_lights|max_total_lights|probe|probe_follow|probe_scale|probe_hash|probe_sweep|radiance_scale|bulb_radius|bulb_radiance|glow_radius|glow_flux|corona_radius)=' "$INI" || true
 else
   echo "no ini at $INI"
 fi
@@ -34,9 +34,22 @@ say "active vs drawn (active>0 with drawn=0 means the lights exist only in the p
 # look absent on exactly the runs where the hook was live.
 ts_grep '(streetlights|trafficlights)(\[[^]]*\])?: [0-9]+ (active|heads lit)' 4 || echo "no module lines"
 
-say "signal heads (s01/s19/s30/n02: the patch, the bulb, the hook's own counters, the source decision; reentrant must stay 0)"
-ts_grep 'signalhook: |trafficlights\source=game\]|corona radius|bulb radius=|hook live but no head|head source =|loaded [0-9]+ lights' 6 || \
+say "signal heads (s01/s19/s30/n02/n02b: the patch, the bulb AND the glow, the hook's counters, the source decision; reentrant must stay 0)"
+ts_grep 'signalhook: |trafficlights\source=game\]|corona radius|bulb radius=|glow radius=|ok glow |ok bulb |with a glow|hook live but no head|head source =|loaded [0-9]+ lights' 8 || \
   echo "no signal lines: no signalised intersection in range, daytime with night_only=1, or source=list"
+# n02b: a lit signal is two lights. "N heads lit (M with a glow)" with M < N names a glow
+# create that failed (frame budget or max_total_lights), not a missing feature.
+glowlag=$(ts_grep 'heads lit \([0-9]+ with a glow\)|[0-9]+ active \([0-9]+ with a glow\)' 1 | \
+          sed -nE 's/.*lit \(([0-9]+) with a glow\).*/\1/p; s/.*active \(([0-9]+) with a glow\).*/\1/p' | tail -1)
+headsn=$(ts_grep 'heads lit \([0-9]+ with a glow\)|[0-9]+ active \([0-9]+ with a glow\)' 1 | \
+          sed -nE 's/.*: ([0-9]+) heads lit.*/\1/p; s/.*: ([0-9]+) active.*/\1/p' | tail -1)
+if [ -n "$glowlag" ] && [ -n "$headsn" ] && [ "$glowlag" -lt "$headsn" ]; then
+  echo "  ^ $headsn lit signals but only $glowlag have a glow: the glow create is being refused"
+  echo "    (frame budget or max_total_lights). 'budget_stop=' and 'deferred=' on the same line say which."
+fi
+if ts_grep 'glow radius=0.00 flux=0' 1; then
+  echo "  ^ glow_flux=0 in the ini: bulb only. The 2026-11-12 look wants flux=304 (the default)."
+fi
 if ts_grep 'head source = list' 1; then
   echo "  ^ the hook was given up on: a signal was inside the game's own 50 m corona range and still no head"
   echo "    appeared. 'nearest signal X m' on that line is the number to believe; 79.1 m is the default spawn,"

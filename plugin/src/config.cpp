@@ -160,6 +160,8 @@ static const char* const kIniDefaults =
     "radiance=1.5\r\n"
     "bulb_radius=0\r\n"
     "bulb_radiance=1200\r\n"
+    "glow_radius=3\r\n"
+    "glow_flux=304\r\n"
     "corona_radius=0.45\r\n"
     "period=60\r\n"
     "max_lights=60\r\n"
@@ -816,6 +818,28 @@ static void loadConfig() {
     if (c.traffic_corona_radius < 0.0f) {
         c.traffic_corona_radius = 0.0f;  // 0 = leave the game's 15 m flare alone
     }
+    // n02b: the glow, the other half of rhY's "both like real life". Defaults
+    // are the measured 2026-11-12 00:48 look, not a guess: 304 flux units spread
+    // over a 3 m sphere at the head. The ceiling is one street luminaire
+    // (kRhySignalGlowFluxCap, 3473: rhyLuminaireFlux() reproduces it from the
+    // shipped radiance_big/radius_ref/kelvin pair), because a signal that
+    // out-lights the lamp over its head is the same defect in a new colour.
+    c.traffic_glow_radius = iniFloatSec("trafficlights", "glow_radius",
+                                        3.0f);
+    if (c.traffic_glow_radius < 0.0f) {
+        c.traffic_glow_radius = 0.0f;
+    }
+    if (c.traffic_glow_radius > 20.0f) {
+        c.traffic_glow_radius = 20.0f;  // beyond this it is the old flood again
+    }
+    c.traffic_glow_flux = iniFloatSec("trafficlights", "glow_flux",
+                                      304.0f);
+    if (c.traffic_glow_flux < 0.0f) {
+        c.traffic_glow_flux = 0.0f;  // 0 = no glow light, bulb only
+    }
+    if (c.traffic_glow_flux > 3473.0f) {
+        c.traffic_glow_flux = 3473.0f;  // one street luminaire, see above
+    }
     c.traffic_max_lights = iniIntSec("trafficlights", "max_lights", 60);
     c.traffic_max_distance = iniIntSec("trafficlights", "max_distance", 250);
     c.traffic_exit_distance = iniIntSec("trafficlights", "exit_distance", 300);
@@ -1053,7 +1077,8 @@ static void loadConfig() {
            "max=%d dist=%d..%d phase_near=%d night_only=%d resync=%d "
            "head_ttl=%dms head_normal=%d head_forward=%.2f head_grace=%dms "
            "lens_offset=%d | bulb radius=%.3f "
-           "radiance=%.0f nits (fixture_size=%d) corona_radius=%.2f (%s)",
+           "radiance=%.0f nits (fixture_size=%d) corona_radius=%.2f (%s) | "
+           "glow radius=%.2f flux=%.0f (cap %.0f = one street luminaire)",
            c.traffic_enabled, c.traffic_mode,
            c.traffic_source ? "game" : "list", c.trafficPath.c_str(),
            c.traffic_period, c.traffic_radiance, c.traffic_radius,
@@ -1066,7 +1091,8 @@ static void loadConfig() {
                : rhySignalRadius(c.fixture_scale),
            c.traffic_bulb_radiance, c.fixture_size, c.traffic_corona_radius,
            c.traffic_corona_radius > 0.0f ? "resizes the game's 15.0 flare"
-                                          : "the game's own 15.0 flare");
+                                          : "the game's own 15.0 flare",
+           c.traffic_glow_radius, c.traffic_glow_flux, 3473.0f);
     rhyLog("config: sun=%d radiance=%.2f col=%.2f,%.2f,%.2f ang=%.2f spin=%.1f "
            "tilt=%.1f roll=%.1f fade=%.2f minel=%.2f step=%.2f vol=%.2f hash=%llu "
            "| moon=%d radiance=%.3f col=%.2f,%.2f,%.2f ang=%.2f fade=%.2f "
