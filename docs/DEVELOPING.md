@@ -256,6 +256,65 @@ Four separate causes, all ours, all visible in the numbers:
    `max_lights=320 + sticky_extra=90`. The old 60 was cutting the world dark at
    ~140 units, which is the "lights do not reach far enough" half of the report.
 
+### Why the whole world changed lighting at once (s28)
+
+rhY's number one complaint was not the blink above: it was that lighting changes
+**instantly** — "the whole world goes dark, then comes back" while driving. The
+2026-11-12 log says how instantly (see FINDINGS, same date): the street layer went
+between ~1 and ~360 live handles 20 times in 25 minutes, `rtx.skyBrightness` stepped
+0.02 → 1.00 nine times, and the computed sun elevation stepped up to 104.5 degrees
+between two samples.
+
+The mechanism is a Remix constraint, not a bug: a light's radiance and direction are
+fixed at `CreateLight` time, so *any* change to a light is a destroy plus a create,
+and every path in the plugin did all of them in one frame. The fix is a time layer,
+`plugin/src/smooth.{h,cpp}`, which is pure C++ (no `windows.h`, no Remix structs) so
+the whole model runs natively in `tests/smooth_check.cpp`:
+
+* **`RhyFade`** — a 0..1 gain envelope per light. `rhyFadeAdvance()` moves the target
+  gain at `1/ramp_seconds` per second; `rhyFadeApply()` moves the *published* gain —
+  the radiance the next handle actually carries — by at most `fade step`, and returns
+  create / recreate / retire. A handle is only retired once the light is already dark,
+  so "destroy" is never a step. Ramps are clamped to ≥ 0.5 s by `rhyFadeInit()`;
+  `rhyFadeSetRamp()` is the one exception, used for a traffic signal's colour
+  cross-fade, where the two handles (different hash per phase, so both can be live)
+  ramp in opposite directions and the total output stays constant.
+* **`rhyDistanceGain()`** — the `max_distance`..`exit_distance` band that p08 added
+  for hysteresis is now also the fade band: gain is 1 inside `max_distance` and ramps
+  to 0 at `exit_distance`, so the hard cut-off happens where the light is already
+  dark. `rhySelectLights()` returns that gain along with the id, so the fade is part
+  of the selection rather than an afterthought. The caps are unchanged.
+* **`RhyRate`** — a rate-limited follower (multiplicative limit plus an absolute
+  allowance) for the values that are not lights: `rtx.skyBrightness`,
+  `rtx.emissiveIntensity`, and the sun/moon radiance channels. The sky geometry is
+  still computed once a second, but the *published* value now advances every frame.
+* **`rhyDirLimit()`** — a slerp with an angular rate cap, so the sun's direction
+  slews to wherever the game clock put it instead of teleporting.
+* **`rhyBeginFrame(n)` / `rhyCreateBudgetLeft()` / `rhySpendCreateSlot()`** in
+  `plugin/src/remix.cpp` — a per-frame budget on handle changes. A fade costs one
+  create per light per step, so 320 lamps cost ~1600 creates; the budget spreads
+  them over frames. Destroys count too, which matters: without it a finished fade
+  retired every light in the same frame (the test measured a 42-of-204 aggregate drop
+  in one frame that way). A create refused by the budget reports `reason == 3`, which
+  is a retry-next-frame condition, not the bridge failing.
+* **`rhyPlayerPosGrace()`** in `plugin/src/game.cpp` — the ped pointer at `0xB7CD98`
+  read 0 for 13 seconds in that run, and every module took its "no player" branch,
+  which used to mean destroy everything. Now the last known position is held for
+  `player_grace_ms`, and when the grace really does expire the layers fade out.
+
+The knobs are the `[fade]` section of `rhyremix.ini` (`in_ms`, `out_ms`, `step`,
+`creates_per_frame`, `player_grace_ms`, `sky_rel_per_sec`, `sky_abs_per_sec`,
+`sun_rel_per_sec`, `sun_deg_per_sec`, `phase_fade_ms`), and the floors are enforced
+in code: a fade under 500 ms, a step over 0.5, or a rate limit under 1.05x/s is
+corrected and logged, so a typo cannot bring the instant switch back.
+
+What is deliberately **not** changed: the renderer-side amplifiers of a lighting step
+(`rtx.restirGI.historyDiscardStrength = 10`, `rtx.localtonemap.shadows = 2.5` in
+`config/rtx.conf`). They are real levers, but retuning them without an in-game A/B
+trades a lighting pop for a denoiser artifact, and the plugin no longer sends a step
+big enough to trigger the history discard. `scripts/lighting-test.sh` is the harness
+if that A/B is ever run.
+
 The lamp list itself was wasting slots: 7371 lines for 7002 lamps, because the
 same physical lamp is instanced by more than one model id (a pole and its LOD) and
 some table entries carry several offsets that land on one point. `tools/lamp_list.py`

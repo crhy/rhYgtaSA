@@ -72,8 +72,39 @@ static unsigned g_drawFail = 0;
 static unsigned g_budget = 0;  // 0 = no cap; the modules cap themselves
 static unsigned g_budgetRefuse = 0;
 
+// s28: creates per presented frame. A fade is a sequence of CreateLight calls
+// (radiance is baked at create time), so without this a fade of the whole street
+// layer would be one 320-create burst - which is the very thing being fixed.
+static unsigned g_frameBudget = 0;   // 0 = no per-frame limit
+static unsigned g_frameCreates = 0;
+static unsigned g_deferred = 0;
+
 void rhySetLightBudget(unsigned cap) { g_budget = cap; }
 unsigned rhyBudgetRefusals() { return g_budgetRefuse; }
+
+void rhyBeginFrame(unsigned perFrameCreates) {
+    g_frameBudget = perFrameCreates;
+    g_frameCreates = 0;
+}
+unsigned rhyFrameCreates() { return g_frameCreates; }
+unsigned rhyCreateDeferred() { return g_deferred; }
+
+bool rhyCreateBudgetLeft() {
+    return g_frameBudget == 0 || g_frameCreates < g_frameBudget;
+}
+
+void rhySpendCreateSlot() {
+    if (g_frameBudget != 0 && g_frameCreates < g_frameBudget) {
+        ++g_frameCreates;
+    }
+}
+
+bool rhyCanCreateLight() {
+    if (g_frameBudget != 0 && g_frameCreates >= g_frameBudget) {
+        return false;
+    }
+    return g_budget == 0 || g_live < g_budget;
+}
 
 // Returns the handle the bridge gave us, or null when the create failed.  Note
 // what "failed" means here: the bridge client can return SUCCESS plus a handle
@@ -86,6 +117,20 @@ remixapi_LightHandle rhyCreateLight(const remixapi_LightInfo* info, int* reason)
     if (!api || !api->CreateLight) {
         if (reason) {
             *reason = 2;
+        }
+        return nullptr;
+    }
+    if (g_frameBudget != 0 && g_frameCreates >= g_frameBudget) {
+        // A fade step that did not fit in this frame. The caller keeps the
+        // handle it has and tries again next frame, so the light's published
+        // radiance does not jump - it just arrives one frame later.
+        if (g_deferred++ < 3 || (g_deferred % 500) == 0) {
+            rhyLog("remix: frame create budget spent (%u creates this frame, "
+                   "%u deferred so far): the fade continues next frame",
+                   g_frameCreates, g_deferred);
+        }
+        if (reason) {
+            *reason = 3;
         }
         return nullptr;
     }
@@ -114,6 +159,7 @@ remixapi_LightHandle rhyCreateLight(const remixapi_LightInfo* info, int* reason)
         *reason = 0;
     }
     ++g_live;
+    ++g_frameCreates;
     return handle;
 }
 

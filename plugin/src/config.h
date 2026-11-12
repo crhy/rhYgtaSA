@@ -197,6 +197,28 @@ struct RhyConfig {
     int traffic_head_ttl_ms;  // a head with no corona for this long loses its light
     float traffic_head_forward;  // metres to move the light along head_normal
     int traffic_head_normal;     // 1 = use the entity matrix's "at" axis; 0 = no offset
+
+    // --- s28: lighting must never change instantly ([fade] section) ---------
+    // Remix bakes a light's radiance at CreateLight time, so a fade is a
+    // sequence of creates. These knobs set how long a ramp takes, how big one
+    // step may be, and how many creates one frame may spend paying for it.
+    // See plugin/src/smooth.h.
+    int   fade_in_ms;         // a lamp ramps up over this long (clamped >= 500)
+    int   fade_out_ms;        // ... and down (clamped >= 500)
+    float fade_step;          // largest gain change one handle may carry (0.05..0.5)
+    int   creates_per_frame;  // per-frame CreateLight budget (0 = unlimited)
+    int   player_grace_ms;    // hold the last player position this long when the
+                              // ped pointer reads 0, then FADE the lamp layers out
+                              // instead of destroying them in one frame
+    float sky_rel_per_sec;    // max multiplicative rate for rtx.skyBrightness /
+                              // rtx.emissiveIntensity (3.0 = at most 3x per second)
+    float sky_abs_per_sec;    // ... plus this absolute allowance per second, so the
+                              // 0.02 night floor can still move
+    float sun_rel_per_sec;    // max multiplicative rate for the sun/moon radiance
+    float sun_deg_per_sec;    // max angular rate for the sun/moon direction
+    int   phase_fade_ms;      // signal colour cross-fade; 0 = instant, as a real
+                              // signal is. The light's appearance and disappearance
+                              // always use fade_in_ms/fade_out_ms.
 };
 
 // Loads once on first call; returns the same pointer every time.

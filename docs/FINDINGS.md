@@ -634,3 +634,90 @@ python checks, the latter including the real exe's bytes at 0x49DD4C /
 0x49DD51 / 0x49DD54 / 0x6FC580, so a game update turns the test red before it
 turns the game red. Full stack-depth tables in
 `.strata/notes-s19-signal-hook-hardening.md`.
+
+## Lighting changed instantly, everywhere at once (2026-11-12, s28)
+
+rhY's number one report from the 2026-11-12 session: **"the whole-world lighting
+changes INSTANTLY while running or driving"** — a street that is lit in one frame
+and not in the next, a world that goes dark and comes back. Not the p08 blink
+(alternating, at one radius, while nearly stationary): this is a **step**, and it is
+the largest lighting change the plugin can make.
+
+### Measured, from `scripts/rhyremix.log` lines 3543-5350 (00:48:33 → 01:13:03, 1470 s)
+
+| what | number |
+|------|--------|
+| handle creates / destroys | 3574 / 3223 (2.43 / 2.19 per second) |
+| one-second samples where the live handle count changed | 281 of 1446 (19%) |
+| **mass events** (`|Δlive| ≥ 100`, i.e. the whole street layer appearing or vanishing between two samples) | **20** — `00:48:56 1→360`, `00:48:58 360→41`, `00:49:11 363→42`, `00:51:26 381→1`, `01:09:31 1→110`, `01:10:04 33→353`, … |
+| per re-selection pass, new lights | `[320, 0, 320, 0, …, 139, 0, 109, 320, 320, …]` — always nothing or the whole set. Never a partial fade. |
+| `daylight` (→ `rtx.skyBrightness`) steps > 0.05 | 17 in 10 s samples, **9 of them > 0.5**, five of them the full `0.00 ↔ 1.00` = a **50× ambient step in one frame** |
+| sun elevation step between samples | max **104.5 deg**, 22 samples > 5 deg |
+| lamps on/off flips | 8 (each one a 320-light step) |
+| `rtx:` setting pushes for the whole run | 92 — each one a step, not a ramp |
+| finding 3 ("whole world dark on a cab roof") | `live=1` (only the sun left, every lamp destroyed) from **01:09:20 to 01:09:33**, and again at `00:51:26 381→1`; both times the traffic module logged `0 active … 381 awaiting destroy` with `night_only=0`, which is only reachable through the "no player ped" branch |
+
+### Why every one of them is instant
+
+One constraint explains all of it: **`CreateLight` fixes a light's radiance, colour
+and direction; there is no way to change a live handle.** So every lighting change in
+the plugin is a destroy plus a create, and every path did all of them inside one
+frame:
+
+* `destroyAll()` fired on the day/night flip, on the module being off, and on
+  `rhyPlayerPos()` returning false — 320 handles gone between two frames.
+* Selection ran every `resync_frames=30` frames, so everything that streamed in or
+  out over the last half second appeared at once, at full radiance.
+* The distance cut-off was a hard edge: a lamp arrived at `max_distance` at full
+  radiance and left at `exit_distance` at full radiance.
+* A traffic phase change was a destroy + create: green `(0.0018, 1, 0.34)` → red
+  `(1, 0, 0)` is a ~3× luminance step in one frame (766 of them this run).
+* The sun/moon handle was destroyed the instant its luminance reached 0 and rebuilt
+  whenever it moved > 1° or brightened > 10% — each rebuild a hard step.
+* `rtx.skyBrightness` and `rtx.emissiveIntensity` were pushed as computed, once a
+  second, so every value in the world was a 1 Hz step function; and the game clock
+  this run jumped by up to **1372 game-minutes** between samples (9 jumps > 30
+  game-min), which stepped the sun, the ambient and the lamp on/off decision
+  together.
+* `rhyPlayerPos()` returns false whenever the ped pointer at `0xB70153`'s neighbour
+  `0xB7CD98` reads 0 — no grace, no last-known position, no vehicle fallback — and
+  that false is the trigger for the biggest destroy of all.
+
+### What fixed it
+
+A time layer, `plugin/src/smooth.{h,cpp}`, pure C++ so it runs natively
+(`tests/smooth_check.cpp`, 43 checks): per-light fade envelopes whose *published*
+gain moves at most `fade step` per handle change; the `max_distance`..`exit_distance`
+hysteresis band reused as a **fade band** (`rhyDistanceGain`, returned by
+`rhySelectLights`); rate-limited followers for the ambient, exposure and sun
+radiance; an angular slew limit for the sun direction; a per-frame budget on handle
+changes that counts destroys as well as creates; and `rhyPlayerPosGrace()`, which
+holds the last known position for `player_grace_ms` and then *fades* the layers out.
+`destroyAll()` no longer exists in either light module.
+
+Two bugs the native test caught that no amount of staring at the game would have:
+
+1. `rhyFadeDue()` and `rhyFadeApply()` disagreed about when a step was due, so a lamp
+   whose remaining gap was smaller than one step was never published again — it sat
+   at 0.774 of its target forever, and a fade-out never reached dark and never
+   retired its handle.
+2. Retires did not count against the per-frame budget, so when a fade-out finished,
+   every remaining light was destroyed in the same frame: a **42-of-204 drop in total
+   lit output in one frame**, i.e. the original bug, reintroduced by the fix.
+
+The bounds are asserted numerically rather than by eye: with the shipped `[fade]`
+values, driving at 54 km/h through a 900-lamp field while the street switches on,
+off, and loses its player pointer, the **largest one-frame change in the world's
+total lit output is 2.1% of itself**, no single lamp moves by more than one step, no
+handle is retired from more than one step of brightness, and every layer transition
+takes ≥ 0.5 s (measured 0.88-1.07 s).
+
+### What was deliberately left alone
+
+`rtx.restirGI.historyDiscardStrength = 10` (max: the denoiser throws away its
+temporal history when lighting changes, so a change lands at full strength the next
+frame) and `rtx.localtonemap.shadows = 2.5` (a strong local-contrast boost that
+amplifies a step in direct light) both make a lighting step *more* visible. They are
+the next lever, but retuning them without an in-game A/B trades a lighting pop for a
+denoiser artifact, and the plugin no longer emits a step large enough to trigger the
+discard path. `scripts/lighting-test.sh` is the harness if that A/B is run.

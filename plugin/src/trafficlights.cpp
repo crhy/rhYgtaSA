@@ -17,6 +17,7 @@
 #include "delayed.h"
 #include "game.h"
 #include "log.h"
+#include "smooth.h"  // s28: fades and rate limits - lighting must never step
 #include "sun.h"  // rhyLampsOn: signals and street lamps switch on the same evening
 #include "lamps.h"
 #include "signalheads.h"
@@ -31,8 +32,23 @@ struct TrafficLight {
 };
 
 static std::vector<TrafficLight> g_lights;
-static std::map<int, remixapi_LightHandle> g_active;  // list index -> handle
-static std::map<int, int> g_phase;                     // list index -> phase baked into the handle
+static std::vector<float> g_xy;  // x,y pairs of g_lights, for rhySelectLights
+
+// s28: a signal light is (list index, phase), and its brightness is a fade
+// envelope, not a constant. Keying the live set by BOTH index and phase is what
+// makes a colour change a cross-fade instead of a jump: the old colour's handle
+// ramps down while the new colour's ramps up, and because the hash carries the
+// phase the two can exist at the same time.
+struct SignalState {
+    remixapi_LightHandle handle;
+    RhyFade fade;
+};
+static int signalKey(int index, int phase) { return index * 4 + (phase & 3); }
+
+static std::map<int, SignalState> g_active;  // signalKey -> live light
+static std::map<int, float> g_want;          // signalKey -> target gain (0..1)
+static std::vector<int> g_wantOrder;         // nearest first
+
 static bool g_inited = false;
 static int g_frame = 0;
 static bool g_night = false;
@@ -41,22 +57,51 @@ static DWORD g_brokenTick = 0;    // when it broke, for the post-mortem log line
 static unsigned g_budgetStop = 0;  // creates our OWN cap refused (not a failure)
 static unsigned g_phaseSwap = 0;   // recreations caused by a phase change
 static unsigned g_cfgRev = 0;     // ini revision we are following
+static unsigned g_fadeSteps = 0;  // re-creates that moved a gain one step
+static unsigned g_retired = 0;    // lights destroyed after fading to dark
+static unsigned g_playerGone = 0;  // frames the player ped pointer was unreadable
 
 // --- source=game: one Remix light per signal HEAD the game itself lights ---
 //
 // Keyed by rhyHeadId(entity, 2dfx index) instead of a list index, because the
 // heads come and go with what the renderer draws rather than from a file.
-struct HeadLight {
-    remixapi_LightHandle handle;
-    int phase;      // the phase the handle was built with
-    DWORD seen;     // last tick this head registered a corona
+struct HeadSeen {
+    DWORD seen;   // last tick this head registered a corona
+    int phase;    // the phase the game last showed for it
 };
-static std::map<uint64_t, HeadLight> g_heads;
+static std::map<uint64_t, HeadSeen> g_heads;
+
+// The handles themselves are keyed by (head, phase) for the same reason the list
+// lights are keyed by (index, phase): a colour change needs both handles alive
+// for the length of the cross-fade.
+struct HeadKey {
+    uint64_t id;
+    int phase;
+    bool operator<(const HeadKey& o) const {
+        if (id != o.id) {
+            return id < o.id;
+        }
+        return phase < o.phase;
+    }
+};
+struct HeadState {
+    remixapi_LightHandle handle;
+    RhyFade fade;
+    float pos[3];  // where the lens was when this light was created: a re-create
+                   // keeps it, so a fade never moves the light
+};
+static std::map<HeadKey, HeadState> g_headLights;
+static std::map<HeadKey, float> g_wantHead;
+static std::vector<HeadKey> g_wantHeadOrder;
+
 static RhySignalHead g_rec[kRhySignalHeadCap];
 static unsigned g_recN = 0;          // records in g_rec this frame
 static unsigned g_headSwaps = 0;     // recreations caused by a colour change
-static unsigned g_headExpired = 0;   // lights retired by the 2 s corona timeout
+static unsigned g_headExpired = 0;   // heads that stopped registering coronas
 static bool g_hookTried = false;     // install attempted at least once
+
+// A gain at or below this counts as dark: the handle is retired there.
+static const float kGainFloor = 0.02f;
 
 // ---------------------------------------------------------------- pure logic
 
@@ -121,6 +166,8 @@ static void loadList() {
         }
         TrafficLight light = {x, y, z, headz};
         g_lights.push_back(light);
+        g_xy.push_back(x);
+        g_xy.push_back(y);
     }
     std::fclose(f);
     rhyLog("trafficlights: loaded %u lights from %s",
@@ -212,52 +259,84 @@ static bool isNight(int hour, const RhyConfig& c) {
 // (the streetlights knob is reused here on purpose: one ini value, two modules)
 // before the farthest ones are dropped. Without it, a light on the boundary is
 // created and destroyed on alternate passes: a traffic light that blinks.
-static std::vector<int> chooseLights(const RhyConfig& c, const float* pp) {
-    struct Cand {
-        float d2;
-        int i;
-        bool sticky;
-    };
-    std::vector<Cand> cand;
-    const float maxD = static_cast<float>(c.traffic_max_distance);
-    const float exitD = static_cast<float>(c.traffic_exit_distance);
-    const size_t cap = static_cast<size_t>(c.traffic_max_lights);
-    const size_t grow = cap + static_cast<size_t>(c.sticky_extra);
+//
+// s28: the band between the two radii is now also the fade band, so a signal
+// that streams in fades up instead of arriving at full radiance, and one that
+// streams out fades to nothing before its handle goes away.
+static void reselect(const RhyConfig& c, const float* pp, double nowSeconds) {
+    g_want.clear();
+    g_wantOrder.clear();
 
-    for (size_t i = 0; i < g_lights.size(); ++i) {
-        const TrafficLight& L = g_lights[i];
-        const float dx = L.x - pp[0];
-        const float dy = L.y - pp[1];
-        const float d2 = dx * dx + dy * dy;
-        if (maxD > 0.0f && d2 > exitD * exitD) {  // the WIDER bound: see above
+    // Which list indices already have a handle (in any phase).
+    std::vector<int> active;
+    active.reserve(g_active.size());
+    for (std::map<int, SignalState>::iterator it = g_active.begin();
+         it != g_active.end(); ++it) {
+        const int index = it->first / 4;
+        if (active.empty() || active.back() != index) {
+            active.push_back(index);
+        }
+    }
+    std::sort(active.begin(), active.end());
+
+    static std::vector<RhyWant> want;
+    want.resize(g_lights.size());
+    const unsigned n = rhySelectLights(
+        g_xy.empty() ? nullptr : &g_xy[0], static_cast<unsigned>(g_lights.size()),
+        active.empty() ? nullptr : &active[0], static_cast<unsigned>(active.size()),
+        pp[0], pp[1], static_cast<float>(c.traffic_max_distance),
+        static_cast<float>(c.traffic_exit_distance),
+        static_cast<unsigned>(c.traffic_max_lights),
+        static_cast<unsigned>(c.sticky_extra), &want[0],
+        static_cast<unsigned>(want.size()));
+
+    const float nearD = static_cast<float>(c.traffic_phase_near);
+    const float near2 = nearD * nearD;
+    for (unsigned i = 0; i < n; ++i) {
+        const int index = want[i].id;
+        // Only inside phase_near does a phase change recreate the light: beyond
+        // it, keep whatever colour the light already has. Radiance is baked at
+        // CreateLight, so recreating every light on every phase change is a
+        // traffic light that visibly blinks across the whole district, for a
+        // colour change nobody can see at that distance.
+        const float dx = g_lights[index].x - pp[0];
+        const float dy = g_lights[index].y - pp[1];
+        int phase = (dx * dx + dy * dy <= near2)
+                        ? rhyTrafficPhase(index, nowSeconds, c.traffic_mode,
+                                          c.traffic_period)
+                        : -1;
+        if (phase < 0) {
+            // Keep the colour it has. If it has no light yet, give it the phase
+            // it would have had anyway.
+            phase = -1;
+            for (int p = 0; p < 3 && phase < 0; ++p) {
+                if (g_active.find(signalKey(index, p)) != g_active.end()) {
+                    phase = p;
+                }
+            }
+            if (phase < 0) {
+                phase = rhyTrafficPhase(index, nowSeconds, c.traffic_mode,
+                                        c.traffic_period);
+            }
+        }
+        if (want[i].gain <= 0.0f) {
             continue;
         }
-        const Cand e = {d2, static_cast<int>(i),
-                        g_active.find(static_cast<int>(i)) != g_active.end()};
-        cand.push_back(e);
-    }
-    std::sort(cand.begin(), cand.end(),
-              [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
-
-    std::vector<int> chosen;
-    chosen.reserve(grow);
-    for (size_t k = 0; k < cand.size(); ++k) {
-        if (cand[k].sticky && chosen.size() < grow) {
-            chosen.push_back(cand[k].i);
+        const int key = signalKey(index, phase);
+        g_want[key] = want[i].gain;
+        g_wantOrder.push_back(key);
+        std::map<int, SignalState>::iterator cur =
+            g_active.find(signalKey(index, phase));
+        if (cur == g_active.end()) {
+            ++g_phaseSwap;  // a handle in this colour does not exist yet
         }
     }
-    for (size_t k = 0; k < cand.size(); ++k) {
-        if (!cand[k].sticky && chosen.size() < cap) {
-            chosen.push_back(cand[k].i);
-        }
-    }
-    return chosen;
 }
 
 // ---------------------------------------------------------------- create / destroy
 
-// Radiance is baked at CreateLight time, so a phase change means destroying
-// the light and creating a new one with a different hash.
+// Radiance is baked at CreateLight time, so a phase change means a second handle
+// with a different hash - and s28 makes the swap a cross-fade between the two.
 //
 // The colours are the passbands of real signal lenses, integrated across the
 // visible spectrum (see lamps.h), not three hand-picked triples. That matters
@@ -277,8 +356,8 @@ static const float* phaseColor(int phase) {
     return rgb[phase >= 0 && phase <= 2 ? phase : 0];
 }
 
-static remixapi_LightHandle createLight(int index, int phase,
-                                        const RhyConfig& c) {
+static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c,
+                                        float gain) {
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->CreateLight) {
         return nullptr;
@@ -299,6 +378,12 @@ static remixapi_LightHandle createLight(int index, int phase,
                                         : c.traffic_radius;
     const float rad = rhyRadianceForFlux(c.traffic_radiance, radius,
                                          c.traffic_radius_ref) * c.radiance_scale;
+    if (gain < 0.0f) {
+        gain = 0.0f;
+    }
+    if (gain > 1.0f) {
+        gain = 1.0f;
+    }
 
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
@@ -307,9 +392,9 @@ static remixapi_LightHandle createLight(int index, int phase,
     info.hash = c.light_hash_base +
                 (static_cast<uint64_t>(index) << 2) +
                 static_cast<uint64_t>(phase & 3);
-    info.radiance.x = col[0] * rad;
-    info.radiance.y = col[1] * rad;
-    info.radiance.z = col[2] * rad;
+    info.radiance.x = col[0] * rad * gain;
+    info.radiance.y = col[1] * rad * gain;
+    info.radiance.z = col[2] * rad * gain;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -329,7 +414,7 @@ static remixapi_LightHandle createLight(int index, int phase,
     sphere.volumetricRadianceScale = 0.0f;
     info.pNext = &sphere;
 
-    int reason = 0;  // see remix.h: 1 = our max_total_lights cap, 2 = the bridge
+    int reason = 0;  // remix.h: 1 = our cap, 2 = the bridge, 3 = frame budget
     const remixapi_LightHandle handle = rhyCreateLight(&info, &reason);
     if (!handle) {
         if (reason == 2) {
@@ -340,6 +425,9 @@ static remixapi_LightHandle createLight(int index, int phase,
                    "the next rhyremix.ini edit",
                    index, phase, rhyCreateFailures());
             return nullptr;
+        }
+        if (reason == 3) {
+            return nullptr;  // frame budget spent: this fade step runs next frame
         }
         if (++g_budgetStop <= 3) {
             rhyLog("trafficlights: no slot for #%d phase %d, max_total_lights reached "
@@ -354,106 +442,35 @@ static remixapi_LightHandle createLight(int index, int phase,
     if (createdLogs < 3) {
         ++createdLogs;
         rhyLog("trafficlights: CreateLight ok #%d phase %d hash=%llu pos=%.1f,%.1f,%.1f "
-               "radiance=%.2f,%.2f,%.2f radius=%.2f",
+               "radiance=%.2f,%.2f,%.2f gain=%.2f radius=%.2f",
                index, phase, info.hash, sphere.position.x, sphere.position.y,
                sphere.position.z, info.radiance.x, info.radiance.y,
-               info.radiance.z, sphere.radius);
+               info.radiance.z, gain, sphere.radius);
     }
     return handle;
 }
 
-static void destroyAll() {
-    for (std::map<int, remixapi_LightHandle>::iterator it = g_active.begin();
-         it != g_active.end(); ++it) {
-        rhyDelayDestroy(it->second, kTagTraffic + it->first);
+// s28: no destroyAll(). Day, a missing player ped, or the module being switched
+// off set every target gain to 0; the envelopes then ramp each signal down and
+// retire the handle when it reaches dark.
+static void fadeAllOut(const char* why) {
+    if (!g_want.empty() || !g_wantHead.empty()) {
+        rhyLog("trafficlights: fading %u signal lights out (%s)",
+               static_cast<unsigned>(g_active.size() + g_headLights.size()), why);
     }
-    g_active.clear();
-    g_phase.clear();
+    g_want.clear();
+    g_wantOrder.clear();
+    g_wantHead.clear();
+    g_wantHeadOrder.clear();
 }
 
-// Re-diff the active set against the chosen set, recreating lights whose phase
-// changed - but only the ones close enough for the colour to be readable.
-// Radiance is baked at CreateLight time, so a phase change costs a destroy plus
-// a create; doing that for every light in a 250 m radius is a traffic light that
-// visibly blinks across the whole district, for a colour change nobody can see
-// at that distance. phase_near is where the two stop being worth trading.
-static void resync(const RhyConfig& c, const float* pp, double nowSeconds) {
-    std::vector<int> chosen = chooseLights(c, pp);
-
-    const float nearD = static_cast<float>(c.traffic_phase_near);
-    const float near2 = nearD * nearD;
-
-    std::map<int, bool> keep;
-    std::map<int, int> wantPhase;  // -1 = "any phase will do": keep what we have
-    for (size_t i = 0; i < chosen.size(); ++i) {
-        keep[chosen[i]] = true;
-        const TrafficLight& L = g_lights[chosen[i]];
-        const float dx = L.x - pp[0];
-        const float dy = L.y - pp[1];
-        wantPhase[chosen[i]] =
-            (dx * dx + dy * dy <= near2)
-                ? rhyTrafficPhase(chosen[i], nowSeconds, c.traffic_mode,
-                                  c.traffic_period)
-                : -1;
-    }
-
-    // Drop lights that are no longer chosen, or whose phase changed.
-    for (std::map<int, remixapi_LightHandle>::iterator it = g_active.begin();
-         it != g_active.end();) {
-        const int index = it->first;
-        std::map<int, bool>::iterator k = keep.find(index);
-        std::map<int, int>::iterator wp = wantPhase.find(index);
-        std::map<int, int>::iterator cp = g_phase.find(index);
-        const bool stale = (k == keep.end()) ||
-                           (wp == wantPhase.end()) ||
-                           (cp == g_phase.end()) ||
-                           (wp->second >= 0 && cp->second != wp->second);
-        if (stale) {
-            // Count the phase-driven recreations HERE: g_phase is erased below,
-            // so the create loop can no longer tell "this index used to be lit
-            // in another colour" from "this index was never lit".
-            if (cp != g_phase.end() && wp != wantPhase.end() &&
-                wp->second >= 0 && cp->second != wp->second) {
-                ++g_phaseSwap;
-            }
-            rhyDelayDestroy(it->second, kTagTraffic + index);
-            g_active.erase(it++);
-            g_phase.erase(index);
-        } else {
-            ++it;
-        }
-    }
-
-    // Create newly chosen lights (and recreated ones after a phase change).
-    for (size_t i = 0; i < chosen.size(); ++i) {
-        const int index = chosen[i];
-        if (g_active.find(index) != g_active.end()) {
-            continue;
-        }
-        int phase = wantPhase[index];
-        if (phase < 0) {
-            // Too far away to care about the colour, but it has no light yet,
-            // so give it the phase it would have had anyway.
-            phase = rhyTrafficPhase(index, nowSeconds, c.traffic_mode,
-                                    c.traffic_period);
-        }
-        rhyFlushDelayedTag(kTagTraffic + index);  // destroy-before-create: same hash, see delayed.h
-        remixapi_LightHandle h = createLight(index, phase, c);
-        if (h) {
-            g_active[index] = h;
-            g_phase[index] = phase;
-        }
-    }
-}
-
-// ---------------------------------------------------------------- source=game
-
-// Tag for the delayed-destroy queue. Two different heads can fold onto the same
-// tag; the only consequence is that a flush retires the other head's handle a few
-// frames earlier than it would have been, and that handle was already off the
-// draw list (see delayed.h).
-static int headTag(uint64_t id) {
-    return kTagSignalHead + static_cast<int>(id % 400000ull);
+// Tag for the delayed-destroy queue of one head light. Two different heads can
+// fold onto the same tag; the only consequence is that a flush retires the other
+// head's handle a few frames earlier than it would have been, and that handle was
+// already fading out (see delayed.h).
+static int headTag(uint64_t id, int phase) {
+    return kTagSignalHead +
+           static_cast<int>((id * 4u + static_cast<uint64_t>(phase & 3)) % 400000ull);
 }
 
 // One signal head: the lens position the game used for its corona, the colour the
@@ -467,7 +484,7 @@ static int headTag(uint64_t id) {
 // state, so a mast-arm head is lit where it is and in the colour it shows.
 static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
                                             const float* pos,
-                                            const RhyConfig& c) {
+                                            const RhyConfig& c, float gain) {
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->CreateLight) {
         return nullptr;
@@ -481,6 +498,12 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
                                         : c.traffic_radius;
     const float rad = rhyRadianceForFlux(c.traffic_radiance, radius,
                                          c.traffic_radius_ref) * c.radiance_scale;
+    if (gain < 0.0f) {
+        gain = 0.0f;
+    }
+    if (gain > 1.0f) {
+        gain = 1.0f;
+    }
 
     static remixapi_LightInfo info;
     static remixapi_LightInfoSphereEXT sphere;
@@ -488,9 +511,9 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     info.hash = rhyHeadLightHash(id, phase, c.light_hash_base);
-    info.radiance.x = col[0] * rad;
-    info.radiance.y = col[1] * rad;
-    info.radiance.z = col[2] * rad;
+    info.radiance.x = col[0] * rad * gain;
+    info.radiance.y = col[1] * rad * gain;
+    info.radiance.z = col[2] * rad * gain;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -507,7 +530,7 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
     sphere.volumetricRadianceScale = 0.0f;
     info.pNext = &sphere;
 
-    int reason = 0;  // see remix.h: 1 = our max_total_lights cap, 2 = the bridge
+    int reason = 0;  // remix.h: 1 = our cap, 2 = the bridge, 3 = frame budget
     const remixapi_LightHandle handle = rhyCreateLight(&info, &reason);
     if (!handle) {
         if (reason == 2) {
@@ -517,6 +540,9 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
                    "%016llx phase %d (bridge create failures so far: %u), traffic "
                    "lights off until the next rhyremix.ini edit",
                    static_cast<unsigned long long>(id), phase, rhyCreateFailures());
+            return nullptr;
+        }
+        if (reason == 3) {
             return nullptr;
         }
         if (++g_budgetStop <= 3) {
@@ -532,48 +558,50 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
         ++headLogs;
         rhyLog("trafficlights: head light ok id=%016llx phase=%d hash=%llu "
                "pos=%.2f,%.2f,%.2f rgb_game=%d,%d,%d radiance=%.2f,%.2f,%.2f "
-               "radius=%.2f",
+               "gain=%.2f radius=%.2f",
                static_cast<unsigned long long>(id), phase, info.hash, pos[0], pos[1],
                pos[2], col[0] > 0.5f ? 1 : 0, col[1] > 0.5f ? 1 : 0,
                col[2] > 0.5f ? 1 : 0, info.radiance.x, info.radiance.y,
-               info.radiance.z, sphere.radius);
+               info.radiance.z, gain, sphere.radius);
     }
     return handle;
 }
 
-static void destroyAllHeads() {
-    for (std::map<uint64_t, HeadLight>::iterator it = g_heads.begin();
-         it != g_heads.end(); ++it) {
-        rhyDelayDestroy(it->second.handle, headTag(it->first));
-    }
-    g_heads.clear();
-}
+// ---------------------------------------------------------------- head selection
 
 // Re-diff the live head lights against what the game registered this frame.
-// Same shape as resync() above, with two differences that come from the source:
+// Same shape as reselect() above, with two differences that come from the source:
 // a head the game stopped registering is not "out of range", it is "this aspect
 // is off / this signal left the renderer", and it expires on a timeout; and a
-// colour change is the game's own, so it is not limited to phase_near - the
-// game only registers the lit head in the first place, so the heads that change
+// colour change is the game's own, so it is not limited to phase_near - the game
+// only registers the lit head in the first place, so the heads that change
 // colour are the ones the player is looking at.
-static void resyncHeads(const RhyConfig& c, const float* pp) {
+//
+// s28: expiring a head no longer destroys its light. The head goes off the want
+// list, its envelope's target goes to 0, and the handle is retired when the ramp
+// reaches dark - which is also what stops a signal blinking when the renderer
+// skips a corona for one frame.
+static void reselectHeads(const RhyConfig& c, const float* pp) {
     const DWORD now = GetTickCount();
 
-    // 1. every head the game registered this frame is still alive.
+    // 1. every head the game registered this frame is alive.
     for (unsigned i = 0; i < g_recN; ++i) {
         const uint64_t id = rhyHeadId(g_rec[i].entity, g_rec[i].index);
-        std::map<uint64_t, HeadLight>::iterator it = g_heads.find(id);
-        if (it != g_heads.end()) {
-            it->second.seen = g_rec[i].tick;
+        const int phase = rhySignalPhaseFromGameRgb(g_rec[i].rgb[0], g_rec[i].rgb[1],
+                                                    g_rec[i].rgb[2]);
+        HeadSeen& hs = g_heads[id];
+        hs.seen = g_rec[i].tick;
+        if (phase >= 0) {
+            hs.phase = phase;
         }
     }
 
-    // 2. expire the ones that stopped registering.
-    for (std::map<uint64_t, HeadLight>::iterator it = g_heads.begin();
+    // 2. expire the ones that stopped registering. Their lights stay, on their
+    // way down, until the envelope reaches dark.
+    for (std::map<uint64_t, HeadSeen>::iterator it = g_heads.begin();
          it != g_heads.end();) {
         if (rhyHeadStale(it->second.seen, now,
                          static_cast<uint32_t>(c.traffic_head_ttl_ms))) {
-            rhyDelayDestroy(it->second.handle, headTag(it->first));
             g_heads.erase(it++);
             ++g_headExpired;
         } else {
@@ -593,7 +621,7 @@ static void resyncHeads(const RhyConfig& c, const float* pp) {
     }
     std::vector<uint64_t> active;
     active.reserve(g_heads.size());
-    for (std::map<uint64_t, HeadLight>::iterator it = g_heads.begin();
+    for (std::map<uint64_t, HeadSeen>::iterator it = g_heads.begin();
          it != g_heads.end(); ++it) {
         active.push_back(it->first);
     }
@@ -606,58 +634,48 @@ static void resyncHeads(const RhyConfig& c, const float* pp) {
         active.empty() ? nullptr : &active[0],
         static_cast<unsigned>(active.size()), want, kRhySignalHeadCap);
 
-    std::map<uint64_t, int> wantPhase;
-    for (unsigned i = 0; i < n; ++i) {
-        wantPhase[want[i].id] = want[i].phase;  // -1 = "keep the colour it has"
-    }
-
-    // 4. drop the heads that fell out of the set or changed aspect.
-    for (std::map<uint64_t, HeadLight>::iterator it = g_heads.begin();
-         it != g_heads.end();) {
-        std::map<uint64_t, int>::iterator wp = wantPhase.find(it->first);
-        const bool stale = (wp == wantPhase.end()) ||
-                           (wp->second >= 0 && wp->second != it->second.phase);
-        if (stale) {
-            if (wp != wantPhase.end() && wp->second >= 0) {
-                ++g_headSwaps;
-            }
-            rhyDelayDestroy(it->second.handle, headTag(it->first));
-            g_heads.erase(it++);
-        } else {
-            ++it;
-        }
-    }
-
-    // 5. create the rest. Destroy-before-create for the same head: the hash is
-    // derived from the id, so a pending destroy of the old handle would take the
-    // new light with it (see delayed.h).
+    g_wantHead.clear();
+    g_wantHeadOrder.clear();
     for (unsigned i = 0; i < n; ++i) {
         const uint64_t id = want[i].id;
-        if (g_heads.find(id) != g_heads.end()) {
+        int phase = want[i].phase;
+        if (phase < 0) {
+            // The game's corona colour was not recognisable on this frame. Do not
+            // invent one: keep the colour the head already shows, if any.
+            std::map<uint64_t, HeadSeen>::iterator hs = g_heads.find(id);
+            if (hs == g_heads.end()) {
+                continue;
+            }
+            phase = hs->second.phase;
+            if (phase < 0) {
+                continue;
+            }
+        }
+        const float dist = std::sqrt(want[i].d2);
+        const float gain = rhyDistanceGain(dist,
+                                           static_cast<float>(c.traffic_max_distance),
+                                           static_cast<float>(c.traffic_exit_distance));
+        if (gain <= 0.0f) {
             continue;
         }
-        const int phase = want[i].phase;
-        if (phase < 0) {
-            continue;  // the game's corona colour was not recognisable; do not
-                       // invent one, wait for a frame where it is
-        }
-        float pos[3];
-        rhyHeadLightPos(&g_rec[want[i].src],
-                        c.traffic_head_normal ? g_rec[want[i].src].normal : nullptr,
-                        c.traffic_head_forward, pos);
-        rhyFlushDelayedTag(headTag(id));
-        const remixapi_LightHandle h = createHeadLight(id, phase, pos, c);
-        if (h) {
-            HeadLight hl;
-            hl.handle = h;
-            hl.phase = phase;
-            hl.seen = g_rec[want[i].src].tick;
-            g_heads[id] = hl;
+        HeadKey k;
+        k.id = id;
+        k.phase = phase;
+        g_wantHead[k] = gain;
+        g_wantHeadOrder.push_back(k);
+        if (g_headLights.find(k) == g_headLights.end()) {
+            ++g_headSwaps;  // a handle in this colour does not exist yet
         }
     }
 }
 
 // ---------------------------------------------------------------- per frame
+
+// Advance one envelope, pay for the step if the frame can afford it, and draw.
+// The `want` map holds the target gain for this exact (light, phase) key; a miss
+// means "not wanted", which is a target of 0 and therefore a fade to dark. A
+// fade to dark while ANOTHER phase of the same light is wanted is a colour
+// cross-fade and gets the short phase_fade_ms ramp instead of fade_out_ms.
 
 void rhyTrafficFrame() {
     const remixapi_Interface* api = rhyRemixApi();
@@ -665,6 +683,17 @@ void rhyTrafficFrame() {
         return;
     }
     const RhyConfig* cfg = rhyConfigGet();
+
+    const DWORD now = GetTickCount();
+    static DWORD s_lastTick = 0;
+    float dt = s_lastTick ? static_cast<float>(now - s_lastTick) / 1000.0f : 0.016f;
+    if (dt > 0.25f) {
+        dt = 0.25f;
+    }
+    if (dt < 0.0f) {
+        dt = 0.0f;
+    }
+    s_lastTick = now;
 
     // One ini revision, two retries: a hook install that failed (so a user who
     // sets source=game by hand does not need a restart) and a module that gave up
@@ -694,48 +723,113 @@ void rhyTrafficFrame() {
         g_recN = 0;
     }
 
-    if (!cfg->traffic_enabled || cfg->traffic_mode == 0 ||
-        (!gameMode && g_lights.empty())) {
-        destroyAll();
-        destroyAllHeads();
-        return;
-    }
-
     float pp[3];
-    if (!rhyPlayerPos(pp)) {
-        destroyAll();
-        destroyAllHeads();
-        return;
+    const RhyPlayerState ps = rhyPlayerPosGrace(
+        pp, static_cast<unsigned>(cfg->player_grace_ms), now);
+    if (ps != kRhyPlayerOk) {
+        ++g_playerGone;
     }
 
     ++g_frame;
-
+    bool layerOk = cfg->traffic_enabled && cfg->traffic_mode != 0 &&
+                   !g_apiBroken && ps != kRhyPlayerGone &&
+                   (gameMode || !g_lights.empty());
     if ((g_frame % cfg->traffic_resync_frames) == 1) {
         g_night = !cfg->traffic_night_only || isNight(rhyGameHour(), *cfg);
-        if (!g_night) {
-            destroyAll();
-            destroyAllHeads();
+        if (!layerOk || !g_night) {
+            fadeAllOut(!cfg->traffic_enabled ? "disabled"
+                           : cfg->traffic_mode == 0 ? "mode=off"
+                           : !g_night ? "daylight"
+                           : g_apiBroken ? "bridge refused a call"
+                                         : "no player ped");
         } else if (gameMode) {
-            resyncHeads(*cfg, pp);
+            reselectHeads(*cfg, pp);
         } else {
-            // source=list (asked for, or fallen back to): any head lights from a
-            // previous game-mode run have to go, or they would keep being drawn
-            // with nobody maintaining them.
-            destroyAllHeads();
-            resync(*cfg, pp, static_cast<double>(GetTickCount()) / 1000.0);
+            reselect(*cfg, pp, static_cast<double>(GetTickCount()) / 1000.0);
         }
     }
 
-    // A rejected call switches this module off for the session; the revision
-    // check at the top of this function is what turns it back on.
-    if (!g_night || g_apiBroken) {
-        return;
-    }
+    const float cross = static_cast<float>(cfg->phase_fade_ms) / 1000.0f;
 
+    // One frame's worth of handle changes, counting ATTEMPTS. rhyCreateBudgetLeft()
+    // only counts creates the bridge accepted, so a create the light cap refuses is
+    // free on that counter and a frame would otherwise make hundreds of calls that
+    // all fail (see remix.h).
+    unsigned attempts = 0;
+    const unsigned frameBudget = cfg->creates_per_frame
+                                     ? static_cast<unsigned>(cfg->creates_per_frame)
+                                     : 0u;  // 0 = no per-frame limit
+
+    // --- list-mode lights -----------------------------------------------------
     unsigned tl_drawn = 0;
-    for (std::map<int, remixapi_LightHandle>::iterator it = g_active.begin();
-         it != g_active.end(); ++it) {
-        if (!rhyDrawLight(it->second)) {
+    for (std::map<int, SignalState>::iterator it = g_active.begin();
+         it != g_active.end();) {
+        const int index = it->first / 4;
+        const int phase = it->first & 3;
+        std::map<int, float>::iterator w = g_want.find(it->first);
+        const float target = (w != g_want.end()) ? w->second : 0.0f;
+        it->second.fade.target = target;
+        // A fade to dark while another phase of the same signal is wanted is a
+        // colour cross-fade, not a light going out: it gets the short ramp.
+        bool crossFade = false;
+        if (target <= 0.0f) {
+            for (int p = 0; p < 3; ++p) {
+                if (p == phase) {
+                    continue;
+                }
+                if (g_want.find(signalKey(index, p)) != g_want.end()) {
+                    crossFade = true;
+                    break;
+                }
+            }
+        }
+        if (crossFade) {
+            rhyFadeSetRamp(it->second.fade, cross, cross, 0.05f);
+        }
+        rhyFadeAdvance(it->second.fade, dt);
+
+        const bool needsHandle = !it->second.handle;  // a create that failed
+        if ((needsHandle || rhyFadeDue(it->second.fade, cfg->fade_step, kGainFloor)) &&
+            (frameBudget == 0 || attempts < frameBudget) && rhyCreateBudgetLeft()) {
+            ++attempts;
+            const RhyFadeOp op = rhyFadeApply(it->second.fade, cfg->fade_step,
+                                              kGainFloor);
+            if (op == kRhyFadeRetire) {
+                rhySpendCreateSlot();  // a destroy counts against the frame budget
+                if (it->second.handle) {
+                    rhyDelayDestroy(it->second.handle, kTagTraffic + it->first);
+                }
+                g_active.erase(it++);
+                ++g_retired;
+                continue;
+            }
+            if (op == kRhyFadeRecreate || op == kRhyFadeCreate) {
+                if (!rhyCanCreateLight()) {
+                    ++it;
+                    continue;  // no room this frame: keep the handle we have
+                }
+                if (it->second.handle) {
+                    rhyDelayDestroy(it->second.handle, kTagTraffic + it->first);
+                }
+                rhyFlushDelayedTag(kTagTraffic + it->first);  // same hash: delayed.h
+                remixapi_LightHandle h = createLight(index, phase, *cfg,
+                                                     it->second.fade.published);
+                if (h) {
+                    it->second.handle = h;
+                    ++g_fadeSteps;
+                } else {
+                    // The old handle is already destroyed by here, so it must not be
+                    // drawn again; null makes the next frame ask for a new one.
+                    it->second.handle = nullptr;
+                    if (g_apiBroken) {
+                        ++it;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (it->second.handle && !rhyDrawLight(it->second.handle)) {
             g_apiBroken = true;
             g_brokenTick = GetTickCount();
             rhyLog("trafficlights: DrawLightInstance rejected for #%d (draw "
@@ -744,35 +838,221 @@ void rhyTrafficFrame() {
                    it->first, rhyDrawFailures(), rhyLiveLights());
             break;
         }
-        ++tl_drawn;
+        if (it->second.handle) {
+            ++tl_drawn;
+        }
+        ++it;
     }
+
+    // newly wanted list lights, nearest first
+    for (size_t i = 0; i < g_wantOrder.size(); ++i) {
+        const int key = g_wantOrder[i];
+        if (g_active.find(key) != g_active.end()) {
+            continue;
+        }
+        if ((frameBudget != 0 && attempts >= frameBudget) || !rhyCreateBudgetLeft()) {
+            break;
+        }
+        std::map<int, float>::iterator w = g_want.find(key);
+        if (w == g_want.end() || w->second <= 0.0f) {
+            continue;
+        }
+        SignalState st;
+        st.handle = nullptr;
+        rhyFadeInit(st.fade, static_cast<float>(cfg->fade_in_ms) / 1000.0f,
+                    static_cast<float>(cfg->fade_out_ms) / 1000.0f);
+        st.fade.target = w->second;
+        // Is this the incoming half of a colour cross-fade? Another phase of the
+        // same index is already live, so use the short cross-fade ramp.
+        const int index = key / 4;
+        const int phase = key & 3;
+        for (int p = 0; p < 3; ++p) {
+            if (p == phase) {
+                continue;
+            }
+            if (g_active.find(signalKey(index, p)) != g_active.end()) {
+                rhyFadeSetRamp(st.fade, cross, cross, 0.05f);
+                break;
+            }
+        }
+        rhyFadeAdvance(st.fade, dt);
+        if (!rhyFadeDue(st.fade, cfg->fade_step, kGainFloor)) {
+            continue;
+        }
+        if (rhyFadeApply(st.fade, cfg->fade_step, kGainFloor) != kRhyFadeCreate) {
+            continue;
+        }
+        ++attempts;
+        rhyFlushDelayedTag(kTagTraffic + key);  // destroy-before-create: same hash
+        st.handle = createLight(index, phase, *cfg, st.fade.published);
+        if (st.handle) {
+            g_active[key] = st;
+        } else if (g_apiBroken) {
+            break;
+        }
+    }
+
+    // --- head lights (source=game) -------------------------------------------
     unsigned hd_drawn = 0;
-    for (std::map<uint64_t, HeadLight>::iterator it = g_heads.begin();
-         it != g_heads.end(); ++it) {
-        if (!rhyDrawLight(it->second.handle)) {
+    for (std::map<HeadKey, HeadState>::iterator it = g_headLights.begin();
+         it != g_headLights.end();) {
+        std::map<HeadKey, float>::iterator w = g_wantHead.find(it->first);
+        const float target = (w != g_wantHead.end()) ? w->second : 0.0f;
+        it->second.fade.target = target;
+        if (target <= 0.0f) {
+            // colour change or expiry: a colour change cross-fades (short ramp),
+            // an expiry uses the normal fade-out.
+            for (int p = 0; p < 3; ++p) {
+                if (p == it->first.phase) {
+                    continue;
+                }
+                HeadKey other;
+                other.id = it->first.id;
+                other.phase = p;
+                if (g_wantHead.find(other) != g_wantHead.end()) {
+                    rhyFadeSetRamp(it->second.fade, cross, cross, 0.05f);
+                    break;
+                }
+            }
+        }
+        rhyFadeAdvance(it->second.fade, dt);
+
+        const bool needsHeadHandle = !it->second.handle;  // a create that failed
+        if ((needsHeadHandle ||
+             rhyFadeDue(it->second.fade, cfg->fade_step, kGainFloor)) &&
+            (frameBudget == 0 || attempts < frameBudget) && rhyCreateBudgetLeft()) {
+            ++attempts;
+            const RhyFadeOp op = rhyFadeApply(it->second.fade, cfg->fade_step,
+                                              kGainFloor);
+            if (op == kRhyFadeRetire) {
+                rhySpendCreateSlot();  // a destroy counts against the frame budget
+                if (it->second.handle) {
+                    rhyDelayDestroy(it->second.handle,
+                                    headTag(it->first.id, it->first.phase));
+                }
+                g_headLights.erase(it++);
+                ++g_retired;
+                continue;
+            }
+            if (op == kRhyFadeRecreate || op == kRhyFadeCreate) {
+                if (!rhyCanCreateLight()) {
+                    ++it;
+                    continue;  // no room this frame: keep the handle we have
+                }
+                // The position is the one this light was created with: the head
+                // has not moved, and re-deriving it from a fresh record would
+                // make the light jump (and on a signal mounted on something that
+                // moves, would be its own kind of lighting step).
+                const float* pos = it->second.pos;
+                if (it->second.handle) {
+                    rhyDelayDestroy(it->second.handle,
+                                    headTag(it->first.id, it->first.phase));
+                }
+                rhyFlushDelayedTag(headTag(it->first.id, it->first.phase));
+                remixapi_LightHandle h = createHeadLight(
+                    it->first.id, it->first.phase, pos, *cfg,
+                    it->second.fade.published);
+                if (h) {
+                    it->second.handle = h;
+                    ++g_fadeSteps;
+                } else {
+                    it->second.handle = nullptr;  // destroyed: see above
+                    if (g_apiBroken) {
+                        ++it;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (it->second.handle && !rhyDrawLight(it->second.handle)) {
             g_apiBroken = true;
             g_brokenTick = GetTickCount();
             rhyLog("trafficlights: DrawLightInstance rejected for head %016llx "
                    "(draw failures so far: %u, live handles: %u), traffic lights "
                    "off until the next rhyremix.ini edit",
-                   static_cast<unsigned long long>(it->first), rhyDrawFailures(),
+                   static_cast<unsigned long long>(it->first.id), rhyDrawFailures(),
                    rhyLiveLights());
             break;
         }
-        ++hd_drawn;
+        if (it->second.handle) {
+            ++hd_drawn;
+        }
+        ++it;
     }
 
-    DWORD now = GetTickCount();
+    // newly wanted head lights, nearest first
+    for (size_t i = 0; i < g_wantHeadOrder.size(); ++i) {
+        const HeadKey& key = g_wantHeadOrder[i];
+        if (g_headLights.find(key) != g_headLights.end()) {
+            continue;
+        }
+        if ((frameBudget != 0 && attempts >= frameBudget) || !rhyCreateBudgetLeft()) {
+            break;
+        }
+        std::map<HeadKey, float>::iterator w = g_wantHead.find(key);
+        if (w == g_wantHead.end() || w->second <= 0.0f) {
+            continue;
+        }
+        // find the record this head came from, for its position
+        int src = -1;
+        for (unsigned r = 0; r < g_recN; ++r) {
+            if (rhyHeadId(g_rec[r].entity, g_rec[r].index) == key.id) {
+                src = static_cast<int>(r);
+                break;
+            }
+        }
+        if (src < 0) {
+            continue;
+        }
+        HeadState st;
+        st.handle = nullptr;
+        rhyFadeInit(st.fade, static_cast<float>(cfg->fade_in_ms) / 1000.0f,
+                    static_cast<float>(cfg->fade_out_ms) / 1000.0f);
+        st.fade.target = w->second;
+        for (int p = 0; p < 3; ++p) {
+            if (p == key.phase) {
+                continue;
+            }
+            HeadKey other;
+            other.id = key.id;
+            other.phase = p;
+            if (g_headLights.find(other) != g_headLights.end()) {
+                rhyFadeSetRamp(st.fade, cross, cross, 0.05f);
+                break;
+            }
+        }
+        rhyFadeAdvance(st.fade, dt);
+        if (!rhyFadeDue(st.fade, cfg->fade_step, kGainFloor)) {
+            continue;
+        }
+        if (rhyFadeApply(st.fade, cfg->fade_step, kGainFloor) != kRhyFadeCreate) {
+            continue;
+        }
+        ++attempts;
+        rhyHeadLightPos(&g_rec[src],
+                        cfg->traffic_head_normal ? g_rec[src].normal : nullptr,
+                        cfg->traffic_head_forward, st.pos);
+        rhyFlushDelayedTag(headTag(key.id, key.phase));  // same hash: see delayed.h
+        st.handle = createHeadLight(key.id, key.phase, st.pos, *cfg,
+                                    st.fade.published);
+        if (st.handle) {
+            g_headLights[key] = st;
+        } else if (g_apiBroken) {
+            break;
+        }
+    }
+
     static DWORD g_lastCountTick = 0;
     if (now - g_lastCountTick >= 10000) {  // active count once per 10 s
         g_lastCountTick = now;
         if (gameMode) {
             int green = 0, amber = 0, red = 0;
-            for (std::map<uint64_t, HeadLight>::iterator it = g_heads.begin();
-                 it != g_heads.end(); ++it) {
-                if (it->second.phase == 0) {
+            for (std::map<HeadKey, HeadState>::iterator it = g_headLights.begin();
+                 it != g_headLights.end(); ++it) {
+                if (it->first.phase == 0) {
                     ++green;
-                } else if (it->second.phase == 1) {
+                } else if (it->first.phase == 1) {
                     ++amber;
                 } else {
                     ++red;
@@ -780,22 +1060,24 @@ void rhyTrafficFrame() {
             }
             rhyLog("trafficlights[source=game]: %u heads lit, %u drawn this frame "
                    "(green=%d amber=%d red=%d, %u coronas registered this frame, "
-                   "colour_swaps=%u expired=%u) | remix: live=%u create_fail=%u "
-                   "draw_fail=%u budget_stop=%u | hook: calls=%u records=%u "
-                   "dropped=%u bad=%u reentrant=%u",
-                   static_cast<unsigned>(g_heads.size()), hd_drawn, green, amber,
-                   red, g_recN, g_headSwaps, g_headExpired, rhyLiveLights(),
-                   rhyCreateFailures(), rhyDrawFailures(), g_budgetStop,
+                   "colour_swaps=%u expired=%u steps=%u retired=%u "
+                   "player_gone_frames=%u) | remix: live=%u create_fail=%u "
+                   "draw_fail=%u budget_stop=%u deferred=%u | hook: calls=%u "
+                   "records=%u dropped=%u bad=%u reentrant=%u",
+                   static_cast<unsigned>(g_headLights.size()), hd_drawn, green, amber,
+                   red, g_recN, g_headSwaps, g_headExpired, g_fadeSteps, g_retired,
+                   g_playerGone, rhyLiveLights(), rhyCreateFailures(),
+                   rhyDrawFailures(), g_budgetStop, rhyCreateDeferred(),
                    rhySignalHookCalls(), rhySignalHookRecords(),
                    rhySignalHookDropped(), rhySignalHookBad(),
                    rhySignalHookReentrant());
         } else {
             int green = 0, amber = 0, red = 0;
-            for (std::map<int, int>::iterator it = g_phase.begin();
-                 it != g_phase.end(); ++it) {
-                if (it->second == 0) {
+            for (std::map<int, SignalState>::iterator it = g_active.begin();
+                 it != g_active.end(); ++it) {
+                if ((it->first & 3) == 0) {
                     ++green;
-                } else if (it->second == 1) {
+                } else if ((it->first & 3) == 1) {
                     ++amber;
                 } else {
                     ++red;
@@ -803,14 +1085,16 @@ void rhyTrafficFrame() {
             }
             rhyLog("trafficlights[%s]: %u active, %u drawn this frame (green=%d "
                    "amber=%d red=%d, %u awaiting destroy, %u in list, hour=%d, "
-                   "phase_swaps=%u) | remix: live=%u create_fail=%u draw_fail=%u "
-                   "budget_stop=%u",
+                   "phase_swaps=%u steps=%u retired=%u player_gone_frames=%u) | "
+                   "remix: live=%u create_fail=%u draw_fail=%u budget_stop=%u "
+                   "deferred=%u",
                    gameMode ? "list" : "list, source=game requested but the hook "
                                    "is not installed",
                    static_cast<unsigned>(g_active.size()), tl_drawn, green, amber,
                    red, rhyDelayedPending(), static_cast<unsigned>(g_lights.size()),
-                   rhyGameHour(), g_phaseSwap, rhyLiveLights(), rhyCreateFailures(),
-                   rhyDrawFailures(), g_budgetStop);
+                   rhyGameHour(), g_phaseSwap, g_fadeSteps, g_retired, g_playerGone,
+                   rhyLiveLights(), rhyCreateFailures(), rhyDrawFailures(),
+                   g_budgetStop, rhyCreateDeferred());
         }
     }
 }

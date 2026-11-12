@@ -25,10 +25,39 @@ const remixapi_Interface* rhyRemixApi();
 //       disabling the module for the session is wrong, and so is logging it as a
 //       bridge failure)
 //   2 = the bridge refused it (this is the only case that should disable a module)
+//   3 = this frame's CreateLight budget is spent (s28). Nothing is wrong with the
+//       light: the module keeps its current handle and retries next frame. This
+//       is what lets a 320-light fade be 320 creates spread over frames instead
+//       of one burst that changes the whole world's lighting in one frame.
 remixapi_LightHandle rhyCreateLight(const remixapi_LightInfo* info,
                                     int* reason = nullptr);
 void rhyDestroyLight(remixapi_LightHandle handle);
 bool rhyDrawLight(remixapi_LightHandle handle);
+
+// s28: the per-frame CreateLight budget. Called from hkPresent before the light
+// modules run. A fade is a sequence of creates, so spreading them is the only
+// way to fade a whole layer without a burst; 0 = no per-frame limit.
+void rhyBeginFrame(unsigned perFrameCreates);
+unsigned rhyFrameCreates();   // creates actually made since the last rhyBeginFrame
+unsigned rhyCreateDeferred(); // creates refused by the frame budget (reason 3)
+
+// True when this frame still has CreateLight credit. Modules check this BEFORE
+// moving a light's published gain, so a step that cannot be paid for this frame
+// leaves the handle exactly as it was: the fade is late, never bigger.
+bool rhyCreateBudgetLeft();
+
+// Spend one unit of this frame's budget WITHOUT creating: destroying a handle is
+// also a bridge call and also changes how lit the world looks. Without this, a
+// fade that finishes retires every light in the same frame - tests/smooth_check.cpp
+// measured a 42-of-204 aggregate drop in one frame that way.
+void rhySpendCreateSlot();
+
+// True when rhyCreateLight() would accept a create right now (frame budget and the
+// global cap both have room). A module that is RE-CREATING a light has to destroy
+// the old handle before the new one exists, because LightInfo::hash is fixed per
+// light - so it checks this first. Destroying a working light and then failing to
+// make its replacement is a light that goes out, which is the opposite of the point.
+bool rhyCanCreateLight();
 
 // Diagnostics, logged once a second from hkPresent.
 unsigned rhyLiveLights();     // handles we created and have not destroyed

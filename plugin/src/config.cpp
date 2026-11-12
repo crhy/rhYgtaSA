@@ -159,7 +159,19 @@ static const char* const kIniDefaults =
     "source=game\r\n"
     "head_ttl_ms=2000\r\n"
     "head_forward=0.15\r\n"
-    "head_normal=0\r\n";
+    "head_normal=0\r\n"
+    "\r\n"
+    "[fade]\r\n"
+    "in_ms=700\r\n"
+    "out_ms=900\r\n"
+    "step=0.25\r\n"
+    "creates_per_frame=24\r\n"
+    "player_grace_ms=8000\r\n"
+    "sky_rel_per_sec=3.0\r\n"
+    "sky_abs_per_sec=0.25\r\n"
+    "sun_rel_per_sec=3.0\r\n"
+    "sun_deg_per_sec=12.0\r\n"
+    "phase_fade_ms=250\r\n";
 
 static std::string iniStringSec(const char* section, const char* key,
                                 const char* def) {
@@ -762,6 +774,78 @@ static void loadConfig() {
         c.traffic_phase_near = 0;  // 0 = never recreate on a phase change
     }
 
+    // --- s28: the [fade] section. Everything here is a floor, not a preference:
+    // a ramp shorter than half a second, a step bigger than half the light, or no
+    // per-frame create budget is the instant world-wide lighting change rhY asked
+    // about (finding 1), so an out-of-range value is corrected and logged.
+    c.fade_in_ms = iniIntSec("fade", "in_ms", 700);
+    c.fade_out_ms = iniIntSec("fade", "out_ms", 900);
+    if (c.fade_in_ms < 500) {
+        c.fade_in_ms = 500;
+    }
+    if (c.fade_in_ms > 30000) {
+        c.fade_in_ms = 30000;
+    }
+    if (c.fade_out_ms < 500) {
+        c.fade_out_ms = 500;
+    }
+    if (c.fade_out_ms > 30000) {
+        c.fade_out_ms = 30000;
+    }
+    c.fade_step = iniFloatSec("fade", "step", 0.25f);
+    if (!(c.fade_step >= 0.05f)) {
+        c.fade_step = 0.05f;  // below this a fade costs too many creates per light
+    }
+    if (c.fade_step > 0.5f) {
+        c.fade_step = 0.5f;   // above this one step is a visible jump
+    }
+    c.creates_per_frame = iniIntSec("fade", "creates_per_frame", 40);
+    if (c.creates_per_frame < 0) {
+        c.creates_per_frame = 0;  // 0 = no per-frame limit (not recommended)
+    }
+    if (c.creates_per_frame > 512) {
+        c.creates_per_frame = 512;
+    }
+    c.player_grace_ms = iniIntSec("fade", "player_grace_ms", 8000);
+    if (c.player_grace_ms < 0) {
+        c.player_grace_ms = 0;
+    }
+    if (c.player_grace_ms > 60000) {
+        c.player_grace_ms = 60000;
+    }
+    c.sky_rel_per_sec = iniFloatSec("fade", "sky_rel_per_sec", 3.0f);
+    if (!(c.sky_rel_per_sec >= 1.05f)) {
+        c.sky_rel_per_sec = 1.05f;
+    }
+    if (c.sky_rel_per_sec > 1000.0f) {
+        c.sky_rel_per_sec = 1000.0f;
+    }
+    c.sky_abs_per_sec = iniFloatSec("fade", "sky_abs_per_sec", 0.25f);
+    if (!(c.sky_abs_per_sec >= 0.0f)) {
+        c.sky_abs_per_sec = 0.0f;
+    }
+    c.sun_rel_per_sec = iniFloatSec("fade", "sun_rel_per_sec", 3.0f);
+    if (!(c.sun_rel_per_sec >= 1.05f)) {
+        c.sun_rel_per_sec = 1.05f;
+    }
+    if (c.sun_rel_per_sec > 1000.0f) {
+        c.sun_rel_per_sec = 1000.0f;
+    }
+    c.sun_deg_per_sec = iniFloatSec("fade", "sun_deg_per_sec", 12.0f);
+    if (!(c.sun_deg_per_sec >= 0.05f)) {
+        c.sun_deg_per_sec = 0.05f;
+    }
+    if (c.sun_deg_per_sec > 90.0f) {
+        c.sun_deg_per_sec = 90.0f;
+    }
+    c.phase_fade_ms = iniIntSec("fade", "phase_fade_ms", 250);
+    if (c.phase_fade_ms < 0) {
+        c.phase_fade_ms = 0;
+    }
+    if (c.phase_fade_ms > 5000) {
+        c.phase_fade_ms = 5000;
+    }
+
     std::string list = iniString("list", "rhyremix_lights.txt");
     if (!list.empty() && (list.find(':') != std::string::npos ||
                           list[0] == '\\' || list[0] == '/')) {
@@ -865,6 +949,14 @@ static void loadConfig() {
            c.sky_apply, c.sky_day, c.sky_night, c.sky_moon, c.sky_dusk_deg,
            c.sky_dawn_deg, c.sky_emissive_day, c.sky_emissive_night,
            c.sky_settings.c_str(), c.sky_probe);
+    // s28: the anti-pop knobs, on one line, because "why did the street take a
+    // second to come on?" and "why did it still pop?" are both answered here.
+    rhyLog("config: fade in=%dms out=%dms step=%.2f creates/frame=%d "
+           "player_grace=%dms sky=%.2fx+%.2f per s sun=%.2fx %.1f deg/s "
+           "phase_fade=%dms",
+           c.fade_in_ms, c.fade_out_ms, c.fade_step, c.creates_per_frame,
+           c.player_grace_ms, c.sky_rel_per_sec, c.sky_abs_per_sec,
+           c.sun_rel_per_sec, c.sun_deg_per_sec, c.phase_fade_ms);
 }
 
 // Timestamp of the ini the loaded values came from.  A FILETIME is two 32-bit

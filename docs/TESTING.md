@@ -148,6 +148,35 @@ fires from two places at once).
   memory. It used to be a crash (2026-11-11 13:04:44); now it is a dropped
   record, so a rising `bad` is a symptom to report, not a reason to stop playing.
 
+### The fade counters (s28): proof that lighting changes over time instead of at once
+
+One config line at startup says what the plugin will and will not do:
+
+```
+config: fade in=700ms out=900ms step=0.25 creates/frame=24 player_grace=8000ms sky=3.00x+0.25 per s sun=3.00x 12.0 deg/s phase_fade=250ms
+```
+
+and the module lines now carry the fade traffic:
+
+```
+streetlights: 318 active, 318 drawn this frame, 0 awaiting destroy (hour=21, 7002 in list, kept=310 new=8 steps=14 created=6 retired=4 player_gone_frames=0) | remix: live=320 create_fail=0 draw_fail=0 budget_stop=0 deferred=37
+```
+
+| field | what "correct" looks like while driving |
+|---|---|
+| `new=` per 10 s log line | a handful, not 320. The old build logged `new=320` or `new=0` and nothing in between — that all-or-nothing was the pop |
+| `steps=` | the fade traffic: how many handles were re-created to move a lamp one step. Non-zero during a transition, ~0 when nothing is changing |
+| `created=` / `retired=` | similar and gradual. `retired` should never spike to the whole active count in one line |
+| `deferred=` | the frame budget doing its job: fade steps that did not fit moved to the next frame. It climbing is normal; it is what keeps `created=` under `creates/frame` |
+| `player_gone_frames=` | frames where the ped pointer read 0. Non-zero is normal (wasted/busted, interiors, riding on a vehicle); the lights now ride through it |
+| `live=` on the `remix:` line | **no jumps of 100+.** The 2026-11-12 run had 20 such jumps in 25 minutes (`1->360`, `381->1`); that number going to zero is the whole point of s28 |
+
+To check it by eye: at night, drive down a long lit street at speed and watch the
+lamps ahead of you. They should **brighten as you approach and dim as you leave**,
+and a street should never arrive all at once. Then flip day to night by editing
+`[sky] force_hour` in `rhyremix.ini` while the game runs: the street should take
+about a second to come up or go down, not one frame.
+
 ## Step 3 - what to photograph, and what each one proves
 
 Take shots with **F12** in game (fixed 2026-11-11: before that every F12 failed silently, see below); they land in
@@ -198,6 +227,10 @@ few seconds - no restart.
 | Game dies a few seconds after entering the level, `rhyremix.log` stops mid-frame, `rtx-remix/logs/crash-upload.log` says `type=CPU` | the signal-head hook is the first thing to suspect (it patches game code). `[trafficlights] source=list` takes it out; the log line then says `source=list, no code hook`. Fixed 2026-11-11: the stub had to supply the return address the deleted `call` would have pushed - see docs/FINDINGS.md |
 | A Wine trace (`logs/steam-12120.log`) full of `c0000005` at `eip=0x6FAAE0` during the level load | **not a crash and not ours**: Open Limit Adjuster's `Coronas = unlimited` moves the corona store to a reserved heap block and commits it page by page from its own vectored handler, so `CCoronas::Init`'s clear loop faults once per page - 478 first-chance exceptions, ~10 ms, handled. `Coronas = 0` in `modloader/OLA/III.VC.SA.LimitAdjuster.ini` makes them go away. See docs/FINDINGS.md |
 | Signals go out when you look away and come back slowly | `[trafficlights] head_ttl_ms=4000` (the game only registers the heads it draws, and a head with no corona for 2 s loses its light) |
+| A street still appears or disappears in one frame | `[fade] creates_per_frame` is the frame's handle-change budget; raise it (48) if the fade feels sluggish, but a pop means it is already at 0 (unlimited) — set it back to 24. `in_ms`/`out_ms` are the ramp lengths and cannot go under 500 |
+| Fades feel slow when driving fast | `[fade] step=0.4` (bigger brightness steps) or `creates_per_frame=48`; both trade smoothness for speed, and the log's `deferred=` tells you which one is binding |
+| A traffic signal's colour change looks like a slow cross-fade | `[fade] phase_fade_ms=0` puts back the instant change (a real signal is instant); the light arriving and leaving still fades |
+| Lights still vanish for a second on a cab roof / after wasting | `[fade] player_grace_ms=20000` holds the last player position longer. `player_gone_frames=` in the log says how long the pointer is actually unreadable |
 | Head light sits just inside the lens instead of on it | `[trafficlights] head_normal=1 head_forward=0.15` - the 2DFX entry has no direction, so this uses the model's own "at" axis and may point the wrong way; it is a knob to A/B, not a fix |
 
 ## Step 5 - send back

@@ -92,7 +92,7 @@ if [ "$P" = p05 ] || [[ "$P" > p05 ]]; then
   grep -q "sun.cpp" plugin/CMakeLists.txt && ok "sun.cpp compiled in" || bad "sun.cpp not in CMakeLists"
   grep -q "rhySunFrame" plugin/src/main.cpp && ok "sun drawn every frame" || bad "rhySunFrame never called"
   grep -q "REMIXAPI_STRUCT_TYPE_LIGHT_INFO_DISTANT_EXT" plugin/src/sun.cpp && ok "uses the distant-light EXT" || bad "no distant light struct"
-  grep -q "bodyRadiance(-md\[2\]" plugin/src/sun.cpp && ok "moon altitude sign is correct" || bad "moon would light by day, not by night"
+  grep -q "beamRadiance(moon" plugin/src/sun.cpp && grep -q "lunarPosition" plugin/src/sun.cpp && ok "moon radiance comes from the moon's own body (its own elevation)" || bad "moon would light by day, not by night"
   grep -q "moon_enabled" plugin/src/config.cpp && ok "moon is configurable" || bad "no moon config"
   grep -q "sun_step_deg" plugin/src/config.cpp && ok "sun rebuild step is configurable" || bad "no sun rebuild step"
   grep -qE "^\[sun\]" config/rhyremix-test.ini && grep -qE "^\[moon\]" config/rhyremix-test.ini && ok "test ini has [sun] and [moon]" || bad "test ini lacks [sun]/[moon]"
@@ -158,5 +158,23 @@ PY
   grep -q "lamp_list.py" deploy.sh && grep -q "traffic_list.py" deploy.sh && ok "deploy generates the lists, so a fresh clone can install" || bad "the lists are generated files that nothing generates"
   grep -qi "blink" README.md && ok "README explains the blink" || bad "README does not explain the blink"
   grep -qi "max_total_lights" docs/FINDINGS.md && ok "findings record the cap that caused it" || bad "findings do not record the cap"
+fi
+if [ "$P" = p09 ] || [[ "$P" > p09 ]]; then
+  # s28: lighting must never change instantly. The assertions here are about the
+  # SHAPE of the code (a fade, a rate limit, a per-frame budget), because the
+  # behaviour itself is asserted numerically in tests/smooth_check.cpp, which
+  # check-all.sh compiles and runs.
+  grep -q "src/smooth.cpp" plugin/CMakeLists.txt && ok "smooth.cpp is part of the plugin" || bad "smooth.cpp is not built"
+  [ -f tests/smooth_check.cpp ] && ok "the no-pop bounds have a native test" || bad "tests/smooth_check.cpp missing"
+  grep -q "rhyFadeAdvance" plugin/src/streetlights.cpp && grep -q "rhyFadeApply" plugin/src/streetlights.cpp && grep -q "rhySelectLights" plugin/src/streetlights.cpp && ok "street lamps fade up and down (gain comes from the selection)" || bad "street lamps still appear and vanish at full radiance"
+  ! grep -q "void destroyAll" plugin/src/streetlights.cpp && ! grep -q "void destroyAll" plugin/src/trafficlights.cpp && ok "no path destroys a whole light layer in one frame" || bad "a destroy-everything path is still reachable"
+  grep -q "rhyFadeSetRamp" plugin/src/trafficlights.cpp && grep -q "phase_fade_ms" plugin/src/config.cpp && ok "a signal colour change cross-fades between two hashes" || bad "signal colours still jump in one frame"
+  grep -q "rhyRateStep" plugin/src/sun.cpp && grep -q "rhyDirLimit" plugin/src/sun.cpp && ok "sun radiance, sun direction and sky brightness are rate limited" || bad "sun/sky values are still published raw"
+  grep -q "rhyBeginFrame" plugin/src/main.cpp && grep -q "rhyCreateBudgetLeft" plugin/src/streetlights.cpp && grep -q "rhySpendCreateSlot" plugin/src/streetlights.cpp && ok "handle changes are budgeted per frame, destroys included" || bad "a whole layer can still change inside one frame"
+  grep -q "rhyPlayerPosGrace" plugin/src/game.cpp && grep -q "rhyPlayerPosGrace" plugin/src/streetlights.cpp && grep -q "rhyPlayerPosGrace" plugin/src/trafficlights.cpp && ok "a lost player ped holds position, then fades the layers out" || bad "losing the player pointer still destroys every light"
+  grep -q "fade_in_ms < 500" plugin/src/config.cpp && grep -q "fade_out_ms < 500" plugin/src/config.cpp && ok "rhyremix.ini cannot ask for a sub-half-second fade" || bad "the ini can still request an instant switch"
+  grep -q "\[fade\]" plugin/src/config.cpp && ok "the fade knobs live in rhyremix.ini" || bad "no [fade] section in the ini defaults"
+  grep -qi "fade" README.md && ok "README documents the fades" || bad "README does not mention them"
+  grep -qi "instantly" docs/FINDINGS.md && ok "findings record the instant-change diagnosis" || bad "findings do not record it"
 fi
 done_

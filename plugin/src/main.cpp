@@ -3,6 +3,7 @@
 
 #include "config.h"
 #include "delayed.h"
+#include "game.h"
 #include "log.h"
 #include "probe.h"
 #include "remix.h"
@@ -59,6 +60,14 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
     rhyTrafficInitOnce();      // loads rhyremix_traffic.txt once
     rhyFlushDelayed();         // destroy handles retired on earlier frames
     rhyConfigReloadIfChanged(); // re-read rhyremix.ini when it changed on disk
+    // s28: a fade is a sequence of CreateLight calls, so the frame gets an
+    // explicit create budget before any module runs. Without it, the street
+    // layer's 320 lights arriving (or leaving) is one burst that changes the
+    // whole world's lighting between two frames - which is exactly what the
+    // 2026-11-12 test measured 20 times in 25 minutes.
+    if (const RhyConfig* cfg0 = rhyConfigGet()) {
+        rhyBeginFrame(static_cast<unsigned>(cfg0->creates_per_frame));
+    }
     if (const RhyConfig* cfg = rhyConfigGet()) {
         rhySetLightBudget(cfg->max_total_lights);
         // Push the extra rtx.* settings once the bridge is up. This is the hook
@@ -91,9 +100,12 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
         if (now - s_tick >= 1000) {
             s_tick = now;
             rhyLog("remix: live=%u create_fail=%u draw_fail=%u budget_refused=%u "
-                   "| pending_destroy=%u",
+                   "| pending_destroy=%u creates_this_frame=%u deferred=%u "
+                   "| player: lost_events=%u gone_ms=%u",
                    rhyLiveLights(), rhyCreateFailures(), rhyDrawFailures(),
-                   rhyBudgetRefusals(), rhyDelayedPending());
+                   rhyBudgetRefusals(), rhyDelayedPending(), rhyFrameCreates(),
+                   rhyCreateDeferred(), rhyPlayerLostEvents(),
+                   rhyPlayerLostMs(now));
         }
     }
 

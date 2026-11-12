@@ -91,6 +91,15 @@ run nat-signals-cc "compile signals_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/signals_check.cpp plugin/src/signalheads.cpp plugin/src/lamps.cpp plugin/src/solar.cpp -o build/tmp/sigc
 warncheck nat-signals-cc "compile signals_check"
 run nat-signals "tests/signals_check.cpp (signalheads.cpp + lamps.cpp + solar.cpp)" 120 build/tmp/sigc
+# s28: the "lighting must never change instantly" bounds. smooth.cpp is pure C++ (no
+# Windows, no Remix), so the whole fade/rate-limit/selection model runs here against
+# the sequences the 2026-11-12 test log actually recorded: a 50x ambient step, a clock
+# that jumped 104 degrees of sun elevation, a whole street appearing in one frame, and
+# a player ped pointer that read 0 for 13 seconds.
+run nat-smooth-cc "compile smooth_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/smooth_check.cpp plugin/src/smooth.cpp plugin/src/game.cpp -o build/tmp/smoothc
+warncheck nat-smooth-cc "compile smooth_check"
+run nat-smooth "tests/smooth_check.cpp (smooth.cpp fades/rate limits/budget + game.cpp player grace)" 120 build/tmp/smoothc
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),

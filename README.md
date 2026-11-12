@@ -183,6 +183,19 @@ from a terminal with `bash scripts/shot.sh --trigger --game "<game>"`.
 Remix debug UI is `Alt+Y`. Under Wine the menu only responds because the patch sets
 `rtx.useNewGuiInputMethod = False` — if the hotkeys do nothing, check that setting first.
 
+**Lighting changes fade, they do not pop.** A Remix light's radiance is fixed at `CreateLight` time,
+so "fading a street in" means a sequence of creates — and without a limit, that sequence is one
+frame. The `[fade]` section of `rhyremix.ini` sets the floors: `in_ms`/`out_ms` how long a lamp takes
+to come up or go down (never under 500 ms), `step` the largest brightness change one light may carry,
+`creates_per_frame` how many handle changes a single frame may spend (destroys count too),
+`player_grace_ms` how long the last known player position is held when the game's ped pointer reads 0
+before the layers fade out instead of being destroyed, and `sky_rel_per_sec`/`sun_rel_per_sec`/
+`sun_deg_per_sec` the rate limits on the ambient, exposure, sun radiance and sun direction. The
+numbers are asserted in `tests/smooth_check.cpp` (`bash scripts/check-all.sh` runs it): no lighting
+value the plugin publishes may move by more than a small amount in one frame, whatever the game clock
+or the renderer does underneath. See `docs/FINDINGS.md`, "Lighting changed instantly, everywhere at
+once".
+
 **Too bright, lamps dark, or lamps blink.** First find out whether it is ours at all:
 
 ```
