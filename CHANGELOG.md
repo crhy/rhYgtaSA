@@ -22,6 +22,77 @@ Two things to know before reading:
 Work in the tree, **not yet run in game**. Player-facing consequences are in
 [docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md).
 
+### Street lamps and signal heads (n04) — lights stopped coming and going with the camera
+
+- **Fixed (n04): the light-count cap was a distance rule wearing a count, and it was switching off
+  lamps that were still in front of the player.** `rhySelectLights` sorted every candidate by
+  distance and kept `max_lights + sticky_extra` of them, so in a dense district the farthest lamps
+  lost their light while they were still 200 m away and got it back on the next pass. Measured over
+  the whole 7002-lamp list: the worst point on the map has **408 lamps within 300 units** of a point
+  and **552 within 380** (median 149 / 234) — against a shipped cap of 320+90 = 410. The 2026-11-12
+  10:22 run shows the result: the active set jumping **+193/−193** at 10:25:04 and
+  **+136/+221/−357** at 10:26:54-10:27:14 while the player walked. `rhySelectLights` now takes a
+  `hardRadius` (both modules pass `max_distance`): a lamp strictly inside it is taken before the cap
+  is consulted, so **the cap may only trim the fade band** between `max_distance` and
+  `exit_distance`, where the lamp's gain is already ramping to 0. The shipped counts were raised to
+  match the map instead of fighting it: `max_lights 320 → 560`, `sticky_extra 90 → 140`, signal
+  `max_lights 60 → 90`. `hardRadius = 0` keeps the old behaviour and the new test keeps it as a
+  control.
+
+- **Fixed (n04): a traffic signal head no longer goes dark when you turn your back on it.** The game
+  registers a signal corona from its renderer, so the set of registered heads *is* the camera
+  frustum, and `head_ttl_ms=2000` expired heads on it: every bulb and glow on a junction faded out 2
+  s after the camera turned away and was created again when it turned back. That was the only light
+  in this plugin whose existence depended on camera direction, and it was running at six handle
+  changes a second — `expired=790`, `retired=817`, `steps=5669` in the 970 s of the 10:22 run, for at
+  most 19 heads. The records are now folded into a memory (position + last colour + last tick) and a
+  head is kept by **player distance**: `rhyHeadKeepAlive()` keeps a stale head with the colour it last
+  showed while it is within `traffic_exit_distance`, and drops it only beyond it (or beyond
+  `traffic_max_distance`, where a stale head is a freed entity rather than a signal we looked away
+  from). `head_ttl_ms` is a staleness marker, not a destroy trigger.
+
+- **Added (n04): two field counters for the guarantee, and a load-time measurement of the lamp file.**
+  Both layers print `in_drop=N` in the 10-second line: the cumulative number of lamps that had a
+  light, were inside `max_distance`, and were left without one by the next selection. It should be 0
+  for a whole run. At load the street module scans the real list and prints
+  `streetlights: worst case 408 lamps within max_distance=300 of a point (cap
+  max_lights+sticky_extra=700): the cap covers the radius`, so the ini comment's number is checkable
+  in `rhyremix.log` instead of asserted offline.
+
+- **Changed (n04): the eight `rtx.conf` keys that decide whether a pixel is allowed to draw a lamp.
+  For our lights, culling was never the problem** — the 1.6.1 source shows an API light is never
+  frustum-culled (`LightManager` marks inside/outside frustum only for its own game-detected lights,
+  `rtx_light_manager.cpp:151-183`, and erases only those, `:110-141`; `CreateLight` lights live in
+  `m_externalLights` and die only on `DestroyLight`, `:795-810`). What is view-dependent is the
+  sampling: with `rtx.di.initialSampleCount = 4` and the 401 live lights that run measured, each
+  pixel draws 4 random candidates out of 401 for direct light, held by reuse with
+  `maxHistoryLength = 4` frames — and our shipped file set
+  `rtx.di.permutationSamplingNthFrame = 1`, re-randomising that lottery every frame. `config/rtx.conf`
+  now sets permutation **0**, `di.initialSampleCount 8`, `di.maxHistoryLength 12`,
+  `risLightSampleCount 16`, `volumetrics.temporalReuseMaxSampleCount 8`,
+  `volumetrics.restirGridGuardBandFactor 1.5`, `antiCulling.object True`, `antiCulling.light True`
+  (+ `numFramesToExtendLightLifetime 1000` pinned); `config/rtx.conf.perf` carries the cheaper
+  variant, and `config/rtx.conf.nopops` was regenerated from the new base. **`max_lights` and
+  `rtx.di.initialSampleCount` move together** — a bigger pool with 4 samples dilutes every lamp — and
+  both files say so.
+
+- **Fixed (n04): two rtx.conf key notes in the s28 table were wrong.** `rtx.enableCulling` is
+  front/back-face culling of opaque objects, not frustum culling (we set it False for a different
+  reason, and it stays False); `rtx.uniqueObjectDistance` defaults to **300**, not 1000, and is "how
+  far an object may move in one frame and still be the same object", not a view distance. Corrected in
+  `docs/FINDINGS.md`.
+
+- **Added (n04): `tests/always_on_check.cpp`, run by `scripts/check-all.sh` as `nat-alwayson`** (35
+  checks). A 360° camera sweep over 624 lamps surrounding the player: **0 handle changes in the 10 s
+  after settling**, and the wanted set identical from pass to pass — with a control in the same test
+  that prints what a 60° frustum rule would have re-decided (207 of those lamps), so the test is known
+  to be able to see churn. A 300 s walk at 1.4 m/s and a 240 s drive at 15 m/s through a field built
+  to the measured worst point: no lamp inside `max_distance` is ever destroyed, none is created there
+  after the initial fill, and a lamp that has settled at full gain is never touched again. Plus the
+  cap rule (500 near + 200 band lamps, cap 100 → n04 keeps 500, the old rule kept 100), the settled
+  handle (60 s standing: 175 creates, 0 changes in the last 55 s) and the head rule (stale+near kept,
+  stale+far dropped, cap 20 over 200 heads inside the radius keeps all 200).
+
 ### Traffic signals
 
 - **Added (n02b): a lit signal is two lights again — the bulb at the lens AND the glow around it.**

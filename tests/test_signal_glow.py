@@ -223,12 +223,16 @@ class TestTwoLightsPerSignal(unittest.TestCase):
 class TestTestDocSaysBulbAndGlow(unittest.TestCase):
     def test_the_signal_step_asks_for_both(self):
         doc = read(DOC)
-        start = doc.index("## 2.")
-        rest = doc[start + 5:]
+        # n04 put finding A first and renumbered the steps, so the signal step is
+        # found by its title, not its number: what this guards is that the signal
+        # step asks for the bulb AND the glow, not which step number it got.
+        m = re.search(r"\n## \d+\.[^\n]*signal heads[^\n]*\n", doc, re.I)
+        self.assertTrue(m, "docs/NEXT-TEST.md has no 'signal heads' step")
+        rest = doc[m.end():]
         end = rest.index("\n## ") if "\n## " in rest else len(rest)
         step = rest[:end].lower()
-        self.assertIn("bulb", step, "docs/NEXT-TEST.md step 2 lost the bulb")
-        self.assertIn("glow", step, "docs/NEXT-TEST.md step 2 lost the glow")
+        self.assertIn("bulb", step, "docs/NEXT-TEST.md's signal step lost the bulb")
+        self.assertIn("glow", step, "docs/NEXT-TEST.md's signal step lost the glow")
         self.assertRegex(
             step,
             r"bulb[^.]{0,300}and[^.]{0,120}glow|glow[^.]{0,300}and[^.]{0,120}bulb",

@@ -60,17 +60,35 @@ static unsigned g_phaseSwap = 0;   // recreations caused by a phase change
 static unsigned g_cfgRev = 0;     // ini revision we are following
 static unsigned g_fadeSteps = 0;  // re-creates that moved a gain one step
 static unsigned g_retired = 0;    // lights destroyed after fading to dark
+// n04: cumulative count of signals inside max_distance that a re-selection left
+// without a light. Same field proof as the street layer's in_drop: it should
+// stay 0 for a whole run.
+static unsigned g_droppedInside = 0;
 static unsigned g_playerGone = 0;  // frames the player ped pointer was unreadable
 
 // --- source=game: one Remix light per signal HEAD the game itself lights ---
 //
 // Keyed by rhyHeadId(entity, 2dfx index) instead of a list index, because the
 // heads come and go with what the renderer draws rather than from a file.
+//
+// n04: this is no longer just "what registered a corona this frame". The game
+// registers a corona only for what its renderer draws, so the record set follows
+// the camera frustum; keeping the memory (position + last colour + last tick)
+// lets a head we turned our back on survive exactly like a lamp the player
+// walked away from - by distance, never by view direction. See rhyHeadKeepAlive.
 struct HeadSeen {
-    DWORD seen;   // last tick this head registered a corona
-    int phase;    // the phase the game last showed for it
+    DWORD seen;        // last tick this head registered a corona
+    uint32_t entity;   // the CEntity* the id came from, kept to rebuild a record
+    uint32_t index;    // the 2DFX head index, same reason
+    int phase;         // the phase the game last showed for it (-1 = unknown)
+    float pos[3];      // the lens position of the last record
+    uint8_t rgb[3];    // the colour of the last record (phase is derived from it)
 };
 static std::map<uint64_t, HeadSeen> g_heads;
+// The candidate array handed to rhyChooseHeads: the remembered heads, which
+// already includes everything the game registered this frame (step 1 of
+// reselectHeads folds the records into g_heads first).
+static std::vector<RhySignalHead> g_headCand;
 
 // The handles themselves are keyed by (head, phase) for the same reason the list
 // lights are keyed by (index, phase): a colour change needs both handles alive
@@ -291,7 +309,43 @@ static void reselect(const RhyConfig& c, const float* pp, double nowSeconds) {
         static_cast<float>(c.traffic_exit_distance),
         static_cast<unsigned>(c.traffic_max_lights),
         static_cast<unsigned>(c.sticky_extra), &want[0],
-        static_cast<unsigned>(want.size()));
+        static_cast<unsigned>(want.size()),
+        // n04: the cap may only trim the band beyond traffic_max_distance. The
+        // shipped 60+90 against up to 85 signals within 250 units (the worst case
+        // measured over the whole 1522-entry list) was evicting signals that were
+        // right in front of the player.
+        static_cast<float>(c.traffic_max_distance));
+
+    // n04: the field proof - a signal inside max_distance that this pass left
+    // without a light. Counted over the live handles, not over the list.
+    {
+        std::vector<int> chosen;
+        chosen.reserve(n);
+        for (unsigned i = 0; i < n; ++i) {
+            if (want[i].gain > 0.0f) {
+                chosen.push_back(want[i].id);
+            }
+        }
+        std::sort(chosen.begin(), chosen.end());
+        const float r2 = static_cast<float>(c.traffic_max_distance) *
+                         static_cast<float>(c.traffic_max_distance);
+        for (std::map<int, SignalState>::iterator it = g_active.begin();
+             it != g_active.end(); ++it) {
+            const int index = it->first >> 2;
+            if (index < 0 ||
+                static_cast<size_t>(index) >= g_lights.size()) {
+                continue;
+            }
+            if (std::binary_search(chosen.begin(), chosen.end(), index)) {
+                continue;  // wanted in some phase: a colour change is not a drop
+            }
+            const float dx = g_lights[index].x - pp[0];
+            const float dy = g_lights[index].y - pp[1];
+            if (dx * dx + dy * dy < r2) {
+                ++g_droppedInside;
+            }
+        }
+    }
 
     const float nearD = static_cast<float>(c.traffic_phase_near);
     const float near2 = nearD * nearD;
@@ -659,39 +713,61 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
 
 // ---------------------------------------------------------------- head selection
 
-// Re-diff the live head lights against what the game registered this frame.
-// Same shape as reselect() above, with two differences that come from the source:
-// a head the game stopped registering is not "out of range", it is "this aspect
-// is off / this signal left the renderer", and it expires on a timeout; and a
-// colour change is the game's own, so it is not limited to phase_near - the game
-// only registers the lit head in the first place, so the heads that change
-// colour are the ones the player is looking at.
+// Re-diff the live head lights against the heads the game has shown us.
 //
-// s28: expiring a head no longer destroys its light. The head goes off the want
-// list, its envelope's target goes to 0, and the handle is retired when the ramp
-// reaches dark - which is also what stops a signal blinking when the renderer
-// skips a corona for one frame.
+// n04 rewrote the middle of this. The two differences from reselect() above used
+// to be (a) a head the game stopped registering is "this aspect is off / this
+// signal left the renderer", expiring on a timeout, and (b) a colour change is
+// the game's own. (b) stands. (a) does not: the game registers a signal corona
+// from its renderer, so the record set IS the camera frustum, and expiring on it
+// made every bulb and glow on a junction fade out 2 s after the player turned his
+// back on it and get created again when he looked back - the only light in this
+// plugin that came and went with camera DIRECTION. Measured in the 2026-11-12
+// 10:22 run: expired=790, retired=817, steps=5669 in 970 s, for at most 19 heads.
+//
+// The head set is now keyed by the PLAYER's distance like everything else: the
+// records are folded into a memory (position + last colour + last tick), a head
+// is kept while it is within the selection radius, and it is dropped only when it
+// leaves the wider one (rhyHeadKeepAlive). A head we cannot see keeps the colour
+// it last showed - invisible by definition - and the frame the player looks back
+// the game re-registers it and the cross-fade takes over.
+//
+// s28's half still holds: expiring a head never destroys its light in one frame.
+// The head leaves the want list, the envelope's target goes to 0, and the handle
+// is retired when the ramp reaches dark.
 static void reselectHeads(const RhyConfig& c, const float* pp) {
     const DWORD now = GetTickCount();
 
-    // 1. every head the game registered this frame is alive.
+    // 1. every head the game registered this frame updates the memory.
     for (unsigned i = 0; i < g_recN; ++i) {
         const uint64_t id = rhyHeadId(g_rec[i].entity, g_rec[i].index);
         const int phase = rhySignalPhaseFromGameRgb(g_rec[i].rgb[0], g_rec[i].rgb[1],
                                                     g_rec[i].rgb[2]);
         HeadSeen& hs = g_heads[id];
         hs.seen = g_rec[i].tick;
+        hs.entity = g_rec[i].entity;
+        hs.index = g_rec[i].index;
+        hs.pos[0] = g_rec[i].pos[0];
+        hs.pos[1] = g_rec[i].pos[1];
+        hs.pos[2] = g_rec[i].pos[2];
+        hs.rgb[0] = g_rec[i].rgb[0];
+        hs.rgb[1] = g_rec[i].rgb[1];
+        hs.rgb[2] = g_rec[i].rgb[2];
         if (phase >= 0) {
             hs.phase = phase;
         }
     }
 
-    // 2. expire the ones that stopped registering. Their lights stay, on their
-    // way down, until the envelope reaches dark.
+    // 2. drop a head only when it is FAR, never when it is merely off screen.
     for (std::map<uint64_t, HeadSeen>::iterator it = g_heads.begin();
          it != g_heads.end();) {
-        if (rhyHeadStale(it->second.seen, now,
-                         static_cast<uint32_t>(c.traffic_head_ttl_ms))) {
+        const float dx = it->second.pos[0] - pp[0];
+        const float dy = it->second.pos[1] - pp[1];
+        const float d = std::sqrt(dx * dx + dy * dy);
+        if (!rhyHeadKeepAlive(it->second.seen, now,
+                              static_cast<uint32_t>(c.traffic_head_ttl_ms), d,
+                              static_cast<float>(c.traffic_max_distance),
+                              static_cast<float>(c.traffic_exit_distance))) {
             g_heads.erase(it++);
             ++g_headExpired;
         } else {
@@ -699,14 +775,32 @@ static void reselectHeads(const RhyConfig& c, const float* pp) {
         }
     }
 
-    // 3. ask the pure selector which heads should have a light right now.
-    if (g_recN == 0) {
-        // The game registered no signal corona on this particular frame (the
-        // renderer skipped, or every signal is behind the camera). That is not
-        // "every signal went out": re-diffing against an empty set would
-        // destroy every head light and rebuild it 0.5 s later, which is a signal
-        // that blinks. The expiry above still runs, so a signal that really is
-        // gone loses its light after head_ttl_ms.
+    // 3. the candidates are the memory, not this frame's records: a frame in
+    // which the game registered nothing (the renderer skipped, or every signal is
+    // behind the camera) must not empty the want set.
+    g_headCand.clear();
+    for (std::map<uint64_t, HeadSeen>::const_iterator it = g_heads.begin();
+         it != g_heads.end() && g_headCand.size() < kRhySignalHeadCap; ++it) {
+        RhySignalHead h;
+        std::memset(&h, 0, sizeof h);
+        h.entity = it->second.entity;
+        h.index = it->second.index;
+        h.pos[0] = it->second.pos[0];
+        h.pos[1] = it->second.pos[1];
+        h.pos[2] = it->second.pos[2];
+        h.normal[2] = 1.0f;
+        h.rgb[0] = it->second.rgb[0];
+        h.rgb[1] = it->second.rgb[1];
+        h.rgb[2] = it->second.rgb[2];
+        h.alpha = 255;
+        h.strength = 1.0f;
+        h.tick = it->second.seen;
+        g_headCand.push_back(h);
+    }
+    if (g_headCand.empty()) {
+        // Nothing has ever registered: nothing to want. (This used to be the
+        // g_recN == 0 early-out, which was wrong for the same reason the expiry
+        // was: one empty frame is not "every signal went out".)
         return;
     }
     std::vector<uint64_t> active;
@@ -717,12 +811,40 @@ static void reselectHeads(const RhyConfig& c, const float* pp) {
     }
     static RhyHeadWant want[kRhySignalHeadCap];
     const unsigned n = rhyChooseHeads(
-        g_rec, g_recN, pp, static_cast<float>(c.traffic_max_distance),
+        &g_headCand[0], static_cast<unsigned>(g_headCand.size()), pp,
+        static_cast<float>(c.traffic_max_distance),
         static_cast<float>(c.traffic_exit_distance),
         static_cast<unsigned>(c.traffic_max_lights),
         static_cast<unsigned>(c.sticky_extra),
         active.empty() ? nullptr : &active[0],
-        static_cast<unsigned>(active.size()), want, kRhySignalHeadCap);
+        static_cast<unsigned>(active.size()), want, kRhySignalHeadCap,
+        static_cast<float>(c.traffic_max_distance));
+
+    // n04: the same field proof for heads: a head inside max_distance that this
+    // pass got no light for. With the memory + distance rule it should stay 0 for
+    // a whole run, and the counter is in the 10 s line so a run can show it.
+    {
+        std::vector<uint64_t> chosen;
+        chosen.reserve(n);
+        for (unsigned i = 0; i < n; ++i) {
+            chosen.push_back(want[i].id);
+        }
+        std::sort(chosen.begin(), chosen.end());
+        const float r2 = static_cast<float>(c.traffic_max_distance) *
+                         static_cast<float>(c.traffic_max_distance);
+        for (std::map<uint64_t, HeadSeen>::const_iterator it = g_heads.begin();
+             it != g_heads.end(); ++it) {
+            const float dx = it->second.pos[0] - pp[0];
+            const float dy = it->second.pos[1] - pp[1];
+            if (it->second.phase < 0) {
+                continue;  // never showed a recognisable colour: it is not lit to lose
+            }
+            if (dx * dx + dy * dy < r2 &&
+                !std::binary_search(chosen.begin(), chosen.end(), it->first)) {
+                ++g_droppedInside;
+            }
+        }
+    }
 
     g_wantHead.clear();
     g_wantHeadOrder.clear();
@@ -1306,14 +1428,14 @@ void rhyTrafficFrame() {
             rhyLog("trafficlights[source=game]: %u heads lit (%u with a glow), "
                    "%u bulbs + %u glows drawn this frame "
                    "(green=%d amber=%d red=%d, %u coronas registered this frame, "
-                   "colour_swaps=%u expired=%u steps=%u retired=%u "
+                   "colour_swaps=%u expired=%u steps=%u retired=%u in_drop=%u "
                    "player_gone_frames=%u) | remix: live=%u create_fail=%u "
                    "draw_fail=%u budget_stop=%u deferred=%u | hook: calls=%u "
                    "records=%u dropped=%u bad=%u reentrant=%u",
                    static_cast<unsigned>(g_headLights.size()), glows, hd_drawn,
                    hd_glowDrawn, green, amber,
                    red, g_recN, g_headSwaps, g_headExpired, g_fadeSteps, g_retired,
-                   g_playerGone, rhyLiveLights(), rhyCreateFailures(),
+                   g_droppedInside, g_playerGone, rhyLiveLights(), rhyCreateFailures(),
                    rhyDrawFailures(), g_budgetStop, rhyCreateDeferred(),
                    rhySignalHookCalls(), rhySignalHookRecords(),
                    rhySignalHookDropped(), rhySignalHookBad(),
@@ -1337,7 +1459,8 @@ void rhyTrafficFrame() {
             rhyLog("trafficlights[%s]: %u active (%u with a glow), "
                    "%u bulbs + %u glows drawn this frame (green=%d "
                    "amber=%d red=%d, %u awaiting destroy, %u in list, hour=%d, "
-                   "phase_swaps=%u steps=%u retired=%u player_gone_frames=%u) | "
+                   "phase_swaps=%u steps=%u retired=%u in_drop=%u "
+                   "player_gone_frames=%u) | "
                    "remix: live=%u create_fail=%u draw_fail=%u budget_stop=%u "
                    "deferred=%u",
                    gameMode ? "list" : (hookLive
@@ -1348,7 +1471,8 @@ void rhyTrafficFrame() {
                    static_cast<unsigned>(g_active.size()), glows, tl_drawn,
                    tl_glowDrawn, green, amber,
                    red, rhyDelayedPending(), static_cast<unsigned>(g_lights.size()),
-                   rhyGameHour(), g_phaseSwap, g_fadeSteps, g_retired, g_playerGone,
+                   rhyGameHour(), g_phaseSwap, g_fadeSteps, g_retired,
+                   g_droppedInside, g_playerGone,
                    rhyLiveLights(), rhyCreateFailures(), rhyDrawFailures(),
                    g_budgetStop, rhyCreateDeferred());
         }

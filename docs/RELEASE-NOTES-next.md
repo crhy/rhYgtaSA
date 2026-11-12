@@ -48,6 +48,24 @@ If something in the update looks wrong, everything is reversible
   sodium emission lines (yellow-orange, no red halo, no blue); cool lamps from mercury lines.
 - **Lamps switch at twilight, not at a clock time** — the sun's elevation, which is what a real
   photocell reads.
+- **A lamp that is in range is on, whichever way you happen to be looking.** Two things used to work
+  against that. The per-layer light budget was a fixed count, so in a dense district (the worst spot
+  on the map has 408 lamps within 300 m of you) the farthest lamps lost their light while they were
+  still 200 m away and got it back a moment later — a street light blinking for no reason. The budget
+  now only trims the far edge of the fade band, and the shipped counts cover the whole map. And traffic
+  signals went dark when you turned your back on them, because the game only reports a signal that it
+  is drawing: a junction you walked away from lost its bulbs and glows two seconds later and got them
+  back when you looked again. Signals now follow your distance, like street lamps. What to notice:
+  spinning the camera at night should change nothing about which lamps are lit. If a lamp ever goes out
+  while it is still in front of you, the plugin log says so — `in_drop=` in the 10-second
+  `streetlights:` line must stay 0.
+- **Less boiling when you rotate the camera.** Whether a given pixel draws a given lamp out of the
+  several hundred that are lit is a random choice the renderer makes every frame, and the shipped
+  settings re-shuffled that choice every frame with only four candidates per pixel. With the lamp pool
+  now covering the whole streamed area, the profile gives it eight candidates, three times the memory
+  of the previous choice, and stops the re-shuffle. Expect the light from a lamp to hold steady while
+  you turn, instead of crawling. If your frame rate matters more, `tools/rtxprofile.sh perf` is the
+  cheaper variant of the same settings.
 
 ### Sun, moon and sky
 

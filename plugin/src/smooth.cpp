@@ -445,7 +445,7 @@ struct Cand {
 unsigned rhySelectLights(const float* xy, unsigned n, const int* active,
                          unsigned activeN, float px, float py, float rIn,
                          float rOut, unsigned cap, unsigned stickyExtra,
-                         RhyWant* out, unsigned outCap) {
+                         RhyWant* out, unsigned outCap, float hardRadius) {
     if (!xy || !out || outCap == 0) {
         return 0;
     }
@@ -490,16 +490,37 @@ unsigned rhySelectLights(const float* xy, unsigned n, const int* active,
     std::sort(cand.begin(), cand.end(),
               [](const Cand& a, const Cand& b) { return a.d < b.d; });
 
+    // n04: the lamps strictly inside hardRadius are a prefix of the sorted list,
+    // and they are taken before the cap is consulted at all. The cap is a budget
+    // for the band beyond the radius, not a licence to drop a lamp that is 100 m
+    // from the player because 408 others are nearer.
+    if (hardRadius > rOut) {
+        hardRadius = rOut;  // a typo must not disable the cap everywhere
+    }
+    if (hardRadius < 0.0f) {
+        hardRadius = 0.0f;
+    }
+    size_t forced = 0;
+    while (forced < cand.size() && cand[forced].d < hardRadius) {
+        ++forced;
+    }
+    if (forced > outCap) {
+        forced = outCap;
+    }
+
     const unsigned grow = cap + stickyExtra;
     static std::vector<int> chosen;
     chosen.clear();
-    chosen.reserve(grow);
-    for (size_t k = 0; k < cand.size() && chosen.size() < grow; ++k) {
+    chosen.reserve(grow + forced);
+    for (size_t k = 0; k < forced; ++k) {
+        chosen.push_back(cand[k].i);
+    }
+    for (size_t k = forced; k < cand.size() && chosen.size() < grow; ++k) {
         if (cand[k].sticky) {
             chosen.push_back(cand[k].i);
         }
     }
-    for (size_t k = 0; k < cand.size() && chosen.size() < cap; ++k) {
+    for (size_t k = forced; k < cand.size() && chosen.size() < cap; ++k) {
         if (!cand[k].sticky) {
             chosen.push_back(cand[k].i);
         }

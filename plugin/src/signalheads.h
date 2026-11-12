@@ -52,6 +52,25 @@ int rhySignalPhaseFromGameRgb(int r, int g, int b);
 // wraparound-safe form.
 int rhyHeadStale(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs);
 
+// n04: "the corona stopped registering" is NOT "the signal went out".
+//
+// The game registers a signal corona from CCoronas::RegisterCorona, which its
+// renderer only calls for what it draws - so the set of registered heads follows
+// the camera frustum. Turning your back on a junction therefore used to expire
+// every bulb and glow on it after head_ttl_ms, and turning back created them
+// again: the one light in this plugin that came and went with camera DIRECTION
+// (measured in the 2026-11-12 10:22 run: `expired=790`, `retired=817`,
+// `steps=5669` in 970 s, i.e. ~6 handle changes a second for at most 19 heads).
+//
+// So the ttl no longer decides on its own. A head that went stale is kept - with
+// the colour it last showed, which nobody can see because it is off screen - as
+// long as it is still within exitDist of the PLAYER, which is the same rule the
+// lamp lists use. It is dropped when it leaves that radius, or when it is both
+// stale and beyond maxDist (a freed entity whose signal is no longer nearby).
+// Returns 1 keep, 0 drop.
+int rhyHeadKeepAlive(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs,
+                     float dist, float maxDist, float exitDist);
+
 // n02: "the hook is installed" is not "the hook produces heads", and "the hook
 // produced nothing" is not "the hook is dead" either. s30 read the 2026-11-11
 // 13:03 line `records=0` as "the patched call site was never reached"; the
@@ -296,12 +315,17 @@ bool rhyRangePlausible(uint32_t addr, unsigned len);
 // be inside maxDist, and the active set may grow to cap+stickyExtra before the
 // farthest ones are dropped. Without that, a head at the boundary is destroyed
 // and recreated on alternate passes, which is a signal that blinks.
+//
+// n04 adds the same `hardRadius` rule as rhySelectLights: a head strictly inside
+// hardRadius is never the one the cap drops, so the cap only ever trims the band
+// between hardRadius and exitDist. Pass 0 for the old behaviour.
 // Returns how many entries were written to out.
 unsigned rhyChooseHeads(const RhySignalHead* heads, unsigned nHeads,
                         const float* playerPos, float maxDist, float exitDist,
                         unsigned cap, unsigned stickyExtra,
                         const uint64_t* active, unsigned nActive,
-                        RhyHeadWant* out, unsigned outCap);
+                        RhyHeadWant* out, unsigned outCap,
+                        float hardRadius = 0.0f);
 
 // ---------------------------------------------------------------------------
 // s19: the hook's decisions, kept out of the machine code.

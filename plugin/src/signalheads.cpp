@@ -89,6 +89,27 @@ int rhyHeadStale(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs) {
     return age > ttlMs ? 1 : 0;
 }
 
+int rhyHeadKeepAlive(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs,
+                     float dist, float maxDist, float exitDist) {
+    if (!(dist >= 0.0f) || std::isfinite(dist) == 0) {
+        return 0;  // no usable position: nothing to keep by distance
+    }
+    if (!rhyHeadStale(lastSeenTick, nowTick, ttlMs)) {
+        return 1;  // registered this frame or within the ttl: alive
+    }
+    // Stale. The camera frustum, not the world, is what usually makes a head go
+    // stale, so the radius decides.
+    if (exitDist > 0.0f && dist > exitDist) {
+        return 0;
+    }
+    // Beyond the radius where a head would get a light in the first place, a
+    // stale head is a freed entity pointer, not a signal we turned away from.
+    if (maxDist > 0.0f && dist > maxDist) {
+        return 0;
+    }
+    return 1;
+}
+
 int rhyHeadsHealthy(unsigned records, uint32_t installedTick, uint32_t nowTick,
                     uint32_t graceMs, float nearestSignalM, float coronaRangeM) {
     if (records > 0u) {
@@ -249,7 +270,7 @@ unsigned rhyChooseHeads(const RhySignalHead* heads, unsigned nHeads,
                         const float* playerPos, float maxDist, float exitDist,
                         unsigned cap, unsigned stickyExtra,
                         const uint64_t* active, unsigned nActive,
-                        RhyHeadWant* out, unsigned outCap) {
+                        RhyHeadWant* out, unsigned outCap, float hardRadius) {
     struct Cand {
         float d2;
         int src;
@@ -299,11 +320,35 @@ unsigned rhyChooseHeads(const RhySignalHead* heads, unsigned nHeads,
         return a.d2 < b.d2;
     });
 
+    // n04: heads strictly inside hardRadius are a prefix of the sorted list and
+    // are taken before the cap is consulted (see signalheads.h).
+    if (hardRadius > exitDist) {
+        hardRadius = exitDist;
+    }
+    if (!(hardRadius > 0.0f)) {
+        hardRadius = 0.0f;
+    }
+    const float hard2 = hardRadius * hardRadius;
+    unsigned forced = 0;
+    while (forced < n && cand[forced].d2 < hard2) {
+        ++forced;
+    }
+    if (forced > outCap) {
+        forced = outCap;
+    }
+
     unsigned written = 0;
     const unsigned grow = cap + stickyExtra;
-    // Active heads first, so the ones that already have a handle are never the
-    // ones the cap drops; then the new ones, nearest first.
-    for (unsigned k = 0; k < n && written < outCap; ++k) {
+    // Inside the radius first, then the heads that already have a handle, then
+    // the new ones nearest first: the cap may only ever drop the far band.
+    for (unsigned k = 0; k < forced && written < outCap; ++k) {
+        out[written].id = cand[k].id;
+        out[written].src = cand[k].src;
+        out[written].phase = cand[k].phase;
+        out[written].d2 = cand[k].d2;
+        ++written;
+    }
+    for (unsigned k = forced; k < n && written < outCap; ++k) {
         if (cand[k].sticky && written < grow) {
             out[written].id = cand[k].id;
             out[written].src = cand[k].src;
@@ -312,7 +357,7 @@ unsigned rhyChooseHeads(const RhySignalHead* heads, unsigned nHeads,
             ++written;
         }
     }
-    for (unsigned k = 0; k < n && written < outCap; ++k) {
+    for (unsigned k = forced; k < n && written < outCap; ++k) {
         if (!cand[k].sticky && written < cap) {
             out[written].id = cand[k].id;
             out[written].src = cand[k].src;

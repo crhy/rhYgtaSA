@@ -215,7 +215,7 @@ config: fade in=700ms out=900ms step=0.25 creates/frame=24 player_grace=8000ms s
 and the module lines now carry the fade traffic:
 
 ```
-streetlights: 318 active, 318 drawn this frame, 0 awaiting destroy (hour=21, 7002 in list, kept=310 new=8 steps=14 created=6 retired=4 player_gone_frames=0) | remix: live=320 create_fail=0 draw_fail=0 budget_stop=0 deferred=37
+streetlights: 318 active, 318 drawn this frame, 0 awaiting destroy (hour=21, 7002 in list, kept=310 new=8 steps=14 created=6 retired=4 in_drop=0 player_gone_frames=0) | remix: live=320 create_fail=0 draw_fail=0 budget_stop=0 deferred=37
 ```
 
 | field | what "correct" looks like while driving |
@@ -225,6 +225,7 @@ streetlights: 318 active, 318 drawn this frame, 0 awaiting destroy (hour=21, 700
 | `created=` / `retired=` | similar and gradual. `retired` should never spike to the whole active count in one line |
 | `deferred=` | the frame budget doing its job: fade steps that did not fit moved to the next frame. It climbing is normal; it is what keeps `created=` under `creates/frame` |
 | `player_gone_frames=` | frames where the ped pointer read 0. Non-zero is normal (wasted/busted, interiors, riding on a vehicle); the lights now ride through it |
+| `in_drop=` (n04) | **0, always.** The cumulative count of lamps that had a light, were inside `max_distance`, and were left without one by the next selection - a street light switched off while it is still in front of you. It is the number finding A of 2026-11-12 is about; if it climbs, the cap is smaller than the lamp density where you were |
 | `live=` on the `remix:` line | **no jumps of 100+.** The 2026-11-12 run had 20 such jumps in 25 minutes (`1->360`, `381->1`); that number going to zero is the whole point of s28 |
 
 To check it by eye: at night, drive down a long lit street at speed and watch the
@@ -232,6 +233,51 @@ lamps ahead of you. They should **brighten as you approach and dim as you leave*
 and a street should never arrive all at once. Then flip day to night by editing
 `[sun] force_hour` in `rhyremix.ini` while the game runs: the street should take
 about a second to come up or go down, not one frame.
+
+### n04: lamps that do not care which way the camera points
+
+Two new lines in the log answer finding A of the 2026-11-12b session ("lights
+flicker in and out of existence when the camera rotates; facing a light it is off,
+facing away it comes on").
+
+At load, the street module measures the lamp file against the ini and prints it:
+
+```
+streetlights: worst case 408 lamps within max_distance=300 of a point (cap max_lights+sticky_extra=700): the cap covers the radius
+```
+
+If that line ever says the cap will trim, `max_lights` in `rhyremix.ini` is smaller
+than the lamp density around you and lamps are being dropped while visible. Lower
+`max_distance`, not `max_lights`.
+
+Every 10 s, both layers print `in_drop=` (see the table above). The test for
+finding A is then mechanical:
+
+1. At night, stand somewhere dense - the pier at Columbus, or Vinewood. Let the
+   street settle (the first couple of seconds create a lot).
+2. **Spin the camera a full circle** on the spot, twice, with the mouse. Do not
+   move CJ.
+3. Look at the log. `in_drop` must not have moved, `new=` should be 0 or a handful
+   (only lamps that came into range as the camera... did not move, so: 0), and
+   `active` should be the same number in every line of those 20 seconds.
+4. Then walk the pier for a minute. `in_drop` still 0; `new=` a few per line as
+   lamps enter the fade band; `steps=` non-zero (that is the fade, not a pop).
+
+What to *see*: a lamp you walk away from dims and never comes back while it is
+behind you; a lamp you turn your back on stays exactly as bright as it was. Signal
+heads are the ones that used to do the opposite - the 2026-11-12 10:22 run expired
+790 heads and retired 817 in 970 seconds because the game only registers a signal
+corona for what it draws. If a signal bulb fades out when you turn away and comes
+back when you look again, that regression is back; `expired=` climbing while
+`in_drop=` stays 0 is what that looks like in the log.
+
+The renderer half of finding A is in `rtx.conf`, not in this log: the eight keys
+listed in `docs/FINDINGS.md` (permutation sampling off, more light candidates per
+pixel, longer reservoir life, anti-culling on). No script can see them - every tour
+shot is taken at a standstill - so the A/B is: `tools/rtxprofile.sh current`, spin
+the camera in a dense street at night, then `tools/rtxprofile.sh perf` and repeat.
+What should change is the *boiling* of lamp light as you rotate, not where the
+lamps are.
 
 ### The clock counters (s29): proof that time of day moves instead of stepping
 

@@ -1215,3 +1215,187 @@ mirror image of the "glow, no bulb" rhY had reported.
 The game's own flare stays at 0.45 (that is what makes the head read as a bulb);
 the ambient is now ours, a few metres wide, the same colour as the lens, cycling
 with it. `glow_flux=0` is the A/B back to bulb-only.
+
+## Lights that came and went with the camera: a count that was a distance rule, a corona set that was the frustum, and a 400-light lottery (2026-11-12, n04)
+
+rhY's finding A, and the one he put first:
+
+> "Lights flicker in and out of existence when the camera ROTATES. Facing a light
+> it is off, facing away it comes on suddenly. Walking/driving down the pier,
+> lights switch on as he approaches. Street/pier lamps must be on ALL the time
+> (the whole streamed area), never culled by view direction, never popping with
+> distance."   (`.strata/test-2026-11-12b.md`, finding A)
+
+The sentence has three claims in it and they have three different causes. Answering
+it needed the runtime's own source, because every key name in this renderer lies:
+`rtx.antiCulling.light` sounds like the switch for "off-screen lights still light"
+and, for the lights this plugin makes, it does nothing at all.
+
+### 1. What the 10:22-10:45 run (the run finding A was written from) says
+
+`<game>/scripts/rhyremix.log` lines 5352-6673: 2026-11-12 10:22:46 → 10:39:05,
+970 s, 972 one-second `remix: live=` samples, 98 ten-second module lines.
+
+| measure | value |
+|---|---|
+| bridge live lights | min 1, max 629; pinned at 401-415 for minutes while the street layer was on |
+| street `active` per 10 s | 0 or 320 for most of the run; 8 jumps ≥ 20 handles: ±320 at the day/night flips, **+193/−193 at 10:25:04**, −320, **+136/+221/−357 at 10:26:54-10:27:14**, +320 at twilight |
+| `kept=320 new=0` | in 70 of the 98 samples: with the layer on and the player standing, the set was already stable |
+| street handle traffic | `steps` (fade re-creates) cumulative **42** for the whole run |
+| **10:33:35-10:39:05** — rhY walking the pier at night, `lamps=on` | `active` 320 constant, `new=0`, `created=0`, no retire: **our street handles did not change at all while he was watching them flicker** |
+| signal heads | `heads lit` 0..19 (mean 4.3), `coronas registered this frame` 0..12, `colour_swaps=850`, `expired=790`, `retired=817`, `steps=5669` → **5.8 handle changes a second** |
+
+Two rows decide the shape of the fix. The street layer was already steady in the
+plugin during the minutes he calls unsteady — so the pier symptom is not our
+selection. And the signal lights were churning six times a second — that one *is*
+ours, and it is the only light in the plugin that has ever looked at the camera.
+
+### 2. The inventory: every place a light can be skipped, destroyed or dimmed
+
+| # | mechanism | ours? |
+|---|---|---|
+| A1 | **the count was a distance rule.** `rhySelectLights` sorted every candidate by distance from the player and kept `cap + sticky_extra` of them, so a lamp inside `max_distance` lost its light when the 320 nearest changed. Measured over the whole 7002-lamp list: **408 lamps within 300 units** of a point at the worst place on the map, 552 within 380 (median 149 / 234) — against a shipped cap of 320+90 = 410 | yes, `smooth.cpp` |
+| A2 | re-selection every 30 frames, so an eviction arrives as a batch of hundreds | yes |
+| A3 | **every gain step is destroy+create of the same hash.** The runtime keys API lights by handle (`rtx_light_manager.cpp:795`) and gives a new light `kNewLightIdx` and a fresh identity (`:392`, `:445-457`), so its RTXDI reservoirs and denoiser history restart from zero. A re-create is a pop by itself, whatever the radiance step | yes, and unavoidable: radiance is baked at `CreateLight` |
+| A4 | **a signal head existed only while the game registered a corona for it.** The game registers a corona from its renderer, so the registered set *is* the camera frustum; `head_ttl_ms=2000` then faded the bulb and glow out and retired them. Turn your back on a junction: dark 2 s later; look back: created again | **yes — the only true view-direction light** |
+| A5 | `min_distance` pinned a lamp's gain to 0 (a re-create under CJ's feet). Default 0, inert | yes |
+| A6 | layer off (day, disabled, bridge refused, player pointer gone) → whole-layer fade-out. s28's half, already ramps | yes |
+| A7 | **no camera-direction selection exists anywhere in the plugin**: selection receives only the player ped position, never the camera; no frustum test, no screen-size sort, no "N most visible". So "facing away it comes on" cannot be our selection | — |
+
+And in the runtime (source in `build/tmp/s18/dxvk-remix-remix-1.6.1/`):
+
+* **An API light is never frustum-culled.** `LightManager::garbageCollection()` marks
+  inside/outside frustum only for `getLightTable()`, the *game-detected* lights
+  (`rtx_light_manager.cpp:151-183`), and `garbageCollectionInternal()` erases only
+  from `m_lights` / `m_externallyTrackedLights` (`:110-141`). Lights made by
+  `CreateLight` live in `m_externalLights` and disappear only on `DestroyLight`
+  (`:795-810`); their per-frame presence is `addExternalLightInstance()` = our
+  `DrawLightInstance` (`:857-865`). **For our lamps "off-screen lights still light"
+  was already true.** What is view-dependent is not their existence but whether a
+  pixel ever draws one.
+* That is a sampling question, and the numbers are small: `rtx.di.initialSampleCount`
+  = **4** — "the number of lights randomly selected from the global pool to consider
+  when selecting a light with RTXDI" — over a pool of 401 live lights. About a 1%
+  lottery per lamp per frame, held together by reuse with
+  `rtx.di.maxHistoryLength` = **4** frames. Rotate the camera, disocclude, the
+  reservoirs die, the street has to be re-found by the lottery. The same lottery
+  runs for indirect rays (`rtx.risLightSampleCount` = 7) and for volumetrics
+  (`initialRISSampleCount` = 32, reservoir clamped to
+  `temporalReuseMaxSampleCount` = **2**).
+* `rtx.di.permutationSamplingNthFrame`: runtime default **0**, our shipped
+  `config/rtx.conf` set **1** — "apply permutation sampling when
+  (frameIdx % this == 0)": a per-frame re-randomisation of which lights a pixel
+  draws. n01 left it alone calling it a noise knob; over a 400-lamp pool it is
+  finding A.
+* The runtime's own view levers, all off by default: `rtx.antiCulling.object`
+  ("extends lifetime of objects that go outside the camera frustum"),
+  `rtx.antiCulling.light`, `numFramesToExtendLightLifetime` 1000, `fovScale` 1,
+  `farPlaneScale` 10, `enableInfinityFarFrustum` false. They apply to game lights
+  and instances — but the lamp-post *geometry* does leave the TLAS with the camera,
+  which changes the shadows and visibility of an off-screen lamp.
+* `rtx.volumetrics.restirGridGuardBandFactor` = 1.1: "an extended part of the
+  viewing frustum for which we should calculate lighting information for, even
+  though they are technically offscreen. This helps reduce noise in cases where the
+  camera is moving around." The runtime's own answer to the complaint.
+* Two s28 key notes were wrong and are corrected here: `rtx.enableCulling` is
+  front/back-face culling of opaque objects, not frustum culling; and
+  `rtx.uniqueObjectDistance` defaults to **300**, not 1000, and is "how far an
+  object may move in one frame and still be the same object", not a view distance.
+
+### 3. The fix
+
+**Ours**
+
+* `rhySelectLights(..., float hardRadius)`: a lamp strictly inside `hardRadius` is
+  taken before the cap is consulted at all, so **the cap may only trim the band
+  between `max_distance` and `exit_distance`**. Both lamp modules pass
+  `max_distance`. `hardRadius = 0` keeps the old behaviour, which the tests keep as
+  a control.
+* The shipped counts now cover the radius instead of fighting it:
+  `max_lights 320 → 560`, `sticky_extra 90 → 140` (560+140 = 700 ≥ the 552-lamp
+  worst case inside `exit_distance`), signal `max_lights 60 → 90` (≥ the 150
+  worst case inside `traffic_exit_distance`). Radii unchanged: 300/380 and 250/300.
+* Signal heads are kept by **player distance**, not by corona registration: the
+  records are folded into a memory (position + last colour + last tick), a head
+  that went stale keeps its light with the colour it last showed — invisible by
+  definition, and the frame the player looks back the game re-registers it and the
+  cross-fade takes over — and it is dropped only beyond `exit_distance`
+  (`rhyHeadKeepAlive`). `head_ttl_ms` is a staleness marker now, not a destroy
+  trigger.
+* Two field counters, printed in the 10-second line: `in_drop=N` on both layers is
+  the number of lamps inside `max_distance` that a re-selection left without a
+  light. It should stay 0 for a whole run. And at load the street module prints the
+  worst case it can find in the real file:
+  `streetlights: worst case 408 lamps within max_distance=300 of a point (cap
+  max_lights+sticky_extra=700): the cap covers the radius`.
+
+**The renderer** (`config/rtx.conf`, mirrored cheaper in `config/rtx.conf.perf`;
+every key verified against `config/rtx-runtime-keys.txt` by `tools/rtxkeycheck.py`):
+
+| key | was | now | why |
+|---|---|---|---|
+| `rtx.di.permutationSamplingNthFrame` | 1 | **0** | stop re-drawing which lights exist at a pixel, every frame |
+| `rtx.di.initialSampleCount` | 4 (default) | **8** | the pool is 400-550 lamps; 4 candidates is a lottery |
+| `rtx.di.maxHistoryLength` | 4 (default) | **12** | a lamp's direct light survives a camera rotation |
+| `rtx.risLightSampleCount` | 7 (default) | **16** | the same lottery for indirect rays — finding D's "no illumination from the bulb" |
+| `rtx.volumetrics.temporalReuseMaxSampleCount` | 2 (default) | **8** | a light shaft carried by two samples boils |
+| `rtx.volumetrics.restirGridGuardBandFactor` | 1.1 (default) | **1.5** | light the off-screen band, the runtime's own advice |
+| `rtx.antiCulling.object` | False (default) | **True** | keep lamp posts and gantries in the TLAS when off screen, so an off-screen lamp's light does not leak and the post does not pop |
+| `rtx.antiCulling.light` | False (default) | **True** | same for the game's own converted lights (ours were never culled) |
+| `rtx.antiCulling.light.numFramesToExtendLightLifetime` | 1000 (default) | 1000, written out | pins the A/B; the tooltip warns against setting it low |
+
+The pool got bigger and the sampling had to keep up: **`max_lights` and
+`rtx.di.initialSampleCount` move together.** That coupling is written in both the
+ini and the profile, because either one alone makes the picture worse — a bigger
+pool with 4 samples dilutes every lamp, and more samples against a cap that
+evicts lamps buys samples for lights that are not there.
+
+Not set, with the reason: `rtx.antiCulling.object.enableInfinityFarFrustum` (keeps
+the whole city in the TLAS — a VRAM cost nobody has measured here),
+`farPlaneScale`/`fovScale` (the cheaper version of the same frustum, left at
+defaults), `rtx.enableCulling` (wrong key, see above).
+
+### 4. How it is tested
+
+`tests/always_on_check.cpp`, run by `scripts/check-all.sh` as `nat-alwayson`
+(35 checks). The camera is given a role on purpose, and the assertion is that the
+light set does not notice:
+
+* **a 360° camera sweep** with 624 lamps all around the player: after settling,
+  **0 handle changes in 10 s** and the wanted set identical from pass to pass. The
+  control in the same test prints what a 60° frustum rule would have re-decided
+  (207 of those lamps), so the test is known to be able to see churn.
+* **a 300 s walk at 1.4 m/s and a 240 s drive at 15 m/s** through a field built to
+  the measured worst point (421 lamps within 300, 549 within 380): **no lamp inside
+  `max_distance` is ever destroyed**, none is created there after the initial fill,
+  and a lamp that has settled at full gain is **never touched again** — 0 events in
+  300 s of walking.
+* **the cap rule**: 500 near + 200 band lamps with a cap of 100 → the n04 rule
+  keeps all 500, the old rule kept 100.
+* **a settled lamp is one handle**: 60 s standing still, 175 live lamps, 175
+  creates, and 0 handle changes in the last 55 s.
+* **heads**: stale+near is kept, stale+far is dropped, staleness alone is never a
+  reason to destroy a light, and a head cap of 20 over 200 heads inside the radius
+  keeps all 200 (the old rule kept 20).
+
+What the test does *not* claim: that a lamp crossing from the fade band into the
+radius never has its handle re-created. It does, several times, because radiance is
+baked at `CreateLight` and a ramp is a sequence of re-creates — that is s28's
+anti-pop design and `tests/smooth_check.cpp` pins it. The n04 guarantee is the
+narrower one: nothing inside the radius is created, destroyed, or touched after it
+has settled.
+
+### 5. Still open
+
+* The rtx.conf half is a source-read plus the runtime's own tooltips, not a
+  screenshot A/B. `scripts/lighting-test.sh` cannot see it (every shot is at a
+  standstill) and neither can `scripts/abtest-lights.sh` (it swaps `rhyremix.ini`,
+  not `rtx.conf`). The field test for finding A is the new `in_drop=0` in the log
+  plus a scripted camera rotation, which the pack does not have yet.
+* `max_lights` 560 means up to ~700 live lights against the 401 the 10:22 run
+  carried. The fps cost is unmeasured; `config/rtx.conf.perf` is the conservative
+  variant and the ini comment says to lower `max_distance`, not the cap.
+* A head we cannot see keeps the colour it last showed. If the game changes a
+  signal's phase while it is off screen, our light is wrong until the player looks
+  back — invisible, but it is a lie, and the list-mode clock phase
+  (`rhyTrafficPhase`) is the honest alternative if it ever matters.

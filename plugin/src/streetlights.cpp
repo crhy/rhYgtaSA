@@ -57,6 +57,11 @@ static bool g_apiBroken = false;  // a BRIDGE call failed: stop touching the API
 static DWORD g_brokenTick = 0;    // when it broke, for the post-mortem log line
 static unsigned g_budgetStop = 0;  // creates our OWN cap refused (not a failure)
 static unsigned g_kept = 0;        // lights the hysteresis kept this pass
+// n04: cumulative count of lamps that had a live handle, were inside
+// max_distance, and were NOT wanted by the last re-selection - a street light
+// switched off while it is still in front of the player, which is finding A.
+// It should stay 0 for a whole run; it is printed in the 10 s status line.
+static unsigned g_droppedInside = 0;
 static unsigned g_new = 0;         // lights this pass asked for a new handle for
 static unsigned g_cfgRev = 0;     // ini revision we are following
 static unsigned g_fadeSteps = 0;  // re-creates done to move a gain one step
@@ -101,6 +106,38 @@ static void loadList() {
     std::fclose(f);
     rhyLog("streetlights: loaded %u lights from %s",
            static_cast<unsigned>(g_lamps.size()), cfg->listPath.c_str());
+
+    // n04: does the cap cover the radius? Measured once here, over every 8th lamp
+    // as a stand-in for "everywhere the player can stand": the worst number of
+    // lamps within max_distance of a point. If it is above max_lights, the cap is
+    // evicting lamps that are still inside the radius, and the fix is max_lights
+    // (or a smaller max_distance) - not a smaller cap. This is the number the ini
+    // comment quotes, so it is worth printing rather than asserting offline.
+    if (!g_lamps.empty() && cfg->max_distance > 0) {
+        const float r2 = static_cast<float>(cfg->max_distance) *
+                         static_cast<float>(cfg->max_distance);
+        unsigned worst = 0;
+        for (size_t i = 0; i < g_lamps.size(); i += 8) {
+            unsigned within = 0;
+            for (size_t j = 0; j < g_lamps.size(); ++j) {
+                const float dx = g_lamps[j].x - g_lamps[i].x;
+                const float dy = g_lamps[j].y - g_lamps[i].y;
+                if (dx * dx + dy * dy <= r2) {
+                    ++within;
+                }
+            }
+            if (within > worst) {
+                worst = within;
+            }
+        }
+        rhyLog("streetlights: worst case %u lamps within max_distance=%d of a "
+               "point (cap max_lights+sticky_extra=%d): %s",
+               worst, cfg->max_distance, cfg->max_lights + cfg->sticky_extra,
+               worst > static_cast<unsigned>(cfg->max_lights + cfg->sticky_extra)
+                   ? "the cap will trim lamps in the far band only, and the "
+                     "nearest lamps are never evicted"
+                   : "the cap covers the radius");
+    }
 }
 
 void rhyStreetlightsInitOnce() {
@@ -261,7 +298,14 @@ static void reselect(const RhyConfig& c, const float* pp) {
         pp[0], pp[1], static_cast<float>(c.max_distance),
         static_cast<float>(c.exit_distance), static_cast<unsigned>(c.max_lights),
         static_cast<unsigned>(c.sticky_extra), &want[0],
-        static_cast<unsigned>(want.size()));
+        static_cast<unsigned>(want.size()),
+        // n04: the cap is a budget for the band beyond max_distance, not a licence
+        // to drop a lamp because 408 others are nearer. Measured on the real
+        // 7002-lamp list: the worst case within 300 units of a point is 408 lamps
+        // and within 380 units is 552, against a shipped cap of 320+90 - so in a
+        // dense district the cap was evicting lamps that were still 200 m away,
+        // and the log shows the set jumping by 193 and by 357 handles.
+        static_cast<float>(c.max_distance));
 
     const float minD = static_cast<float>(c.min_distance);
     for (unsigned i = 0; i < n; ++i) {
@@ -284,6 +328,25 @@ static void reselect(const RhyConfig& c, const float* pp) {
             ++g_kept;
         } else {
             ++g_new;
+        }
+    }
+
+    // n04: the field proof of the guarantee. A lamp that holds a handle, is
+    // inside max_distance, and is not wanted is a light being taken away from a
+    // lamp that is still in front of the player. The hardRadius rule is supposed
+    // to make this impossible; the counter says whether it did, in a real run,
+    // without anyone having to watch a lamp.
+    const float r2 =
+        static_cast<float>(c.max_distance) * static_cast<float>(c.max_distance);
+    for (std::map<int, LampState>::iterator it = g_active.begin();
+         it != g_active.end(); ++it) {
+        if (g_want.find(it->first) != g_want.end()) {
+            continue;
+        }
+        const float dx = g_lamps[it->first].x - pp[0];
+        const float dy = g_lamps[it->first].y - pp[1];
+        if (dx * dx + dy * dy < r2) {
+            ++g_droppedInside;
         }
     }
 }
@@ -622,12 +685,12 @@ void rhyStreetlightsFrame() {
         // were re-created this pass to move a gain one step.
         rhyLog("streetlights: %u active, %u drawn this frame, %u awaiting "
                "destroy (hour=%d, %u in list, kept=%u new=%u steps=%u created=%u "
-               "retired=%u player_gone_frames=%u) | remix: live=%u create_fail=%u "
-               "draw_fail=%u budget_stop=%u deferred=%u",
+               "retired=%u in_drop=%u player_gone_frames=%u) | remix: live=%u "
+               "create_fail=%u draw_fail=%u budget_stop=%u deferred=%u",
                static_cast<unsigned>(g_active.size()), drawn,
                rhyDelayedPending(), rhyGameHour(),
                static_cast<unsigned>(g_lamps.size()), g_kept, g_new, stepped,
-               created, g_retired, g_playerGone, rhyLiveLights(),
+               created, g_retired, g_droppedInside, g_playerGone, rhyLiveLights(),
                rhyCreateFailures(), rhyDrawFailures(), g_budgetStop,
                rhyCreateDeferred());
     }

@@ -215,16 +215,29 @@ struct RhyWant {
 //   * the set may grow to cap + stickyExtra before the farthest are dropped;
 //   * every chosen light gets a target gain of rhyDistanceGain(dist, rIn, rOut),
 //     so nothing appears or disappears at full radiance.
+//
+// n04: `hardRadius` is what makes the cap stop evicting lights that are close.
+// A light strictly inside hardRadius is ALWAYS selected: the cap may only drop
+// lights in the band between hardRadius and rOut. Without it the cap is a
+// distance rule wearing a count: measured on the real 7002-lamp list, the
+// worst-case number of lamps within 300 m of a point is 408 and within 380 m is
+// 552, against a shipped cap of 320+90 - so in a dense district the farthest
+// lamps were being dropped while they were still 200 m away, and picking them up
+// again on the next pass is a street light blinking as you walk. Pass 0 to keep
+// the old behaviour (the cap binds everywhere); both lamp modules pass rIn, so
+// the cap only ever bites beyond the radius, where a lamp's contribution is
+// already invisible and its gain is already ramping to 0.
 // `active` lists the ids that currently have a handle and MUST be sorted
 // ascending (both callers build it from a std::map, and the traffic one sorts):
 // membership is looked up with a binary search, because the lamp list is 7002
 // entries and this runs on the render thread - a linear scan per lamp would be
 // 7002 x 320 comparisons every resync pass.
 // Returns the number of entries written to out, nearest first, never more than
-// cap + stickyExtra and never more than outCap.
+// outCap - and never more than cap + stickyExtra unless the excess is lamps
+// inside hardRadius, which the cap is not allowed to drop.
 unsigned rhySelectLights(const float* xy, unsigned n, const int* active,
                          unsigned activeN, float px, float py, float rIn,
                          float rOut, unsigned cap, unsigned stickyExtra,
-                         RhyWant* out, unsigned outCap);
+                         RhyWant* out, unsigned outCap, float hardRadius = 0.0f);
 
 #endif  // RHY_SMOOTH_H_

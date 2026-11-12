@@ -250,11 +250,31 @@ Four separate causes, all ours, all visible in the numbers:
 4. **The per-module count has to cover the radius, or the cap blinks too.**
    Selection is nearest-first, so a `max_lights` smaller than the number of lamps
    inside `exit_distance` evicts lamps that are already lit, and they come back
-   on the next pass — the same blink by another route. Measured around Grove
-   Street (2495,-1680): 222 lamps within 300 units, ~350 within 380, 541 within
-   500, so the test profile pairs `max_distance=300 / exit_distance=380` with
-   `max_lights=320 + sticky_extra=90`. The old 60 was cutting the world dark at
-   ~140 units, which is the "lights do not reach far enough" half of the report.
+   on the next pass — the same blink by another route. Measured over the whole
+   7002-lamp list rather than around one street: the worst point on the map has
+   **408 lamps within 300 units** of a point and **552 within 380** (median 149 /
+   234), so the old `max_lights=320 + sticky_extra=90` did not cover it and the
+   2026-11-12 10:22 log shows the active set jumping +193/−193 and +136/+221/−357
+   while the player walked. n04 fixed the rule as well as the number:
+   `rhySelectLights` takes a `hardRadius` (= `max_distance` from both modules) and
+   a lamp strictly inside it is taken before the cap is consulted, so the cap may
+   only trim the fade band. The shipped counts are `max_lights=560 +
+   sticky_extra=140` (the equilibrium live set is `max_lights`, so that is what has
+   to exceed 552) and `[trafficlights] max_lights=90` (worst case 150 signals
+   inside `traffic_exit_distance`). The old 60 was cutting the world dark at ~140
+   units, which is the "lights do not reach far enough" half of the report. The
+   plugin prints the worst case it finds in the real file at load, and counts
+   `in_drop=` in the 10 s line: lamps inside `max_distance` left without a light.
+5. **A signal head used to exist only while the game drew it.** The game registers
+   a signal corona from its renderer, so the set of heads that reach
+   `rhySignalHeadsTake()` is the camera frustum, and `head_ttl_ms` expired heads on
+   it: turn your back on a junction and its bulb and glow faded out 2 s later and
+   were created again when you looked back — six handle changes a second in the
+   10:22 run (`expired=790 retired=817 steps=5669`). The records are now folded
+   into a memory (position, last colour, last tick) and `rhyHeadKeepAlive()` keeps
+   a stale head by **player distance**; it is dropped only beyond
+   `traffic_exit_distance`, or beyond `traffic_max_distance` when it is stale, which
+   is the case where the entity pointer really has gone.
 
 ### Why the whole world changed lighting at once (s28)
 

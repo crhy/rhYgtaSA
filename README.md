@@ -203,6 +203,23 @@ value the plugin publishes may move by more than a small amount in one frame, wh
 or the renderer does underneath. See `docs/FINDINGS.md`, "Lighting changed instantly, everywhere at
 once".
 
+**A lamp in the streamed area is on, and the camera does not get a vote.** Selection is by distance
+from CJ, never by what the screen is pointed at: there is no frustum test, no screen-size sort and
+no "N most visible lamps" anywhere in the plugin. Two rules keep that true. The count is a budget
+for the fade band, not a distance: a lamp inside `[streetlights] max_distance` is never the one
+`max_lights` drops, whatever the density around you (the worst point on the real 7002-lamp map has
+408 lamps within 300 units and 552 within 380, so the shipped `max_lights=560` + `sticky_extra=140`
+covers the map and the plugin prints the worst case it finds at load). And a traffic signal keeps its
+light by distance too: the game only registers a signal corona for what it draws, so "the corona
+stopped" used to mean "dark two seconds later" when you turned your back on a junction. The log
+proves both: `in_drop=0` in every 10-second line means no lamp inside the radius was ever left
+without a light, and `tests/always_on_check.cpp` runs a 360-degree camera sweep, a 300 s walk and a
+240 s drive through the measured worst-case density and asserts the light set does not notice. The
+other half of that finding is in the renderer, not the plugin - which lights a pixel is allowed to
+draw out of a 400-light pool is `rtx.di.initialSampleCount`, `rtx.di.maxHistoryLength`,
+`rtx.di.permutationSamplingNthFrame` and the `rtx.antiCulling.*` keys in `config/rtx.conf`. See
+`docs/FINDINGS.md`, "Lights that came and went with the camera".
+
 **Time of day runs on a continuous clock.** The game's clock bytes only offer a new minute every
 ~2000 ms, and the sun moves 0.25 degrees per game minute, so reading those bytes directly makes the
 sun a staircase; and the two bytes next to the clock that look like a date are not one (the "month"

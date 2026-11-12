@@ -100,6 +100,16 @@ run nat-smooth-cc "compile smooth_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/smooth_check.cpp plugin/src/smooth.cpp plugin/src/game.cpp -o build/tmp/smoothc
 warncheck nat-smooth-cc "compile smooth_check"
 run nat-smooth "tests/smooth_check.cpp (smooth.cpp fades/rate limits/budget + game.cpp player grace)" 120 build/tmp/smoothc
+# n04 (finding A of test-2026-11-12b, the top-priority one): a lamp in the streamed
+# area exists all the time, and nothing about it may depend on which way the camera
+# points. Selection (smooth.cpp) and signal-head lifetime (signalheads.cpp) are pure
+# C++, so a 360-degree camera sweep, a 300 s walk and a 240 s drive through the
+# worst-case lamp density measured on the real 7002-lamp list run here, and the
+# assertion is that the light set does not notice any of it.
+run nat-alwayson-cc "compile always_on_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/always_on_check.cpp plugin/src/smooth.cpp plugin/src/signalheads.cpp plugin/src/lamps.cpp plugin/src/solar.cpp -o build/tmp/alwaysonc
+warncheck nat-alwayson-cc "compile always_on_check"
+run nat-alwayson "tests/always_on_check.cpp (n04: selection and head lifetime are distance-only)" 300 build/tmp/alwaysonc
 # s29: "time of day flickers and does not progress smoothly". tod.cpp is the time
 # axis - pure C++, no Windows, no Remix - so a whole simulated 24 h day runs here at
 # 60 fps, sampled both the way sun.cpp did it before s29 and the way it does it now,

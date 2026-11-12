@@ -75,9 +75,12 @@ HEADER = """# rhyremix "no pops" A/B profile - n01. Install with:
 #       removing direct light sample when its luminance is too high" - every light this plugin
 #       publishes is direct light, and tour shots 02-04 of 2026-11-12 are sodium lamps at night:
 #       the filter would remove the brightest samples of exactly the shots rhY called good.
-#   rtx.di.permutationSamplingNthFrame stays 1: "Apply permutation sampling when
-#       (frameIdx % this == 0), 0 means off" - a per-frame sample-set re-randomisation, a noise
-#       knob, not a lighting-step knob.
+#   rtx.di.permutationSamplingNthFrame is carried through unchanged. n01 left it at
+#       1 ("a noise knob, not a lighting-step knob"); n04 moved the SHIPPED value to 0,
+#       because "Apply permutation sampling when (frameIdx % this == 0), 0 means off"
+#       re-randomises which lights a pixel draws every frame and over the 400-550 lamp
+#       pool this plugin keeps live that is finding A. nopops inherits whatever the
+#       shipped file says, so the A/B stays a temporal-only diff.
 #   rtx.usePostFilter / rtx.postFilterThreshold stay False / 10 (an NRC training-clamp pair).
 #   Every look key is byte-identical to config/rtx.conf: localtonemap.shadows 2.5 (it amplifies a
 #       step in direct light, and lowering it would flatten the shadow edges of shots 02-04 and

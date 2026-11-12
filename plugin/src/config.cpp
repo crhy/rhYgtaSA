@@ -54,9 +54,9 @@ static const char* const kIniDefaults =
     "list=rhyremix_lights.txt\r\n"
     "max_distance=300\r\n"
     "exit_distance=380\r\n"
-    "sticky_extra=90\r\n"
+    "sticky_extra=140\r\n"
     "min_distance=0\r\n"
-    "max_lights=320\r\n"
+    "max_lights=560\r\n"
     "on_hour=19\r\n"
     "off_hour=6\r\n"
     "radius=15\r\n"
@@ -164,7 +164,7 @@ static const char* const kIniDefaults =
     "glow_flux=304\r\n"
     "corona_radius=0.45\r\n"
     "period=60\r\n"
-    "max_lights=60\r\n"
+    "max_lights=90\r\n"
     "max_distance=250\r\n"
     "exit_distance=300\r\n"
     "phase_near=150\r\n"
@@ -310,9 +310,16 @@ static void loadConfig() {
     c.enabled = iniInt("enabled", 1);
     c.max_distance = iniInt("max_distance", 300);
     c.exit_distance = iniInt("exit_distance", 380);
-    c.sticky_extra = iniInt("sticky_extra", 90);
+    // n04: the cap has to cover the radius. Measured over the whole 7002-lamp
+    // list, the worst case is 408 lamps within 300 units of a point and 552
+    // within 380 (median 149 / 234), so 320+90 was evicting lamps that were
+    // still inside max_distance. 560+140 covers the whole 380-unit band (552 at
+    // the worst point); the cap may now only
+    // trim the band beyond max_distance anyway (rhySelectLights hardRadius), so
+    // a too-small cap costs lamps at the edge instead of blinking them.
+    c.sticky_extra = iniInt("sticky_extra", 140);
     c.min_distance = iniInt("min_distance", 0);
-    c.max_lights = iniInt("max_lights", 320);
+    c.max_lights = iniInt("max_lights", 560);
     c.on_hour = iniInt("on_hour", 19) % 24;
     c.off_hour = iniInt("off_hour", 6) % 24;
     c.radius = iniFloat("radius", 15.0f);
@@ -840,7 +847,10 @@ static void loadConfig() {
     if (c.traffic_glow_flux > 3473.0f) {
         c.traffic_glow_flux = 3473.0f;  // one street luminaire, see above
     }
-    c.traffic_max_lights = iniIntSec("trafficlights", "max_lights", 60);
+    // n04: 90+120 covers the worst case measured over the 1522-entry list (85
+    // signals within 250 units, 150 within 300), so the cap never evicts a signal
+    // that is in front of the player.
+    c.traffic_max_lights = iniIntSec("trafficlights", "max_lights", 90);
     c.traffic_max_distance = iniIntSec("trafficlights", "max_distance", 250);
     c.traffic_exit_distance = iniIntSec("trafficlights", "exit_distance", 300);
     c.traffic_phase_near = iniIntSec("trafficlights", "phase_near", 150);

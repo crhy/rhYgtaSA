@@ -59,7 +59,7 @@ rtx.restirGI.useAdaptiveTemporalHistory = False
 rtx.emissiveIntensity = 1.0
 rtx.di.enableDenoiserConfidence = False
 rtx.skyBoxTextures = 0x294AFA03D0A0EC8F, 0x56F9D8C7499BC624, 0x79452E6A6F0D6C0E, 0x7A4F053D4D0C4437, 0x9B80DC0B3042D274, 0xA3DB5B6EB9628265, 0xBBC7C2A811DC27AF, 0xD4B43B810BECAFE8, 0xD90E0FB3CC373950, 0xDB44893153AB9DFB, 0xEB05F3829A0BA3B0, 0xEBABE67E3BB17A9D
-rtx.di.permutationSamplingNthFrame = 1
+rtx.di.permutationSamplingNthFrame = 0  # n04: runtime default; 1 re-randomises which lights a pixel draws every frame
 rtx.ignoreGameDirectionalLights = True
 rtx.restirGI.useSampleStealing = 1
 rtx.particleTextures = 0x05D81D806AE2DE92, 0x166C27331EA67091, 0x2F580E4763FAB662, 0x448152B6FE9F348C, 0x44AF0EF987753198, 0x4EEAC3D05034C372, 0x76BD5D19A139B6BC, 0x7A8BAF2D1E21CC24, 0x9A8E8191471533D5, 0xB51546930E6B5738, 0xB573F6EEBBA1EC5D, 0xBE5F9FBE5DF344A8, 0xC97B2D2D38F5CF97, 0xCE919FA9A67900C4, 0xD4220861A515C770, 0xEA35A9BFBDAE3C3B, 0xEF687DB43CD24DE3
@@ -210,3 +210,26 @@ rtx.spatiallyHashedRadianceCache.qualityPreset = 0
 rtx.neuralRadianceCache.qualityPreset = 0
 rtx.volumetrics.froxelGridResolutionScale = 2
 rtx.texturemanager.budgetPercentageOfAvailableVram = 40
+
+
+# ---------------------------------------------------------------------------
+# n04 (2026-11-12b finding A): the same light-sampling keys as config/rtx.conf,
+# at the cheaper end. The plugin now keeps every lamp inside max_distance alive
+# (the cap may no longer evict one), so the pool the renderer samples is 400-550
+# lights; these are the keys that decide whether a pixel ever draws one of them,
+# and they are what "off-screen lights still light" actually depends on. The
+# full reasoning and the tooltips are in config/rtx.conf and
+# .strata/notes-n04-lights-always-on.md; this file only has to be cheaper.
+rtx.di.initialSampleCount = 6
+rtx.di.maxHistoryLength = 12
+rtx.risLightSampleCount = 12
+rtx.volumetrics.temporalReuseMaxSampleCount = 4
+rtx.volumetrics.restirGridGuardBandFactor = 1.3
+rtx.antiCulling.object = True
+rtx.antiCulling.light = True
+rtx.antiCulling.light.numFramesToExtendLightLifetime = 600
+# Cheaper than the shipped profile on the candidate draws (6 vs 8, 12 vs 16) and
+# on the volumetric reservoir (4 vs 8), the same on the two keys that cost reuse
+# rather than rays. If fps matters more than steadiness, drop
+# rtx.di.initialSampleCount back to 4 FIRST and keep maxHistoryLength: history is
+# nearly free, candidates are not.

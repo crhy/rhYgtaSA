@@ -55,9 +55,12 @@
 #       removing direct light sample when its luminance is too high" - every light this plugin
 #       publishes is direct light, and tour shots 02-04 of 2026-11-12 are sodium lamps at night:
 #       the filter would remove the brightest samples of exactly the shots rhY called good.
-#   rtx.di.permutationSamplingNthFrame stays 1: "Apply permutation sampling when
-#       (frameIdx % this == 0), 0 means off" - a per-frame sample-set re-randomisation, a noise
-#       knob, not a lighting-step knob.
+#   rtx.di.permutationSamplingNthFrame is carried through unchanged. n01 left it at
+#       1 ("a noise knob, not a lighting-step knob"); n04 moved the SHIPPED value to 0,
+#       because "Apply permutation sampling when (frameIdx % this == 0), 0 means off"
+#       re-randomises which lights a pixel draws every frame and over the 400-550 lamp
+#       pool this plugin keeps live that is finding A. nopops inherits whatever the
+#       shipped file says, so the A/B stays a temporal-only diff.
 #   rtx.usePostFilter / rtx.postFilterThreshold stay False / 10 (an NRC training-clamp pair).
 #   Every look key is byte-identical to config/rtx.conf: localtonemap.shadows 2.5 (it amplifies a
 #       step in direct light, and lowering it would flatten the shadow edges of shots 02-04 and
@@ -123,7 +126,12 @@ rtx.restirGI.useAdaptiveTemporalHistory = True
 rtx.emissiveIntensity = 1.0
 rtx.di.enableDenoiserConfidence = False
 rtx.skyBoxTextures = 0x294AFA03D0A0EC8F, 0x56F9D8C7499BC624, 0x79452E6A6F0D6C0E, 0x7A4F053D4D0C4437, 0x9B80DC0B3042D274, 0xA3DB5B6EB9628265, 0xBBC7C2A811DC27AF, 0xD4B43B810BECAFE8, 0xD90E0FB3CC373950, 0xDB44893153AB9DFB, 0xEB05F3829A0BA3B0, 0xEBABE67E3BB17A9D
-rtx.di.permutationSamplingNthFrame = 1
+rtx.di.permutationSamplingNthFrame = 0
+# n04 (2026-11-12b finding A): the runtime default is 0 = off, and 1 was ours. It
+# re-randomises which lights a pixel draws every frame; over the ~400-light pool
+# this plugin keeps live that is the closest thing in this renderer to "lights
+# flicker in and out of existence when the camera rotates". See
+# .strata/notes-n04-lights-always-on.md step 2B and docs/FINDINGS.md.
 rtx.ignoreGameDirectionalLights = True
 rtx.restirGI.useSampleStealing = 1
 rtx.particleTextures = 0x05D81D806AE2DE92, 0x166C27331EA67091, 0x2F580E4763FAB662, 0x448152B6FE9F348C, 0x44AF0EF987753198, 0x4EEAC3D05034C372, 0x76BD5D19A139B6BC, 0x7A8BAF2D1E21CC24, 0x9A8E8191471533D5, 0xB51546930E6B5738, 0xB573F6EEBBA1EC5D, 0xBE5F9FBE5DF344A8, 0xC97B2D2D38F5CF97, 0xCE919FA9A67900C4, 0xD4220861A515C770, 0xEA35A9BFBDAE3C3B, 0xEF687DB43CD24DE3
@@ -173,6 +181,94 @@ rtx.postfx.enableChromaticAberration = False
 # effective tilt to ~12 deg (measured decode, see .strata/notes-s02-water.md). Pair it with
 # config/water/realistic.usda via tools/water.sh realistic.
 rtx.translucentMaterial.normalIntensity = 0.35
+
+
+# ---------------------------------------------------------------------------
+# n04 (2026-11-12b test, finding A, top priority): a light must never depend on
+# which way the camera is pointing, and must never pop with distance.
+#
+# What the 1.6.1 source says, measured rather than guessed
+# (build/tmp/s18/dxvk-remix-remix-1.6.1/src/dxvk/rtx_render/, quoted in
+# .strata/notes-n04-lights-always-on.md):
+#   * A light made through the C API is never frustum-culled. LightManager marks
+#     inside/outside frustum only for its own game-detected lights
+#     (rtx_light_manager.cpp:151-183) and garbage-collects only those
+#     (:110-141); API lights live in m_externalLights and disappear only on
+#     DestroyLight (:795-810). Their per-frame presence is DrawLightInstance
+#     (:857-865), which the plugin does every frame for every lamp it holds.
+#     So "off-screen lights still light" is already true for our lamps: what is
+#     view-dependent is not their existence but whether a pixel ever draws one.
+#   * With rtx.di.initialSampleCount = 4 (default) and the 401 live lights the
+#     2026-11-12 10:22 run measured, each pixel draws 4 random candidates out of
+#     401 for direct light - about a 1% lottery per lamp per frame, held together
+#     by reuse with rtx.di.maxHistoryLength = 4 frames. Rotate the camera, the
+#     reservoirs are discarded, and the lamps have to be re-found by the lottery:
+#     that is "lights flicker in and out of existence when the camera rotates".
+#     The same lottery runs for indirect rays (rtx.risLightSampleCount = 7) and
+#     for volumetrics (initialRISSampleCount = 32, reservoir clamped to
+#     temporalReuseMaxSampleCount = 2).
+# So the pool got bigger (the plugin now keeps every lamp inside max_distance
+# alive instead of letting the cap evict it) and the sampling has to keep up.
+# These are the keys that do that. rtx.localtonemap.shadows, the tonemap, the
+# texture lists and every other look key are untouched.
+rtx.di.initialSampleCount = 8
+#   "The number of lights randomly selected from the global pool to consider when
+#    selecting a light with RTXDI. Higher values generally increases the quality
+#    of RIS light sampling, but also has diminishing returns and higher
+#    performance cost past a point." 4 -> 8 doubles the direct-light candidate
+#    draw; it is the price of a 400-550 lamp pool, and the pair has to move
+#    together (see [streetlights] max_lights in rhyremix.ini).
+rtx.di.maxHistoryLength = 12
+#   "Maximum age of reservoirs for temporal reuse." 4 -> 12: a lamp's direct
+#   light survives ~12 frames of reuse instead of 4, so a camera rotation stops
+#   re-drawing the whole street.
+rtx.risLightSampleCount = 16
+#   "The number of lights randomly selected from the global pool to consider when
+#    selecting a light with RIS ... RIS is only used when RTXDI is disabled for
+#    direct lighting, or for light sampling in indirect rays." 7 -> 16: this is
+#    the layer that decides whether a lamp contributes to GI and reflections at
+#    all, and finding D ("the pier bulbs have no illumination") is a symptom of
+#    drawing 7 of 400.
+rtx.volumetrics.temporalReuseMaxSampleCount = 8
+#   "The number of samples to clamp temporal reservoirs to, should usually be
+#    around the value: desired_max_history_frames * average_reservoir_samples."
+#   2 -> 8: at 2 the volumetric glow of a lamp is carried by two samples, which
+#   is why light shafts boil and re-appear when the camera moves.
+rtx.volumetrics.restirGridGuardBandFactor = 1.5
+#   "The scale factor for the restir grid guard band, which is an extended part
+#    of the viewing frustum for which we should calculate lighting information
+#    for, even though they are technically offscreen. This helps reduce noise in
+#    cases where the camera is moving around." 1.1 -> 1.5: the runtime's own
+#    answer to view-direction dependence, for the froxel/ReSTIR volumetric grid.
+rtx.antiCulling.object = True
+#   "Extends lifetime of objects that go outside the camera frustum (anti-culling
+#    frustum)." Off by default. This is about the GEOMETRY: a lamp post, a sign
+#    gantry or a pier railing that leaves the frustum leaves the TLAS, so a
+#    visibility ray to an off-screen lamp passes through it and the light leaks
+#   (and the post itself pops). Costs TLAS memory, not shaders.
+rtx.antiCulling.light = True
+#   "Enable Anti-Culling for lights." Off by default. It applies to the game's
+#   own converted lights (rtx.enableReplacementLights is True and
+#   rtx.ignoreGamePointLights is False, so the game's lights are in the runtime's
+#   light table and are garbage-collected by the frustum rule), not to the API
+#   lights this plugin makes - those are already never culled.
+rtx.antiCulling.light.numFramesToExtendLightLifetime = 1000
+#   "Maximum number of frames to keep when Anti-Culling is enabled. Make sure not
+#    to set this too low (then the anti-culling won't work), nor too high (which
+#    will hurt the performance)." Written out at its default so the A/B is pinned
+#    and nobody re-invents it; 1000 frames is ~16 s at 60 fps.
+#
+# NOT set here, with the reason:
+#   rtx.antiCulling.object.enableInfinityFarFrustum (default False) - an infinite
+#     far plane keeps the whole city in the TLAS. On this map that is a VRAM and
+#     BLAS cost we have not measured; try it in the Remix UI before shipping it.
+#   rtx.antiCulling.object.farPlaneScale (default 10) / fovScale (default 1) -
+#     the cheaper way to widen the same frustum, left at the defaults.
+#   rtx.enableCulling - s28 called this the frustum switch. It is not: its
+#     tooltip is "Enable front/backface culling for opaque objects". Left False.
+#   rtx.uniqueObjectDistance - s28 called this a light/object distance. It is
+#     "the distance an object can move in a single frame before it is no longer
+#     considered the same object", default 300, and our objects do not move.
 
 
 # n01: the live temporal keys the shipped profile never wrote (see the header).
