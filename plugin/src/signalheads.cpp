@@ -200,3 +200,172 @@ unsigned rhyChooseHeads(const RhySignalHead* heads, unsigned nHeads,
     }
     return written;
 }
+
+// ---------------------------------------------------------------------------
+// s19: the hook's decisions (see the block comment in signalheads.h)
+// ---------------------------------------------------------------------------
+
+const uint8_t kRhyPatchCalleeBytes[5] = {0x0F, 0xB6, 0x54, 0x24, 0x28};
+
+int rhySignalPatchCheck(int sourceIsGame, const uint8_t* callSite,
+                        const uint8_t* callee, const uint8_t* cleanup,
+                        uint32_t* calleeTarget) {
+    // The switch first: with source=list the user has asked for no code hook at
+    // all, and the byte check must not even read the exe. That is what makes
+    // "set source=list and the hook is gone" a fact rather than an intention.
+    if (!sourceIsGame) {
+        return kRhyPatchSource;
+    }
+    if (!callSite || !callee || !cleanup) {
+        return kRhyPatchCallSite;
+    }
+    // 0x49DD4C must be a `call rel32` whose target is the corona thunk. The
+    // rel32 is read little-endian, exactly as the CPU decodes it.
+    if (callSite[0] != 0xE8) {
+        return kRhyPatchCallSite;
+    }
+    const uint32_t rel = static_cast<uint32_t>(
+        static_cast<uint32_t>(callSite[1]) |
+        (static_cast<uint32_t>(callSite[2]) << 8) |
+        (static_cast<uint32_t>(callSite[3]) << 16) |
+        (static_cast<uint32_t>(callSite[4]) << 24));
+    // Wrapping 32-bit add: that is how the CPU computes a rel32 target.
+    const uint32_t target = kRhySignalCallSite + 5u + rel;
+    if (calleeTarget) {
+        *calleeTarget = target;
+    }
+    if (target != kRhySignalCoronaFn) {
+        return kRhyPatchCallSite;
+    }
+    // The stub hands 0x6FC580 a stack it built by hand, so that function has to
+    // be the thunk the argument layout was read from.
+    for (unsigned i = 0; i < sizeof kRhyPatchCalleeBytes; ++i) {
+        if (callee[i] != kRhyPatchCalleeBytes[i]) {
+            return kRhyPatchCallee;
+        }
+    }
+    // And the caller must still clean 21 arguments: `add esp,0x54` three bytes
+    // after the resume point. The stub pushes nothing across the tail jump, so
+    // if that cleanup changed, the game's frame would come back skewed - and
+    // DisplayActualLight writes its locals at [esp+0x2c..0x34] right there.
+    if (!(cleanup[0] == 0x83 && cleanup[1] == 0xC4 && cleanup[2] == 0x54)) {
+        return kRhyPatchCleanup;
+    }
+    return kRhyPatchOk;
+}
+
+// ---------------------------------------------------------------- collector
+
+int rhyCollectHead(RhySignalCollector* c, uint32_t argsAddr, uint32_t entity,
+                   uint32_t index, uint32_t tick, RhyGameReadFn read, void* ctx) {
+    // Counted before anything is dereferenced: "calls=0" means the patched call
+    // site is never reached (wrong build, or the game never draws a signal),
+    // "calls>0 records=0" means it is reached and we reject what it hands us.
+    // Those two need very different fixes.
+    ++c->calls;
+    if (c->busy) {
+        // The recorder is not re-entrant: it writes a shared array and a shared
+        // page cache without a lock. A second entry while the first is running
+        // (a hook that fires from inside a read, a second thread) is a bug, and
+        // the safe answer to a bug is to drop the record, not to corrupt one.
+        ++c->reentrant;
+        return kRhyCollectReentrant;
+    }
+    c->busy = 1;
+
+    int result = kRhyCollectOk;
+    if (c->n >= kRhySignalHeadCap) {
+        ++c->dropped;
+        result = kRhyCollectFull;
+    } else {
+        uint32_t args[kRhySignalArgCount];
+        float pos[3];
+        if (!read(ctx, argsAddr, args, sizeof args)) {
+            ++c->bad;
+            result = kRhyCollectBadArgs;
+        } else if (!read(ctx, args[kRhyArgPos], pos, sizeof pos)) {
+            ++c->bad;
+            result = kRhyCollectBadPos;
+        } else {
+            RhySignalHead& h = c->heads[c->n];
+            h.entity = entity;
+            h.index = index;
+            h.pos[0] = pos[0];
+            h.pos[1] = pos[1];
+            h.pos[2] = pos[2];
+            // The entity matrix is guaranteed valid here in principle -
+            // DisplayActualLight has just resolved it and used it to place this
+            // very corona - but a modded or half-built entity would otherwise
+            // fault on the render thread, so a matrix we cannot read just means
+            // "no direction", never "no record".
+            h.normal[0] = h.normal[1] = h.normal[2] = 0.0f;
+            uint32_t mBits = 0;
+            if (read(ctx, entity + kRhyEntityMatrix, &mBits, sizeof mBits) &&
+                mBits) {
+                float at[3];
+                if (read(ctx, mBits + kRhyMatrixAt, at, sizeof at)) {
+                    h.normal[0] = at[0];
+                    h.normal[1] = at[1];
+                    h.normal[2] = at[2];
+                }
+            }
+            // The game passes the colour channels as ints from its byte tables
+            // (scaled, then clamped through 0x821B40), and the callee stores
+            // only their low bytes; masking matches what the game draws.
+            h.rgb[0] = static_cast<uint8_t>(args[kRhyArgR] & 0xFFu);
+            h.rgb[1] = static_cast<uint8_t>(args[kRhyArgG] & 0xFFu);
+            h.rgb[2] = static_cast<uint8_t>(args[kRhyArgB] & 0xFFu);
+            h.alpha = static_cast<uint8_t>(args[kRhyArgAlpha] & 0xFFu);
+            const uint32_t sBits = args[kRhyArgStrength];
+            std::memcpy(&h.strength, &sBits, sizeof h.strength);
+            h.tick = tick;
+            ++c->n;
+            ++c->records;
+        }
+    }
+    c->busy = 0;
+    return result;
+}
+
+unsigned rhyCollectorTake(RhySignalCollector* c, RhySignalHead* out,
+                          unsigned outCap) {
+    // Same thread as the hook (the game's render thread), so no lock: the hook
+    // has already run for this frame by the time hkPresent gets here, and it
+    // cannot run again until this frame's rendering restarts.
+    const unsigned n = (c->n < outCap) ? c->n : outCap;
+    if (n > 0) {
+        std::memcpy(out, c->heads, n * sizeof(RhySignalHead));
+    }
+    c->n = 0;
+    return n;
+}
+
+// ------------------------------------------------------------- page cache
+
+void rhyPageCacheInit(RhyPageCache* c) {
+    for (unsigned i = 0; i < kRhyPageCacheSlots; ++i) {
+        c->key[i] = 0xFFFFFFFFu;  // no page lives at the last page
+        c->ok[i] = 0;
+    }
+    c->slot = 0;
+}
+
+void rhyPageCacheClear(RhyPageCache* c) {
+    rhyPageCacheInit(c);
+}
+
+int rhyPageCacheFind(const RhyPageCache* c, uint32_t page) {
+    for (unsigned i = 0; i < kRhyPageCacheSlots; ++i) {
+        if (c->key[i] == page) {
+            return c->ok[i];
+        }
+    }
+    return -1;
+}
+
+void rhyPageCachePut(RhyPageCache* c, uint32_t page, int ok) {
+    c->key[c->slot] = page;
+    c->ok[c->slot] = ok ? 1 : 0;
+    c->slot = (c->slot + 1u) % kRhyPageCacheSlots;
+}
+

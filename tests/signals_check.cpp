@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "../plugin/src/lamps.h"
 #include "../plugin/src/signalheads.h"
@@ -32,6 +33,48 @@ static void ok(const char* what, bool cond) {
     } else {
         std::printf("ok    %s\n", what);
     }
+}
+
+// ---------------------------------------------------------------------------
+// s19: a fake game memory, so the recorder's decision path can run here.
+//
+// rhyCollectHead() never dereferences a game address itself: it asks a
+// RhyGameReadFn to copy bytes and believes the answer. In the plugin that
+// reader is "plausible range + committed page + memcpy"; here it is "is this
+// range inside one of these windows". Same contract, so what the test exercises
+// is the code that runs on the render thread.
+// ---------------------------------------------------------------------------
+struct FakeMem {
+    uint32_t addr;
+    const void* data;
+    unsigned len;
+};
+
+static int fakeRead(void* ctx, uint32_t addr, void* dst, unsigned len) {
+    const FakeMem* m = static_cast<const FakeMem*>(ctx);
+    for (; m->data; ++m) {
+        if (addr >= m->addr && len <= m->len &&
+            addr - m->addr <= m->len - len) {  // no wrap, fully inside
+            std::memcpy(dst, static_cast<const char*>(m->data) + (addr - m->addr),
+                        len);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// A reader that re-enters the collector while it is being called: the only way
+// to get a second entry while the first is still running, which is what the
+// re-entrancy guard exists for.
+static RhySignalCollector* g_reenter = nullptr;
+static int g_reenterResult = 0;
+static int reentrantRead(void* ctx, uint32_t addr, void* dst, unsigned len) {
+    const int r = fakeRead(ctx, addr, dst, len);
+    if (g_reenter && addr == 0x00100000u) {
+        g_reenterResult = rhyCollectHead(g_reenter, addr, 0x00300000u, 2, 0u,
+                                         &fakeRead, ctx);
+    }
+    return r;
 }
 
 // A record as the hook would fill it: entity, head index, world position, and
@@ -292,6 +335,242 @@ int main() {
        !rhyRangePlausible(0x0E153028u, 0x20000u));
     ok("a normal heap range is plausible (the game's corona store)",
        rhyRangePlausible(0x0C3E064u, 84u) && rhyRangePlausible(0x0178DEFB4u, 12u));
+
+    // =====================================================================
+    // s19: the hook's decision paths, run against fake memory.
+    //
+    // The detour itself is machine code (tests/test_signal_hook.py disassembles
+    // it); everything below is the part that was moved out of it so it could be
+    // tested at all: the kill switch, the recorder's every-path, and the page
+    // cache. Each case is a path the render thread can actually take.
+    // =====================================================================
+
+    // ---- the kill switch: rhySignalPatchCheck ----------------------------
+    // The bytes exactly as the exe has them (verified against gta-sa.exe in
+    // tests/test_signal_hook.py; the addresses come from signalheads.h).
+    const uint8_t kGoodCall[5] = {0xE8, 0x2F, 0xE8, 0x25, 0x00};  // call 0x6FC580
+    const uint8_t kGoodCallee[5] = {0x0F, 0xB6, 0x54, 0x24, 0x28};
+    const uint8_t kGoodCleanup[3] = {0x83, 0xC4, 0x54};           // add esp,0x54
+    uint32_t target = 0;
+    ok("source=game + the real bytes: the patch is allowed",
+       rhySignalPatchCheck(1, kGoodCall, kGoodCallee, kGoodCleanup, &target) ==
+           kRhyPatchOk);
+    ok("the call site's rel32 decodes to the corona thunk",
+       target == 0x6FC580u);
+    ok("source=list refuses even when every byte is right (the kill switch)",
+       rhySignalPatchCheck(0, kGoodCall, kGoodCallee, kGoodCleanup, &target) ==
+           kRhyPatchSource);
+    // Another mod's detour leaves a jmp here; a different build leaves a
+    // different call. Both must be refused, and the reason must say which.
+    const uint8_t kJmp[5] = {0xE9, 0x00, 0x00, 0x00, 0x00};
+    ok("a jmp at the patch site is refused",
+       rhySignalPatchCheck(1, kJmp, kGoodCallee, kGoodCleanup, &target) ==
+           kRhyPatchCallSite);
+    const uint8_t kOtherCall[5] = {0xE8, 0x00, 0x00, 0x00, 0x00};  // call 0x49DD51
+    ok("a call to some other address is refused",
+       rhySignalPatchCheck(1, kOtherCall, kGoodCallee, kGoodCleanup, &target) ==
+           kRhyPatchCallSite);
+    ok("... and the reason line can name the address it found",
+       target == 0x49DD51u);
+    const uint8_t kBadCallee[5] = {0x90, 0xB6, 0x54, 0x24, 0x28};
+    ok("a callee that is not the corona-type thunk is refused",
+       rhySignalPatchCheck(1, kGoodCall, kBadCallee, kGoodCleanup, &target) ==
+           kRhyPatchCallee);
+    // The one the s01 checks missed: the call site can be intact while the
+    // caller cleans a different number of arguments (a mod that added or
+    // removed one). The stub pushes nothing across its tail jump, so the game's
+    // own cleanup is what keeps DisplayActualLight's frame balanced - and it
+    // writes its locals at [esp+0x2c..0x34] immediately after.
+    const uint8_t kBadCleanup[3] = {0x83, 0xC4, 0x50};  // add esp,0x50
+    ok("a caller that cleans 20 arguments instead of 21 is refused",
+       rhySignalPatchCheck(1, kGoodCall, kGoodCallee, kBadCleanup, &target) ==
+           kRhyPatchCleanup);
+    const uint8_t kNoCleanup[3] = {0x85, 0xC0, 0x00};  // test eax,eax
+    ok("no cleanup at all is refused",
+       rhySignalPatchCheck(1, kGoodCall, kGoodCallee, kNoCleanup, &target) ==
+           kRhyPatchCleanup);
+    ok("a null byte window is refused rather than read",
+       rhySignalPatchCheck(1, nullptr, kGoodCallee, kGoodCleanup, nullptr) ==
+           kRhyPatchCallSite);
+
+    // ---- the recorder: fake memory, then every path ----------------------
+    // Windows-side rhyReadable() is "plausible range + committed page"; here it
+    // is "in this image or not". Same contract, so the decision path under test
+    // is the one that runs in the game.
+    static uint32_t s_args[21];
+    static float s_pos[3] = {2495.25f, -1680.5f, 27.75f};
+    static uint32_t s_matrixBits = 0x00400000u;   // entity+0x14 -> a real matrix
+    static float s_at[3] = {1.0f, 0.0f, 0.0f};    // matrix+0x20: the "at" axis
+    const uint32_t kArgsAddr = 0x00100000u;
+    const uint32_t kPosAddr = 0x00200000u;
+    const uint32_t kEntity = 0x00300000u;
+    const uint32_t kMatrixSlot = kEntity + 0x14;  // kRhyEntityMatrix
+    const uint32_t kMatrixAt = 0x00400020u;       // s_matrixBits + 0x20
+    s_args[kRhyArgKey] = kEntity + 1;
+    s_args[kRhyArgEntity] = 0;                    // this call site passes no entity
+    s_args[kRhyArgR] = 0x1FFu;                    // > 0xFF on purpose: masked
+    s_args[kRhyArgG] = 128;
+    s_args[kRhyArgB] = 0;
+    s_args[kRhyArgAlpha] = 0x1FFu;
+    s_args[kRhyArgPos] = kPosAddr;
+    s_args[kRhyArgStrength] = 0x3F800000u;        // 1.0f
+    s_args[kRhyArgRange] = 0x42480000u;           // 50.0f
+    s_args[kRhyArgType] = 0;
+    s_args[kRhyArgRadius] = 0x41700000u;          // 15.0f
+    const FakeMem mem[] = {
+        {kArgsAddr, s_args, sizeof s_args},
+        {kPosAddr, s_pos, sizeof s_pos},
+        {kMatrixSlot, &s_matrixBits, sizeof s_matrixBits},
+        {kMatrixAt, s_at, sizeof s_at},
+        {0u, nullptr, 0u},
+    };
+
+    RhySignalCollector col;
+    std::memset(&col, 0, sizeof col);
+    int res = rhyCollectHead(&col, kArgsAddr, kEntity, 1, 5000u, &fakeRead,
+                             const_cast<FakeMem*>(mem));
+    ok("a good corona record is taken", res == kRhyCollectOk && col.n == 1);
+    ok("the record carries the entity and head index the call site held",
+       col.heads[0].entity == kEntity && col.heads[0].index == 1);
+    ok("the record carries the world position from argument 6",
+       col.heads[0].pos[0] == s_pos[0] && col.heads[0].pos[1] == s_pos[1] &&
+           col.heads[0].pos[2] == s_pos[2]);
+    ok("colour and alpha keep only the byte the game stores",
+       col.heads[0].rgb[0] == 0xFFu && col.heads[0].rgb[1] == 128u &&
+           col.heads[0].rgb[2] == 0u && col.heads[0].alpha == 0xFFu);
+    ok("strength is the argument's bit pattern, not a cast",
+       col.heads[0].strength == 1.0f);
+    ok("the entity matrix's at axis is recorded as the normal",
+       col.heads[0].normal[0] == 1.0f && col.heads[0].normal[1] == 0.0f);
+    ok("the tick is the one the caller passed (GetTickCount is Windows-side)",
+       col.heads[0].tick == 5000u);
+    ok("calls and records both counted", col.calls == 1 && col.records == 1);
+
+    // The 13:04:44 crash: argument 6 was the float -575.2 used as a pointer.
+    std::memset(&col, 0, sizeof col);
+    s_args[kRhyArgPos] = 0xC48F9A0Fu;
+    res = rhyCollectHead(&col, kArgsAddr, kEntity, 1, 5000u, &fakeRead,
+                         const_cast<FakeMem*>(mem));
+    ok("a position pointer that is really a float is refused, not followed",
+       res == kRhyCollectBadPos && col.n == 0 && col.bad == 1);
+    ok("... and the call is still counted (calls>0, records=0 is diagnosable)",
+       col.calls == 1 && col.records == 0);
+    s_args[kRhyArgPos] = kPosAddr;
+
+    // A null position pointer, and one below the allocation floor.
+    std::memset(&col, 0, sizeof col);
+    s_args[kRhyArgPos] = 0u;
+    res = rhyCollectHead(&col, kArgsAddr, kEntity, 1, 0u, &fakeRead,
+                         const_cast<FakeMem*>(mem));
+    ok("a null position pointer is refused", res == kRhyCollectBadPos && col.n == 0);
+    s_args[kRhyArgPos] = kPosAddr;
+
+    // The argument block itself unreadable (the 12:04:33 crash read it from the
+    // wrong place; the stub's offsets are what the python test guards).
+    std::memset(&col, 0, sizeof col);
+    res = rhyCollectHead(&col, 0x00F00000u, kEntity, 1, 0u, &fakeRead,
+                         const_cast<FakeMem*>(mem));
+    ok("an argument block that is not readable is refused before it is read",
+       res == kRhyCollectBadArgs && col.n == 0 && col.bad == 1);
+
+    // A matrix we cannot read is "no direction", never "no record": the
+    // position and colour are already in hand and correct.
+    std::memset(&col, 0, sizeof col);
+    const FakeMem noMatrix[] = {
+        {kArgsAddr, s_args, sizeof s_args},
+        {kPosAddr, s_pos, sizeof s_pos},
+        {0u, nullptr, 0u},
+    };
+    res = rhyCollectHead(&col, kArgsAddr, kEntity, 1, 0u, &fakeRead,
+                         const_cast<FakeMem*>(noMatrix));
+    ok("an unreadable entity matrix still gives a record",
+       res == kRhyCollectOk && col.n == 1);
+    ok("... with a zero normal instead of a fault",
+       col.heads[0].normal[0] == 0.0f && col.heads[0].normal[1] == 0.0f &&
+           col.heads[0].normal[2] == 0.0f);
+    // m_matrix == 0 (an entity whose matrix was never set up).
+    std::memset(&col, 0, sizeof col);
+    const uint32_t zeroMatrix = 0u;
+    const FakeMem nullMatrix[] = {
+        {kArgsAddr, s_args, sizeof s_args},
+        {kPosAddr, s_pos, sizeof s_pos},
+        {kMatrixSlot, &zeroMatrix, sizeof zeroMatrix},
+        {0u, nullptr, 0u},
+    };
+    res = rhyCollectHead(&col, kArgsAddr, kEntity, 1, 0u, &fakeRead,
+                         const_cast<FakeMem*>(nullMatrix));
+    ok("a null m_matrix still gives a record with a zero normal",
+       res == kRhyCollectOk && col.n == 1 && col.heads[0].normal[0] == 0.0f);
+
+    // The array cap: 256 records is the whole budget for a frame, and the 257th
+    // must be counted and dropped, never written past the array.
+    std::memset(&col, 0, sizeof col);
+    bool allOk = true;
+    for (unsigned i = 0; i < kRhySignalHeadCap; ++i) {
+        if (rhyCollectHead(&col, kArgsAddr, kEntity, i, 0u, &fakeRead,
+                           const_cast<FakeMem*>(mem)) != kRhyCollectOk) {
+            allOk = false;
+        }
+    }
+    res = rhyCollectHead(&col, kArgsAddr, kEntity, 999, 0u, &fakeRead,
+                         const_cast<FakeMem*>(mem));
+    ok("every head up to the cap is taken", allOk && col.n == kRhySignalHeadCap);
+    ok("the head past the cap is dropped, not written",
+       res == kRhyCollectFull && col.n == kRhySignalHeadCap && col.dropped == 1);
+    ok("and it is still counted as a call", col.calls == kRhySignalHeadCap + 1u);
+
+    // Hand the frame's records to the light code: they are copied out and the
+    // array is empty again, so a hook that misfires cannot grow anything.
+    RhySignalHead taken[kRhySignalHeadCap];
+    unsigned got = rhyCollectorTake(&col, taken, kRhySignalHeadCap);
+    ok("take() hands over the whole frame and resets",
+       got == kRhySignalHeadCap && col.n == 0 &&
+           taken[0].entity == kEntity && taken[7].index == 7);
+    ok("take() on an empty collector gives nothing",
+       rhyCollectorTake(&col, taken, kRhySignalHeadCap) == 0);
+    ok("take() never writes more than the caller's array",
+       rhyCollectorTake(&col, taken, 0) == 0);
+
+    // Re-entrancy: the fake reader calls the collector back, which is what a
+    // hook firing while the recorder is running would look like. The inner call
+    // must be refused: the array index and the page cache are shared state.
+    std::memset(&col, 0, sizeof col);
+    g_reenter = &col;
+    g_reenterResult = kRhyCollectOk;
+    const FakeMem reentrant[] = {
+        {kArgsAddr, s_args, sizeof s_args},
+        {kPosAddr, s_pos, sizeof s_pos},
+        {kMatrixSlot, &s_matrixBits, sizeof s_matrixBits},
+        {kMatrixAt, s_at, sizeof s_at},
+        {0u, nullptr, 0u},
+    };
+    res = rhyCollectHead(&col, kArgsAddr, kEntity, 1, 0u, &reentrantRead,
+                         const_cast<FakeMem*>(reentrant));
+    ok("a recorder entered from inside itself is refused",
+       g_reenterResult == kRhyCollectReentrant && col.reentrant == 1);
+    ok("... while the outer record is still stored correctly",
+       res == kRhyCollectOk && col.n == 1 && col.heads[0].index == 1);
+    g_reenter = nullptr;
+
+    // ---- the page cache --------------------------------------------------
+    RhyPageCache pc;
+    rhyPageCacheInit(&pc);
+    ok("an empty page cache misses", rhyPageCacheFind(&pc, 0x0049D000u) == -1);
+    rhyPageCachePut(&pc, 0x0049D000u, 1);
+    ok("a cached readable page hits", rhyPageCacheFind(&pc, 0x0049D000u) == 1);
+    rhyPageCachePut(&pc, 0x00C3E000u, 0);
+    ok("a cached unreadable page hits as unreadable",
+       rhyPageCacheFind(&pc, 0x00C3E000u) == 0);
+    ok("a page that was never queried still misses",
+       rhyPageCacheFind(&pc, 0x010BF000u) == -1);
+    for (unsigned i = 0; i < kRhyPageCacheSlots; ++i) {
+        rhyPageCachePut(&pc, 0x10000000u + i * 0x1000u, 1);
+    }
+    ok("the cache is bounded: the oldest entry is gone after 8 more",
+       rhyPageCacheFind(&pc, 0x0049D000u) == -1);
+    rhyPageCacheClear(&pc);
+    ok("clear() forces re-validation of every page (one frame of staleness)",
+       rhyPageCacheFind(&pc, 0x10000000u) == -1);
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;

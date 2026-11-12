@@ -1,4 +1,4 @@
-# s05 — Remix texture hashes of the GTA SA rear-view mirror textures.
+# s05/s18 — Remix texture hashes of the GTA SA rear-view mirror textures.
 #
 # One hash per line: 0x + 16 hex digits. '#' starts a comment; the text after the hash is kept as a
 # label and copied into the generated USD, so say which texture it is.
@@ -7,28 +7,44 @@
 # car body atomic that sample the shared reflection stand-ins in models/generic/vehicle.txd. Under
 # RTX Remix every surface is path traced, so those surfaces only need a perfectly smooth metallic
 # material and Remix reflects what is behind them for free. Remix keys replacement materials to the
-# texture hash of the texture the game uploaded (prim `mat_<HASH>`), and that hash is computed by
-# the Remix runtime, not from the .txd bytes — so it has to be read out of the running game.
+# texture hash of the texture the game uploaded (prim `mat_<HASH>`).
 #
-# How to read them (about 2 minutes, see docs/MIRRORS.md for the long version):
+# How these two were obtained (s18, no game run needed):
+#
+#   tools/remix_texhash.py /media/.../GTASA-RTX/models/generic/vehicle.txd xvehicleenv128
+#
+# That tool reimplements Remix's own hash — XXH3_64bits over the bytes of mip 0, the xxHash 0.8.0
+# copy bundled in dxvk-remix — reading them out of the .txd. It reproduces 55 of the 167 hashes in
+# the live rtx.conf and 164 of the 207 hash-named replacement textures that NVIDIA's own pack ships,
+# so the algorithm is confirmed by the game's own data, not by guesswork. Full derivation and the
+# validation table: .strata/notes-s18-remix-texture-hash.md.
+#
+# Extra confirmation for the first one: the pack's own
+# rtx-remix/mods/gameReadyAssets/SARemix/SARemix_OriginalVehiclesPBR.usda contains
+# `over "mat_45DF1EA60BB202B5"` and gives it a translucent glass material (ior 1.6, thin_walled) —
+# NVIDIA replaced exactly this texture as glass, which is also s05's conclusion that
+# xvehicleenv128 is the painted mirror surface.
+#
+# Both textures are 128x128 A8R8G8B8 in models/generic/vehicle.txd (measured, s05 step 1):
+#   xvehicleenv128    only 13 colours, hard 3-band gradient (brown / light blue-grey)
+#                     -> the painted mirror glass itself. Start with this one.
+#   vehicleenvmap128  256 colours, smooth sky->ground gradient
+#                     -> the fake environment reflection; add it if the first one is not enough.
+# Do NOT add vehicleshatter128 (cracked-window overlay), vehiclegrunge256 (dirt), vehicletyres128,
+# vehiclelights128/vehiclelightson128, vehiclesteering128, vehicledash32 or the plate textures.
+#
+# When the tool is *not* enough: textures the game generates or writes into instead of loading them
+# as rasters (the sea, the skybox, some UI) hash over the generated pixels, so no offline tool can
+# know them — 112 of rtx.conf's 167 hashes are of that kind. For those, read the hash in game:
 #   1. start the game with Remix, get into a car, look at a mirror (1st person or stand outside
 #      and look at the door mirror);
 #   2. open the RTX Remix developer menu (default Alt+X — `rtx.remixMenuKeyBinds`, unset here);
 #   3. hover the crosshair over the mirror: the "Texture Info" popup shows "Hash: 0x…";
 #      middle-click (or the "Copy Texture hash" button) copies it;
 #   4. paste it below. Cross-check in the "Step 1: Categorize Textures" grid: the thumbnails and
-#      sizes below are what you are looking for.
-#
-# Candidates from models/generic/vehicle.txd (measured, .strata/notes-s05-mirrors.md step 1):
-#   xvehicleenv128    128x128, only 13 colours, hard 3-band gradient (brown / light blue-grey)
-#                     -> the painted mirror glass itself. Start with this one.
-#   vehicleenvmap128  128x128, 256 colours, smooth sky->ground gradient
-#                     -> the fake environment reflection; add it if the first one is not enough.
-# Do NOT add vehicleshatter128 (cracked-window overlay), vehiclegrunge256 (dirt), vehicletyres128,
-# vehiclelights128/vehiclelightson128, vehiclesteering128, vehicledash32 or the plate textures.
-#
-# Leave everything commented out until you have real hashes: tools/mirrors.py refuses to generate
-# an empty material file.
+#      sizes above are what you are looking for.
+# tools/remix_texhash.py TXD --hash 0x... also tells you whether a hash you read in game belongs to
+# a texture in that dictionary, which is a quick way to name an unknown hash.
 
-# 0x0000000000000000   # xvehicleenv128 (128x128) - mirror glass, READ THIS ONE IN GAME
-# 0x0000000000000001   # vehicleenvmap128 (128x128) - fake env reflection, optional
+0x45DF1EA60BB202B5   # xvehicleenv128 (128x128) - mirror glass, models/generic/vehicle.txd
+0x6BAFC5F6AEE0A6B5   # vehicleenvmap128 (128x128) - fake env reflection, same dictionary

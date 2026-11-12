@@ -513,3 +513,112 @@ checked against the page table (`VirtualQuery`, 8-entry page cache, plus a pure
 the hook now counts `calls` separately from `records`, so "the game never reached
 the patched instruction" and "it reached it and we rejected the record" are
 distinguishable in the log.
+
+## A Remix texture hash is just xxHash over mip 0 (2026-11-12, s18)
+
+Every `mat_<HASH>` prim in the pack, every list in `rtx.conf`
+(`rtx.particleTextures`, `rtx.decalTextures`, `rtx.animatedWaterTextures`, `rtx.uiTextures`,
+`rtx.ignoreTextures`, …) and the `Hash: 0x…` shown by the Alt+X menu is one 64-bit hash of the
+texture's pixels. `src/d3d9/d3d9_common_texture.cpp` of dxvk-remix 1.6.1 (the runtime in
+`.trex/d3d9.dll`; the game's own `d3d9.dll` is only the bridge client) says exactly what goes in:
+
+```cpp
+constexpr uint32_t subresource = 0;                 // "Use subresource 0 for hashing"
+const auto& buffer = source->m_buffers[subresource];
+const bool useObsoleteHashMethod = NeedsUpload(subresource) && RtxOptions::useObsoleteHashOnTextureUpload();
+imageHash = useObsoleteHashMethod ? XXH64(buffer->mapPtr(0), buffer->info().size, 0)
+                                  : XXH3_64bits(buffer->mapPtr(0), buffer->info().size);
+```
+
+* **mip 0 only**, one layer: `buffer->info().size = GetMipSize(0)`, i.e. `align(elementSize *
+  width, 4) * height`. No mips, no name, no format/size/usage (those feed the *separate* descriptor
+  hash, and only for render targets).
+* **when**: the hash is taken once, at the first `FlushImage()` of subresource 0
+  (`d3d9_device.cpp:4912` → `SetupForRtx()`), from whatever the CPU buffer holds at that moment;
+  `SetupForRtxFrom()` returns early if a hash is already set. So it is the pixels the game last put
+  into the staging buffer before the first upload — for a `.txd` texture, exactly the `.txd` bytes.
+* **which variant** — `XXH3_64bits`, unseeded, from the xxHash 0.8.0 copy in `src/util/xxHash/` with
+  the default 192-byte `kSecret`. `rtx.useObsoleteHashOnTextureUpload` defaults to True, but
+  `m_needsUpload` is still empty at `CreateTexture` time, so for `.txd` textures the `XXH64` branch
+  is never the one the game takes — measured, not assumed: XXH3 matches, XXH64 never does.
+* Careful with the constant: XXH3's avalanche in 0.8.0 multiplies by `0x165667919E3779F9` and
+  xorshifts 37/32, while XXH64's avalanche uses `XXH_PRIME64_3 = 0x165667B19E3779F9`. Mixing them
+  up produces hashes that look fine and match nothing.
+
+`tools/remix_texhash.py` now reimplements that (pure python xxHash + a RenderWare `.txd`/`.img`
+reader) and reproduces **55 of the 167 hashes in the live `rtx.conf`** and **164 of the 207
+hash-named replacement textures** the pack ships — e.g. `waterclear256` →
+`0x59296793798A7318` (the `mat_…` the pack's `Water_materials.usda` overrides) and `vehicledash32`
+→ `texture/Vehicles/CBFFF905D20D2591_albedo.dds`. So the hashes s05 needed for the mirrors
+(`xvehicleenv128 = 0x45DF1EA60BB202B5`, also present in the pack as `mat_45DF1EA60BB202B5`, and
+`vehicleenvmap128 = 0x6BAFC5F6AEE0A6B5`) no longer require running the game.
+
+Two things the .txd side taught us, both of which break a naive reader over all 32949 textures of
+the game:
+
+* the raster **size word is authoritative**, not `width*height*depth/8`: the 1360 depth-32 textures
+  store `w*h*4` bytes but the 31588 depth-16 ones store `w*h` bytes, and hashing the stored bytes is
+  what reproduces the game's hash for both.
+* SA stores **mip 0 only**, so the stored raster *is* the hashed buffer — there is no mip chain to
+  rebuild. One texture (`models/txd/outro.txd`, chunk version `0x1003ffff`) has no size word at all;
+  the tool refuses it rather than guess, because guessing the extent means guessing what the game
+  uploads.
+
+The 112 `rtx.conf` hashes that do **not** come from any `.txd` are the interesting half: they are
+textures the game **creates and fills itself** (the sea — only `waterclear256` of 61
+`animatedWaterTextures` is a real texture — and all 12 `skyBoxTextures`), so the bytes that get
+hashed are generated pixels, not file bytes. `rtx.recomputeTextureHashOnWrite` (default **false**,
+unset in this `rtx.conf`) is the knob that would additionally drop a hash when the game LockRects
+mip 0 — and even when it is on, hashes listed in `rtx.terrainTextures` / `rtx.lightmapTextures` /
+`rtx.ignoreTextures` / `rtx.ignoreBakedLightingTextures` are deliberately kept stable
+(`d3d9_device.cpp:4635`, "these hashes are configured as stable identities for RTX draw-call
+setup"). For generated textures the Alt+X read-out is still the only way, which is why
+`docs/MIRRORS.md` keeps both recipes.
+
+## The signal hook, re-read against the disassembly (2026-11-12, s19)
+
+Before rhY's third in-game test, `plugin/src/signalhook.cpp` was walked
+instruction by instruction against `gta-sa.exe` (md5
+`85662cbb5aa3df8251ad7664f7a42929`). The geometry, in one place:
+
+- `CTrafficLights::DisplayActualLight` (0x49DAB0) runs its loop at
+  `esp = F-0xAC` (`sub esp,0x9c` + four pushes) and the 21 pushes of the corona
+  call end at **`esp = F-0x100` at the call site 0x49DD4C**. 0x100 is a multiple
+  of 16, so the call site has the frame's alignment: the crash log's
+  `esp = 0x010BF54C` is 12 mod 16, i.e. **not** aligned, and the stub's
+  `and $-16,%esp` is mandatory.
+- The patched instruction is exactly 5 bytes (`E8 rel32`), the next is
+  `mov eax,[esi+0x14]` at 0x49DD51, and the caller cleans with
+  `add esp,0x54` at 0x49DD54 — then writes its own locals at `[esp+0x2c..0x34]`.
+  A stub that leaves esp skewed by 4 bytes corrupts the loop, not just itself.
+- The callee 0x6FC580 is a thunk (`movzx edx,[esp+0x28]` = argument 9, table
+  0xC3E000, `jmp 0x6FC180`). The real function touches arguments 0..20 and
+  nothing beyond: highest read is `[esp+0x80]` after its own `push ebx`, i.e.
+  84 bytes, which is the length the recorder validates. It also **writes back
+  into argument 5** (alpha) at 0x6FC2D0 — a hook placed after the call would
+  read a modified argument.
+- With argument 1 (the `CEntity*`) null, as it is here, the callee takes the
+  path that uses argument 6 as a **world** `CVector*` and dereferences it with
+  no check at all. Our page checks protect a pointer the game itself does not
+  check.
+- The naked stub's `.eh_frame` FDE is empty (`pc=stub..stub+0x29`, all
+  `DW_CFA_nop`), so it inherits the CIE rule "return address = [esp]". Any
+  exception or SEH unwind crossing the stub resumes on a data value. The
+  recorder therefore allocates nothing, throws nothing, logs nothing and calls
+  nothing — now enforced by a test, not by a comment.
+
+What the review found missing, and is now in place: the caller's
+`add esp,0x54` is checked (a mod that changes the argument count leaves the
+call site intact and the stack unbalanced); the install is gated on
+`[trafficlights] source=game` **inside** `rhySignalHookInstall()`, so no call
+path can patch without it; the call site is decoded rather than compared
+byte-for-byte; the patch site is read through the same pointer checks as the
+records; the recorder refuses re-entrancy instead of interleaving; and the page
+cache is cleared once a frame, because a page cached readable in one frame can
+be decommitted in the next. The decision logic (`rhySignalPatchCheck`,
+`rhyCollectHead`, the page cache) moved to `signalheads.cpp`, where
+`tests/signals_check.cpp` runs it against fake memory: 89 native checks and 25
+python checks, the latter including the real exe's bytes at 0x49DD4C /
+0x49DD51 / 0x49DD54 / 0x6FC580, so a game update turns the test red before it
+turns the game red. Full stack-depth tables in
+`.strata/notes-s19-signal-hook-hardening.md`.

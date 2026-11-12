@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "log.h"
+#include "config.h"
 #include "signalheads.h"
 
 // ---------------------------------------------------------------------------
@@ -56,18 +57,37 @@
 //    before any argument is pushed, and the argument block is addressed off ebp,
 //    which the realignment cannot move. Post-mortem at the end of
 //    .strata/notes-s01-signal-heads.md.
+//
+// s19 re-read the whole detour against the disassembly (stack depth per
+// instruction on both sides of it in .strata/notes-s19-signal-hook-hardening.md)
+// and added four things:
+//
+//   * a kill switch in rhySignalHookInstall(): no patch unless
+//     [trafficlights] source=game AND the bytes at the call site, at the callee
+//     and - new - at the caller's `add esp,0x54` all say what the stub assumes.
+//     Any mismatch logs the reason and leaves the module on source=list.
+//   * a re-entrancy guard: the recorder writes a shared array and a shared page
+//     cache with no lock, so a second entry while it is running is refused and
+//     counted, never interleaved.
+//   * page-cache invalidation once a frame: a page cached as readable in one
+//     frame may be decommitted in the next, and a stale "yes" is a fault.
+//   * the decision logic moved to signalheads.cpp (rhySignalPatchCheck,
+//     rhyCollectHead, the page cache), where tests/signals_check.cpp can run
+//     every path against fake memory instead of hoping the game shows a bug.
+//
+// What the recorder must never do, and why: it is called from the naked stub,
+// whose .eh_frame FDE is empty (objdump -W shows pc=stub..stub+0x29 with only
+// DW_CFA_nop, so the unwinder would resume with the CIE's "eip = [esp]", which
+// is argument 0). An exception that escaped the recorder, or a SEH unwind that
+// had to cross the stub, would therefore land on a data value. So the recorder
+// allocates nothing, logs nothing, calls no game or Remix function, and touches
+// no container: rhyCollectHead is straight-line code over a fixed array, and
+// every pointer is validated before it is read.
 // ---------------------------------------------------------------------------
 
-static const uint32_t kCallSite = 0x49DD4C;
-// Where the patched call returns: 0x49DD51 (`mov eax,[esi+0x14]`), three bytes
-// before the caller's `add $0x54,%esp` at 0x49DD54. Pushing this is what makes
-// the tail `jmp 0x6FC580` indistinguishable from the call that was deleted.
-static const uint32_t kResumeAt = kCallSite + 5;
-static const uint32_t kCoronaFn = 0x6FC580;
-static const uint8_t kExpectedBytes[5] = {0xE8, 0x2F, 0xE8, 0x25, 0x00};
-// 0x6FC580 has to be the corona-type thunk the argument layout was read from:
-// `movzbl 0x28(%esp),%edx; mov 0xc3e000(,%edx,4),%eax; mov %eax,0x28(%esp)`.
-static const uint8_t kCalleeBytes[5] = {0x0F, 0xB6, 0x54, 0x24, 0x28};
+// The addresses themselves live in signalheads.h (kRhySignalCallSite,
+// kRhySignalResumeAt, kRhySignalCleanupAt, kRhySignalCoronaFn) so the tests can
+// name the same constants the stub bakes into its immediates.
 // Bytes the stub puts between the entry esp and argument 0: pusha (8 x 4) plus
 // pushfl (1 x 4). No return address is in that count, because a jmp pushed none.
 static const unsigned kSavedBytes = 36;
@@ -76,28 +96,9 @@ static const unsigned kSavedBytes = 36;
 // alignment: it has to realign *before* pushing the recorder's arguments.
 static const unsigned kStackAlign = 16;
 
-// Argument indices into the 21-dword block, as recorded above.
-enum {
-    kArgR = 2,
-    kArgG = 3,
-    kArgB = 4,
-    kArgAlpha = 5,
-    kArgPos = 6,
-    kArgStrength = 7
-};
-
-// CEntity::m_matrix, and CMatrix::at (the third 4-float column).
-static const uint32_t kEntityMatrix = 0x14;
-static const uint32_t kMatrixAt = 0x20;
-
 // ---------------------------------------------------------------- collection
 
-static RhySignalHead g_heads[kRhySignalHeadCap];
-static volatile unsigned g_n = 0;
-static volatile unsigned g_calls = 0;
-static volatile unsigned g_records = 0;
-static volatile unsigned g_dropped = 0;
-static volatile unsigned g_bad = 0;
+static RhySignalCollector g_col;
 static bool g_installed = false;
 
 // Is [p, p+len) safe to read? The hook runs inside the game's render pass, where
@@ -105,21 +106,20 @@ static bool g_installed = false;
 // come from a call site we patched - so "the game would not have passed a bad
 // pointer" is not a guarantee we can rely on.
 //
-// VirtualQuery per corona would be wasteful, so page results are kept in a small
-// MRU: the game's renderer touches the same handful of pages every frame, so a
-// miss is rare and a hit is two compares.
+// VirtualQuery per corona would be wasteful, so page results are kept in the
+// small MRU from signalheads.cpp: the game's renderer touches the same handful
+// of pages every frame, so a miss is rare and a hit is two compares. The cache
+// is cleared once a frame (in rhySignalHeadsTake), because a page cached as
+// readable in one frame can be freed and decommitted in the next, and a stale
+// "yes" is exactly the fault the checks exist to prevent.
 static const unsigned kPageBits = 12;
 static const uintptr_t kPageSize = 1u << kPageBits;
-static const unsigned kPageCache = 8;
-static uintptr_t g_pageKey[kPageCache];
-static bool g_pageOk[kPageCache];
-static unsigned g_pageSlot = 0;
+static RhyPageCache g_pages;
 
 static bool rhyPageReadable(uintptr_t page) {
-    for (unsigned i = 0; i < kPageCache; ++i) {
-        if (g_pageKey[i] == page) {
-            return g_pageOk[i];
-        }
+    int hit = rhyPageCacheFind(&g_pages, static_cast<uint32_t>(page));
+    if (hit >= 0) {
+        return hit != 0;
     }
     MEMORY_BASIC_INFORMATION mbi;
     bool ok = false;
@@ -136,9 +136,7 @@ static bool rhyPageReadable(uintptr_t page) {
                 break;  // NOACCESS, execute-only, write-combine
         }
     }
-    g_pageKey[g_pageSlot] = page;
-    g_pageOk[g_pageSlot] = ok;
-    g_pageSlot = (g_pageSlot + 1) % kPageCache;
+    rhyPageCachePut(&g_pages, static_cast<uint32_t>(page), ok ? 1 : 0);
     return ok;
 }
 
@@ -156,74 +154,38 @@ static bool rhyReadable(uint32_t addr, unsigned len) {
     return true;
 }
 
+// The reader rhyCollectHead() runs every pointer through: validate, then copy.
+// `ctx` is unused (the collector is a process-wide singleton and the addresses
+// are process addresses).
+static int rhyGameRead(void* ctx, uint32_t addr, void* dst, unsigned len) {
+    (void)ctx;
+    if (!rhyReadable(addr, len)) {
+        return 0;
+    }
+    std::memcpy(dst, reinterpret_cast<const void*>(static_cast<uintptr_t>(addr)),
+                len);
+    return 1;
+}
+
 // Called from the stub below with the arguments the game was about to pass to
-// RegisterCorona, plus the two registers the call site still holds. Runs on the
-// game's render thread, inside the render pass: it must not log, allocate, call
-// into the game, or call Remix. It is a straight copy into a fixed array.
+// RegisterCorona, plus the two registers the call site still holds (esi = the
+// CEntity*, ebx = the 2DFX head index - both confirmed against the disassembly:
+// esi comes from [esp+0xac] in the prologue, ebx is the loop counter compared
+// against the model's 2DFX count at 0x49DE21). Runs on the game's render thread,
+// inside the render pass.
 //
-// Every pointer here is game memory reached through a call site we patched, and
-// a fault on the render thread is the end of the process: the crash of
-// 2026-11-11 13:04:44 was this function reading a float (-575.2) as a pointer
-// and touching 0xC48F9A27. MinGW's DWARF unwinder gives us no __try/__except,
-// and the handlers that are installed in this process (modloader's SEH, the
-// Remix bridge's vectored handler) make a fault here unrecoverable anyway.
-// So each pointer is checked against the page table before it is dereferenced,
-// and a bad one becomes a dropped record.
-extern "C" void rhySignalRecordCorona(const uint32_t* args, uint32_t entity,
-                                      uint32_t index) {
-    // Counted before anything is dereferenced: "calls=0" means the patched call
-    // site is never reached, "calls>0 records=0" means it is reached and we are
-    // rejecting what it hands us. Those two need very different fixes.
-    ++g_calls;
-    if (g_n >= kRhySignalHeadCap) {
-        ++g_dropped;
-        return;
-    }
-    const uint32_t argsAddr =
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(args));
-    if (!rhyReadable(argsAddr, 21 * sizeof(uint32_t))) {
-        ++g_bad;
-        return;
-    }
-    const uint32_t posBits = args[kArgPos];
-    if (!rhyReadable(posBits, 3 * sizeof(float))) {
-        ++g_bad;  // not a usable CVector* in this process's address space
-        return;
-    }
-    const float* pos =
-        reinterpret_cast<const float*>(static_cast<uintptr_t>(posBits));
-    RhySignalHead& h = g_heads[g_n];
-    h.entity = entity;
-    h.index = index;
-    h.pos[0] = pos[0];
-    h.pos[1] = pos[1];
-    h.pos[2] = pos[2];
-    // The entity matrix is guaranteed valid here: DisplayActualLight has just
-    // resolved it (it calls CPlaceable::SetupMatrix2 when it is null) and used
-    // it to place the very corona we are recording. Still checked, because a
-    // modded or partially-built entity would otherwise fault in the render pass.
-    h.normal[0] = h.normal[1] = h.normal[2] = 0.0f;
-    const uint32_t mBits =
-        (rhyReadable(entity + kEntityMatrix, sizeof(uint32_t)))
-            ? *reinterpret_cast<const uint32_t*>(
-                  reinterpret_cast<uintptr_t>(entity + kEntityMatrix))
-            : 0u;
-    if (rhyReadable(mBits + kMatrixAt, 3 * sizeof(float))) {
-        const float* at = reinterpret_cast<const float*>(
-            static_cast<uintptr_t>(mBits) + kMatrixAt);
-        h.normal[0] = at[0];
-        h.normal[1] = at[1];
-        h.normal[2] = at[2];
-    }
-    h.rgb[0] = static_cast<uint8_t>(args[kArgR] & 0xFFu);
-    h.rgb[1] = static_cast<uint8_t>(args[kArgG] & 0xFFu);
-    h.rgb[2] = static_cast<uint8_t>(args[kArgB] & 0xFFu);
-    h.alpha = static_cast<uint8_t>(args[kArgAlpha] & 0xFFu);
-    const uint32_t sBits = args[kArgStrength];
-    std::memcpy(&h.strength, &sBits, sizeof h.strength);
-    h.tick = GetTickCount();
-    ++g_n;
-    ++g_records;
+// This is only the machine-code-facing shim. The decision path - re-entrancy,
+// the array cap, which pointer to validate, what to copy, which counter to bump
+// - is rhyCollectHead() in signalheads.cpp, where tests/signals_check.cpp runs
+// every one of those paths against a fake memory image. The crash of
+// 2026-11-11 13:04:44 was this function reading the float -575.2 as a pointer
+// and touching 0xC48F9A27; that path is now a test case, not a post-mortem.
+extern "C" int rhySignalRecordCorona(const uint32_t* args, uint32_t entity,
+                                     uint32_t index) {
+    return rhyCollectHead(&g_col,
+                          static_cast<uint32_t>(
+                              reinterpret_cast<uintptr_t>(args)),
+                          entity, index, GetTickCount(), &rhyGameRead, nullptr);
 }
 
 // The detour. The call site is patched with `jmp stub`, so on entry esp points
@@ -251,9 +213,13 @@ extern "C" void rhySignalRecordCorona(const uint32_t* args, uint32_t entity,
 // while esp still points only at saved registers, and the argument block is
 // addressed off ebp, which is immune to the realignment.
 __attribute__((naked)) static void rhySignalCoronaStub(void) {
-    static_assert(kArgPos == 6, "kArgPos indexes the CVector* argument");
+    static_assert(kRhyArgPos == 6, "kRhyArgPos indexes the CVector* argument");
     static_assert(kSavedBytes == 36, "pusha + pushfl = 36 bytes");
     static_assert(kStackAlign == 16, "stack realignment target");
+    static_assert(kRhySignalResumeAt == kRhySignalCallSite + 5u,
+                  "the resume point is the instruction after the patched call");
+    static_assert(kRhySignalCleanupAt == kRhySignalResumeAt + 3u,
+                  "the caller's add esp,0x54 is three bytes after it");
     __asm__ volatile(
         "pusha\n\t"
         "pushfl\n\t"
@@ -273,7 +239,7 @@ __attribute__((naked)) static void rhySignalCoronaStub(void) {
         "pushl %%eax\n\t"
         "movl %1, %%eax\n\t"
         "jmp *%%eax\n\t" ::"i"(&rhySignalRecordCorona),
-        "i"(kCoronaFn), "i"(kResumeAt)
+        "i"(kRhySignalCoronaFn), "i"(kRhySignalResumeAt)
         : "memory");
 }
 
@@ -282,11 +248,18 @@ __attribute__((naked)) static void rhySignalCoronaStub(void) {
 const char* rhySignalHookReasonText(int reason) {
     switch (reason) {
         case kSignalHookOk: return "ok";
-        case kSignalHookBytes: return "the bytes at 0x49DD4C are not 'call 0x6FC580'";
+        case kSignalHookBytes:
+            return "the bytes at 0x49DD4C are not 'call 0x6FC580'";
         case kSignalHookProtect: return "VirtualProtect on the code page failed";
         case kSignalHookRange: return "the stub is more than 2 GB from the call site";
         case kSignalHookCallee:
             return "0x6FC580 is not the corona-type thunk the stub assumes";
+        case kSignalHookSource:
+            return "[trafficlights] source is not game (the hook is switched off)";
+        case kSignalHookCleanup:
+            return "the caller's 'add esp,0x54' stack cleanup is missing";
+        case kSignalHookUnreadable:
+            return "the patch site or the callee could not be read";
         default: return "unknown";
     }
 }
@@ -298,28 +271,67 @@ bool rhySignalHookInstall(int* reason) {
         }
         return true;
     }
-    const uint8_t* at = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(kCallSite));
-    // Never patch a call site we have not identified: on any other GTA SA build
-    // 0x49DD4C is some other instruction, and overwriting five bytes of it is a
-    // crash, not a missing feature. The callee gets the same treatment, because
-    // the stub hands it a stack that was rebuilt by hand.
-    if (std::memcmp(at, kExpectedBytes, sizeof kExpectedBytes) != 0) {
-        if (reason) {
-            *reason = kSignalHookBytes;
+    // The kill switch, in the one place every install attempt has to come
+    // through: the hook exists only if the user asked for it AND the code we
+    // are about to overwrite is the code the stub was written against. On any
+    // other GTA SA build - or after another mod moved the code - 0x49DD4C is
+    // some other instruction, and overwriting five bytes of it is a crash, not
+    // a missing feature.
+    const RhyConfig* cfg = rhyConfigGet();
+    // rhySignalPatchCheck() answers the source question before it looks at any
+    // byte, so calling it with no byte windows at all is the source gate on its
+    // own: with source=list the exe is never read and never written.
+    int why = rhySignalPatchCheck(cfg->traffic_source == 1, nullptr, nullptr,
+                                  nullptr, nullptr);
+    uint8_t callSite[5] = {0};
+    uint8_t callee[5] = {0};
+    uint8_t cleanup[3] = {0};
+    rhyPageCacheInit(&g_pages);
+    if (why == kRhyPatchOk) {
+        // Read the three windows through the same pointer checks the recorder
+        // uses: an unmapped patch site would take the process down inside
+        // memcmp, which is a strange way to discover that the exe is odd.
+        if (!rhyGameRead(nullptr, kRhySignalCallSite, callSite, 5) ||
+            !rhyGameRead(nullptr, kRhySignalCoronaFn, callee, 5) ||
+            !rhyGameRead(nullptr, kRhySignalCleanupAt, cleanup, 3)) {
+            if (reason) {
+                *reason = kSignalHookUnreadable;
+            }
+            rhyLog("signalhook: cannot read 0x%08X / 0x%08X / 0x%08X to check "
+                   "them: not patching", kRhySignalCallSite, kRhySignalCoronaFn,
+                   kRhySignalCleanupAt);
+            return false;
         }
-        return false;
+        uint32_t target = 0;
+        why = rhySignalPatchCheck(1, callSite, callee, cleanup, &target);
+        if (why == kRhyPatchCleanup) {
+            rhyLog("signalhook: 0x%08X does not hold 'add esp,0x54' "
+                   "(found %02X %02X %02X): the 21-argument cleanup the stub "
+                   "relies on is not there", kRhySignalCleanupAt,
+                   cleanup[0], cleanup[1], cleanup[2]);
+        } else if (why == kRhyPatchCallSite) {
+            rhyLog("signalhook: 0x%08X does not call 0x%08X (bytes %02X %02X "
+                   "%02X %02X %02X, target 0x%08X)", kRhySignalCallSite,
+                   kRhySignalCoronaFn, callSite[0], callSite[1], callSite[2],
+                   callSite[3], callSite[4], target);
+        } else if (why == kRhyPatchCallee) {
+            rhyLog("signalhook: 0x%08X is not the corona-type thunk (bytes %02X "
+                   "%02X %02X %02X %02X)", kRhySignalCoronaFn, callee[0],
+                   callee[1], callee[2], callee[3], callee[4]);
+        }
     }
-    const uint8_t* callee =
-        reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(kCoronaFn));
-    if (std::memcmp(callee, kCalleeBytes, sizeof kCalleeBytes) != 0) {
+    if (why != kRhyPatchOk) {
         if (reason) {
-            *reason = kSignalHookCallee;
+            *reason = (why == kRhyPatchSource)      ? kSignalHookSource
+                    : (why == kRhyPatchCallee)      ? kSignalHookCallee
+                    : (why == kRhyPatchCleanup)     ? kSignalHookCleanup
+                                                    : kSignalHookBytes;
         }
         return false;
     }
     const long long rel = static_cast<long long>(
         reinterpret_cast<uintptr_t>(&rhySignalCoronaStub)) -
-        static_cast<long long>(kCallSite + 5);
+        static_cast<long long>(kRhySignalCallSite + 5u);
     if (rel < -0x80000000ll || rel > 0x7FFFFFFFll) {
         if (reason) {
             *reason = kSignalHookRange;
@@ -327,27 +339,28 @@ bool rhySignalHookInstall(int* reason) {
         return false;
     }
     DWORD old = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(static_cast<uintptr_t>(kCallSite)),
-                        sizeof kExpectedBytes, PAGE_EXECUTE_READWRITE, &old)) {
+    if (!VirtualProtect(reinterpret_cast<void*>(
+                            static_cast<uintptr_t>(kRhySignalCallSite)),
+                        5, PAGE_EXECUTE_READWRITE, &old)) {
         if (reason) {
             *reason = kSignalHookProtect;
         }
         return false;
     }
-    uint8_t* slot = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(kCallSite));
+    uint8_t* slot =
+        reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(kRhySignalCallSite));
     const int32_t rel32 = static_cast<int32_t>(rel);
     slot[0] = 0xE9;  // jmp rel32
     std::memcpy(slot + 1, &rel32, sizeof rel32);
-    FlushInstructionCache(GetCurrentProcess(), slot, sizeof kExpectedBytes);
+    FlushInstructionCache(GetCurrentProcess(), slot, 5);
     DWORD back = 0;
-    VirtualProtect(slot, sizeof kExpectedBytes, old, &back);
+    VirtualProtect(slot, 5, old, &back);
     g_installed = true;
     if (reason) {
         *reason = kSignalHookOk;
     }
     rhyLog("signalhook: patched 0x%08X (was 'call 0x%08X') -> stub at 0x%08X, "
-           "cap %d heads per frame",
-           kCallSite, kCoronaFn,
+           "cap %d heads per frame", kRhySignalCallSite, kRhySignalCoronaFn,
            static_cast<unsigned>(
                reinterpret_cast<uintptr_t>(&rhySignalCoronaStub)),
            kRhySignalHeadCap);
@@ -355,19 +368,20 @@ bool rhySignalHookInstall(int* reason) {
 }
 
 bool rhySignalHookInstalled() { return g_installed; }
-unsigned rhySignalHookCalls() { return g_calls; }
-unsigned rhySignalHookRecords() { return g_records; }
-unsigned rhySignalHookDropped() { return g_dropped; }
-unsigned rhySignalHookBad() { return g_bad; }
+unsigned rhySignalHookCalls() { return g_col.calls; }
+unsigned rhySignalHookRecords() { return g_col.records; }
+unsigned rhySignalHookDropped() { return g_col.dropped; }
+unsigned rhySignalHookBad() { return g_col.bad; }
+unsigned rhySignalHookReentrant() { return g_col.reentrant; }
 
 unsigned rhySignalHeadsTake(RhySignalHead* out, unsigned outCap) {
     // Same thread as the hook (the game's render thread), so no lock: the hook
     // has already run for this frame by the time hkPresent gets here, and it
     // cannot run again until this frame's rendering restarts.
-    const unsigned n = (g_n < outCap) ? g_n : outCap;
-    if (n > 0) {
-        std::memcpy(out, g_heads, n * sizeof(RhySignalHead));
-    }
-    g_n = 0;
+    const unsigned n = rhyCollectorTake(&g_col, out, outCap);
+    // One frame of page-cache staleness, never more: the cache is what keeps
+    // VirtualQuery out of the render pass, and a page the game freed between
+    // frames must not stay "readable".
+    rhyPageCacheClear(&g_pages);
     return n;
 }

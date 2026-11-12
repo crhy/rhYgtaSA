@@ -22,10 +22,16 @@ enum RhySignalHookReason {
     kSignalHookBytes = 1,    // the bytes at the call site are not what we expect
     kSignalHookProtect = 2,  // VirtualProtect on the code page failed
     kSignalHookRange = 3,    // the stub is too far away for a rel32 jmp
-    kSignalHookCallee = 4    // 0x6FC580 is not the corona thunk the stub assumes
+    kSignalHookCallee = 4,   // 0x6FC580 is not the corona thunk the stub assumes
+    kSignalHookSource = 5,   // [trafficlights] source is not "game": no patch
+    kSignalHookCleanup = 6,  // the caller's `add esp,0x54` is not where it must be
+    kSignalHookUnreadable = 7  // the patch site itself could not be read
 };
 
 // Install the detour. Safe to call more than once (it is a no-op once it is in).
+// The kill switch lives here, not in the caller: it refuses unless
+// [trafficlights] source=game AND rhySignalPatchCheck() passes on the bytes it
+// reads out of the exe, so no call path can install the hook without both.
 // reason (optional) gets an RhySignalHookReason.
 bool rhySignalHookInstall(int* reason);
 
@@ -44,11 +50,12 @@ unsigned rhySignalHeadsTake(RhySignalHead* out, unsigned outCap);
 // ran, which is what separates "the hook never fires" (calls=0: wrong build, or
 // the game never draws a signal) from "it fires and we throw the record away"
 // (calls>0, records=0). Then: records taken, records dropped because the array
-// was full, records rejected because the position pointer was not usable, and
-// records lost to a fault inside the recorder (caught by SEH).
+// was full, records rejected because a pointer was not readable, and records
+// refused because the recorder was already running (re-entrancy).
 unsigned rhySignalHookCalls();
 unsigned rhySignalHookRecords();
 unsigned rhySignalHookDropped();
 unsigned rhySignalHookBad();
+unsigned rhySignalHookReentrant();
 
 #endif  // RHY_SIGNALHOOK_H_

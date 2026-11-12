@@ -1,0 +1,472 @@
+# Changelog
+
+All notable changes to **rhYgtaSA** — GTA San Andreas (1.0 US, 32-bit) under **RTX Remix 1.6.1** on
+Linux/Proton, plus `rhyremix.asi`, the native plugin that drives the renderer through the Remix C API.
+
+The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) and the versions
+follow [Semantic Versioning](https://semver.org/). Each release is grouped by feature — lighting,
+sun and sky, traffic signals, water, installer and launcher, tools, testing and docs.
+
+Two things to know before reading:
+
+- **The version numbers are a reading aid, not git tags.** Nothing in this repository is tagged yet;
+  every heading names the commit(s) that carry it, and `git log --oneline` is the authoritative
+  record. The phase names in the text (`p01`…`p08`, `s01`…`s19`) are the work items recorded in
+  `.strata/notes-*.md`.
+- **"Fixed" usually means "measured first".** Most entries name the number or the log line that
+  settled the question; [docs/FINDINGS.md](docs/FINDINGS.md) has the evidence and the dead ends,
+  [docs/DEVELOPING.md](docs/DEVELOPING.md) the fix-by-fix table.
+
+## [Unreleased] — 2026-11-12
+
+Work in the tree, **not yet run in game**. Player-facing consequences are in
+[docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md).
+
+### Traffic signals
+
+- **Added:** a kill switch inside `rhySignalHookInstall` (`plugin/src/signalhook.cpp`, decision logic
+  in `plugin/src/signalheads.cpp`): the code patch is installed only when `[trafficlights]
+  source=game` **and** the call site `0x49DD4C` still decodes to `call 0x6FC580` **and** `0x6FC580`
+  is still the corona-type thunk **and** the caller's `add esp,0x54` sits at `0x49DD54`. Every
+  refusal logs which check failed and quotes the bytes it actually found, then falls back to
+  `source=list` — a different game build can no longer be patched by accident.
+- **Fixed:** a bad pointer handed to the corona recorder is now a dropped record instead of a crash
+  (`bad` counter), and re-entrancy is counted (`reentrant`, must stay 0) instead of silently
+  re-entering the recorder. The per-frame page cache is cleared each frame, so a cached page check
+  can no longer outlive the frame it was made in.
+- **Added:** the hook's own counters in the per-10 s log line —
+  `hook: calls=… records=… dropped=… bad=… reentrant=…` — which is the whole diagnosis of the
+  hook in one line (explained in [docs/TESTING.md](docs/TESTING.md)).
+- **Changed:** the recorder is now a thin shim over `rhyCollectHead()`, so the head-collection logic
+  is testable without a game; the detour stub itself is byte-identical to the third build (verified
+  by disassembly — the review found it correct, what changed is everything around it).
+- **Tests:** `tests/signals_check.cpp` 89 native checks (kill switch, every recorder path against
+  fake memory, page cache) and `tests/test_signal_hook.py` 25 checks (stub encoding at every stack
+  alignment, the real exe's bytes, no-throw discipline).
+
+### Tools
+
+- **Added:** `tools/remix_texhash.py` — decodes a `.txd` / `gta3.img` raster the way D3D9 receives
+  it and prints the Remix texture hash. The hash is `XXH3_64bits(mip-0 raster bytes)` (xxHash 0.8.0
+  as bundled in [dxvk-remix](https://github.com/NVIDIAGameWorks/dxvk-remix) 1.6.1, default secret;
+  `XXH64(data, 0)` only for textures that still need a CPU upload), taken once at the first upload
+  of subresource 0. It reproduces **55 of the 167** hashes listed in `rtx.conf` and **164 of the
+  207** hash-named replacement textures the asset pack ships; the ones it cannot reproduce are
+  textures the game generates itself (sea, sky, some UI).
+- **Changed:** `config/mirror-hashes.txt` now carries both mirror hashes live —
+  `xvehicleenv128 = 0x45DF1EA60BB202B5` (independently confirmed: the pack's own
+  `SARemix_OriginalVehiclesPBR.usda` overrides `mat_45DF1EA60BB202B5` as glass) and
+  `vehicleenvmap128 = 0x6BAFC5F6AEE0A6B5` — so `tools/mirrors.py --dry-run` reports
+  "2 material override(s)" and the mirror step no longer needs an in-game `Alt+X` hash read
+  ([docs/MIRRORS.md](docs/MIRRORS.md)).
+- **Tests:** `tests/test_remix_texhash.py` (19 checks: the python xxHash implementations against
+  published xxHash test vectors, a synthetic `.txd` with 32-bit / 16-bit / DXT5 rasters, the
+  `rtx.conf` hash-list parser; the real-game table check skips when the game is not installed).
+
+## [0.8.0] — 2026-11-11 (`e19fde6`)
+
+### Installer and launcher
+
+- **Added:** `scripts/test-session.sh [--tour] [--project DIR]` — one command for a test run when
+  the GPU is held by something else: it stops that process by PIDs read out of `/proc` (never
+  `pkill -f` a pattern that can match its own command line), waits until `nvidia-smi` reports under
+  1 GiB used, optionally arms the photo tour, runs the launcher in the foreground, then kills the
+  leftovers by exact process name (`gta-sa.exe`, `NvRemixBridge`, the prefix's `wineserver`) and
+  brings the other process back. Tested entirely with stubs (`scripts/test-session-selftest.sh`);
+  it never runs the game itself.
+- **Added:** `tools/characters.sh {on|off|status} [GAME_DIR] [--pack NAME …]` — the six
+  `characters` packs of [deps/manifest.json](deps/manifest.json) installed into `modloader/` in the
+  documented order (Proper Characters Retex HD → Proper Player Retex → PedFuncs → Emergency Peds
+  Vary → Criminal Peds Vary → Restored Unused Peds), priorities written inside
+  `[Profiles.Default.Priority]`, `PedFuncs` pulled in automatically by a pack's `requires`,
+  `modloader.ini` backed up pristine once. `off` removes exactly what `on` added.
+
+### Tools
+
+- **Added:** `tools/vegetation.sh {on|off|status} [GAME_DIR] [--step N]` — the "V Vegetation Mix"
+  pack plus the ranked fixes from [docs/VEGETATION.md](docs/VEGETATION.md) as switchable steps:
+  1 leave the pack's `procobj.ide`/`vegepart.ide` out, 2 streaming caps (MixSets `StreamMemory`,
+  ImprovedStreaming ranges 4/5), 3 the `rtx.conf` opacity-micromap budget, 4 the heaviest-`.txd`
+  bisect. State and one pristine backup per edited file live in `modloader/.rhys-vegetation/`, and
+  an `on`/`off` round-trip leaves the tree byte-identical (51 checks).
+- **Docs:** [docs/CHARACTERS.md](docs/CHARACTERS.md) §6 now lists every Remix material override a
+  character pack kills — CJ's three Looks `mat_0AB982F62FEF3381` / `mat_1AB00AD812498A17` /
+  `mat_C23DD21AE7ED34B1` plus the shared `8645663DE7AFBB81` normal/rough pair, and the two
+  pedestrian Looks — with both re-pointing routes. Ryder, Kendl and `mat_DA50E6D8BA27A905` survive.
+
+### Testing and docs
+
+- **Added:** three photo-tour stops in `plugin/lua/SARemix_Tour.lua` for the subjects the pack's own
+  material work targets: the rear-view mirror of the car parked at the Grove Street curb, a
+  pedestrian close-up in Pershing Square at noon, and the Mulholland / Vinewood hillside vegetation.
+- **Gate:** `scripts/check-all.sh` now also runs the vegetation and character-pack switch
+  self-tests (45 checks, 0 failed).
+
+## [0.7.0] — 2026-11-11 (`bc91fa4`)
+
+### Tools
+
+- **Added:** `scripts/check-all.sh` — one command that runs every gate in the repo (cross-compiled
+  plugin build, the three native test binaries, every `tests/test_*.py`, the installer, vegetation
+  and character self-tests, the test-session stub test, and `bash -n` on every shipped shell
+  script), one PASS/FAIL line each, ending `ALL GATES PASSED`.
+- **Added:** `tools/make-release.sh OUTDIR` + `tools/torrent.py` — builds the bundle we host
+  ourselves: collects only the manifest entries whose licence allows re-upload, writes
+  `SHA256SUMS`, makes a `.torrent` (`mktorrent` if installed, otherwise a stdlib bencode builder)
+  with the trackers in [deps/trackers.txt](deps/trackers.txt), and prints the magnet link **after**
+  re-deriving the info hash from the bytes on disk. Nothing is staged yet, so today it correctly
+  reports every pack as not staged.
+- **Changed:** [deps/manifest.json](deps/manifest.json) entries carry the magnet slot for the
+  bundle, with the https mirror slots still `TBD`.
+
+### Testing and docs
+
+- **Changed:** the plugin and the native tests now build with `-Wall -Wextra` permanently, with zero
+  warnings; `warncheck()` in `check-all.sh` turns any `warning:` line into a failure even when the
+  compiler exited 0. The two warnings that were there were fixed at the source (a `FARPROC`-to-
+  prototype cast in `plugin/src/remix.cpp`, an unread third `lampsShouldBeOn()` argument), not
+  silenced; `i686-w64-mingw32-g++ -fanalyzer` over all plugin sources is clean too.
+
+## [0.6.0] — 2026-11-11 (`03ea257`)
+
+### Traffic signals
+
+- **Added:** `[trafficlights] source=game` (now the default). The plugin hooks the one instruction
+  in `CTrafficLights::DisplayActualLight` that registers a signal head's corona (call site
+  `0x49DD4C` → `CCoronas` at `0x6FC580`), so each head's **real position** and the **aspect colour
+  the game is actually showing** arrive for free — including a head hanging out over the road on a
+  mast-arm signal — instead of being guessed from the pole position in the lamp list. A head the
+  game stops registering keeps its light for `head_ttl_ms` (2 s), so one dropped frame is not a dark
+  intersection.
+- **Changed:** `source=list` keeps the pre-s01 behaviour (one light per pole, colour from the local
+  cycle) and is the automatic fallback whenever the patch cannot be installed; the log line says
+  which mode is live.
+- **Fixed:** two in-game crashes of the first two hook builds — a `jmp` over a `call` does not come
+  with the return address the deleted `call` would have pushed, and the recorder's stack
+  realignment. Both post-mortems, with disassembly, are in
+  [docs/FINDINGS.md](docs/FINDINGS.md).
+- **Fixed:** `g_cfgRev` was only updated in one branch, so after any ini edit the config was
+  re-read — and a failed hook re-installed and re-logged — 60 times a second.
+
+### Water
+
+- **Added:** `tools/water.sh {calm|realistic|pack|status|revert}` and the three variants
+  `config/water/{calm,realistic,pack}.usda`. Measured first: `water_normal.dds` is a
+  10240×512 BC5, 20-frame sheet whose octahedral decode gives a **median facet tilt of 46°** (43 %
+  of facets over 60°) — that, not the encoding flag, is why the sea read as binary black/white.
+  The variants pin `encoding = 0`, slow the sprite-sheet loop, and set Jerlov coastal absorption
+  (realistic: σ = 0.150/0.076/0.040 m⁻¹; calm: a thin-walled 3 m sheet).
+- **Added:** `tools/water_check.py` validates a variant before it is installed (text USD, balanced
+  braces, same prim paths as the original, only inputs the material's `.mdl` declares); `water.sh`
+  refuses a variant that fails and never edits `rtx.conf` — it prints the
+  `rtx.translucentMaterial.normalIntensity = 0.35` line that actually kills the noise, because that
+  knob lives in `rtx.conf` and not in the USD.
+
+### Installer and launcher
+
+- **Added:** `tools/laa.py` — read, set and clear **Large Address Aware** on `gta-sa.exe`.
+  `apply.sh` now sets it (the downgrader's exe is not LAA, and that one 32-bit process carries the
+  game, the Remix bridge client and the streaming cap at once); `deploy.sh` warns on every launch
+  when the flag is missing, and `gta-sa.exe.noLAA-backup` keeps the pre-change exe.
+- **Added:** `scripts/installer-selftest.sh` — installs into a fake game tree under `build/tmp/`,
+  runs `apply.sh` twice and requires the second run to be a no-op; `apply.sh`/`deploy.sh` refuse to
+  run in sandbox mode against anything that is not the marked fake tree, so a bug in the test can
+  never point the installer at a real game folder.
+- **Added:** `scripts/install-desktop-entry.sh` writes a `.desktop` entry pointing at your paths
+  (no sudo); it runs the same launcher, so a desktop click still builds and installs the current
+  code and still reports a failure.
+
+### Tools
+
+- **Added:** `tools/mirrors.py` + `config/mirror-hashes.txt` + [docs/MIRRORS.md](docs/MIRRORS.md):
+  SA paints its mirrors — no stock car has a mirror atomic — so the fix is a Remix material
+  (metallic 1, roughness 0.02, white albedo, no normal map) keyed to the mirror texture's hash,
+  sublayered into the pack's `mod.usda` exactly once, with backup and `--remove` restoring
+  byte-identical.
+- **Added:** `deps/manifest.json` + `tools/fetch-deps.sh` — every mod a user would otherwise
+  download by hand, with author, licence and sha256; fetched with `aria2c` (torrent or https,
+  resumable) and a plain `curl` fallback, verified before anything reaches the game folder.
+  `apply.sh --with-deps [--deps-group characters]` uses it; packs that may not be re-uploaded are
+  linked, never mirrored.
+- **Added:** `tools/txd_sizes.py` (texture-dictionary measurement, the numbers behind
+  [docs/VEGETATION.md](docs/VEGETATION.md)) and `tools/winedbg-hang.sh` (attach to a hung
+  Proton/wine process and capture stacks).
+
+### Testing and docs
+
+- **Added:** [docs/VEGETATION.md](docs/VEGETATION.md) — why "V Vegetation Mix" freezes the RTX copy
+  and not the plain one: three ranked causes with evidence (the pack's own `procobj.ide` /
+  `vegepart.ide` re-point 44 entries at dictionaries this install does not have, and 5 LOD models
+  point at a `.txd` that exists nowhere; the 1900 MB streaming cap plus two `KeepLoaded=1`
+  vegetation ranges pin ~190 MB in a non-LAA 2 GB process; 11.7× more alpha-tested foliage through
+  Remix's opacity-micromap path), the test order, what was ruled out, and how to capture the next
+  freeze.
+- **Added:** [docs/CHARACTERS.md](docs/CHARACTERS.md) — the peds in the RTX copy are stock 1.0, the
+  pack authors PBR for CJ's four materials and two pedestrian materials only, so the fix is
+  game-side and texture-first; ranked shortlist, verified download links, the licence reality.
+- **Changed:** `README.md` is now a two-step player guide (downgrade to 1.0 US, then one installer
+  command) with requirements, troubleshooting, rollback and full credits; all developer material
+  moved to [docs/DEVELOPING.md](docs/DEVELOPING.md). `bash scripts/check-readme.sh` gates it: repo
+  paths exist, links answer, no personal paths.
+
+## [0.5.1] — 2026-11-11 (`0499882`, `b95796e`, `b1e7808`)
+
+### Tools
+
+- **Fixed:** the photo tour froze the player. Teleporting out of an interior crashed opcode `00A1`,
+  and the script died with CJ locked and the HUD hidden. It now waits until CJ is outdoors
+  (interior 0), runs each stop in `pcall`, and restores control, HUD, radar and camera however it
+  ends.
+- **Fixed:** the tour moved CJ by writing his matrix position directly (`CPlaceable::m_matrix` at
+  `ped+0x14`, position at `matrix+0x30`) because the ped opcodes throw under MoonLoader 0.27 in this
+  build — the same reason `moonloader/lib/sa_ped_safe.lua` exists.
+- **Fixed:** the F12 hotkey never fired. `key=0x7B` in `SARemix_Shot.conf` is a Windows virtual-key
+  code, but `isPs2KeyboardKeyJustPressed` takes the game's PS2 key numbers, so the value was read in
+  the wrong namespace; the script uses `isKeyJustPressed`.
+- **Changed:** the water stops moved to the open beach at Santa Maria instead of under the pier, and
+  noon and night shots of the sea were added.
+
+## [0.5.0] — 2026-11-11 (`3418647`)
+
+### Lighting
+
+- **Changed:** lamp families and signal lenses now use measured **CIE 1931 chromaticities converted
+  to linear sRGB**. High-pressure sodium is `(1, 0.25, 0)` — the deep sodium orange; a line sum on a
+  hue approximation had given green > 0.75, i.e. yellow. Signal green is mapped to the gamut edge
+  along its own hue so it stays blue-green.
+- **Fixed:** `colorTemperatureToRgb()` is Tanner Helland's fit, not Kim et al.'s, and it returns
+  **display-encoded** values while Remix radiance is linear — it now decodes. Only the lamps use it;
+  the sun's Beer-Lambert path is unchanged.
+
+### Sun and sky
+
+- **Added:** `[sun] dst=1` (default): Los Angeles summer time, +1 h between roughly day 70 and day
+  307, so a July sunset lands near 20:05 game time instead of 19:05.
+
+### Installer and launcher
+
+- **Fixed:** a low-VRAM refusal from a desktop launch was silent. `launcher/launch-rtx.sh` now shows
+  a dialog (`zenity`, else `notify-send`) naming the process that holds the card, and the screenshot
+  watcher starts only **after** the check, so an early exit no longer leaves it running.
+
+### Testing and docs
+
+- **Tests:** lamps 30/30, solar 37/37 — the colour assertions follow the measured values.
+
+## [0.4.1] — 2026-11-11 (`fc862cf`)
+
+### Lighting
+
+- **Added:** `tools/strip_pack_lamp_lights.py` removes the 18 `SphereLight` prims that
+  [GTASA-Remix](https://github.com/Hemry81/GTASA-Remix) puts inside its 12 lamp models
+  (`SARemix/SARemix_StreetLights.usda`), because our 7002-entry lamp list lights the same poles —
+  every street lamp was lit twice and night read twice as bright. Idempotent, keeps
+  `<file>.orig-with-lights`, `--restore` puts them back; run by `deploy.sh` on every launch and by
+  `apply.sh`. Remix reads USD at start-up, so it takes effect on the next launch.
+
+### Tools
+
+- **Fixed:** every F12 failed silently. `getWorkingDirectory()` in MoonLoader is
+  `<game>/moonloader`, so the hotkey was looking for `moonloader/screenshots/pending`.
+- **Added:** `plugin/lua/SARemix_Tour.lua` — with `screenshots/tour.req` present it walks the
+  [docs/TESTING.md](docs/TESTING.md) shots (fixed camera, set time, clear weather), requests one
+  grab per stop and writes `screenshots/tour-manifest.txt`; runs once per flag file.
+
+## [0.4.0] — 2026-11-11 (`88e8cd1`)
+
+The turning point: every lighting knob had been set by eye against a screenshot, and the image kept
+coming out wrong. This release replaces the guessed numbers with computed ones — and corrects the
+units error in our own docs that had made the biggest bug invisible.
+
+### Lighting
+
+- **Fixed (units):** one GTA SA game unit is about **one metre**, and light positions *and* radii
+  handed to `CreateLight` are in game units. The README and the ini both claimed `radius=15` was
+  15 cm at `rtx.sceneScale = 0.01`; it is a **thirty metre** emitting sphere for a lunchbox-sized
+  luminaire — the shapeless light pools and the volumetric fog wall. Settled two ways: `probe_scale=1`
+  lands a probe light on the lamp post while `0.01` does not, and the signal data puts a head 7.6
+  units above its road where a real one hangs about 6 m up.
+- **Added:** `fixture_size=1` — real fixture geometry (0.2 game units for a cobra-head luminaire,
+  0.1 for a 200 mm signal lens) with `rhyRadianceForFlux()` scaling radiance by
+  `(radius_ref/radius)²` so total emitted power is unchanged. That decoupling is the only reason the
+  radius could be fixed at all: shrinking the sphere without compensating takes the street's light
+  with it.
+- **Added:** discharge lamps are **line spectra, not blackbodies**. Colours are built from documented
+  atomic emission lines: HPS is the 589.0/589.6 nm D doublet (linear sRGB 1.000/0.844/0.000),
+  mercury 0.755/1.000/0.602 (the 546.1 nm line dominates), plus metal halide, LED and neon. The old
+  `kelt_warm=2100` gave 1.000/0.537/0.055 — a third of its energy in the deep red where sodium has
+  almost none, which is why sodium read as a dim incandescent bulb. Tungsten stays on kelvin because
+  it is a genuine thermal source.
+- **Added:** traffic signal lens colours integrated from real passbands (red 610–645 nm, amber
+  585–605, green 515–565) instead of hand-picked triples; sampling a single "red" wavelength such as
+  620 nm gives orange because the eye's response there still carries green. A test asserts the
+  band-integrated red is redder than that sample. Signals stay **unshaped on purpose**: a real module
+  beams down the approach, but the list carries no heading, and a wrongly-aimed cone would darken
+  every signal seen from the cross street.
+
+### Sun and sky
+
+- **Added:** `plugin/src/solar.cpp` — an astronomical sun and moon: Spencer's Earth-orbit equation,
+  ecliptic-to-equatorial conversion, azimuth by `atan2`, Kasten–Young air mass, Beer-Lambert
+  per-channel extinction, Kim et al. colour temperature. Sunrise and sunset for Los Santos match
+  USNO to about three minutes, and the red of a low sun falls out of the path length (5° elevation →
+  air mass 10.3 → transmittance R 0.158 / G 0.072 / B 0.020) instead of being painted on.
+- **Fixed:** three real bugs the model exposed — an azimuth cosine term that was wrong only near
+  sunrise/sunset, a moon placed by shifting the clock 12 hours (which puts a midsummer full moon at
+  77° instead of 33°), and a Planck fit mixing 0–1 and 0–255 conventions.
+
+### Installer and launcher
+
+- **Added:** `config/rtx.conf` (`--rtx-conf`) changes exactly **two** values, both measured:
+  `rtx.emissiveIntensity` 10 → 1.0 (the pack's own emissive materials already reach
+  `emissive_intensity = 3000`, so ×10 rendered shopfront windows at 30000) and `rtx.skyBrightness`
+  3 → 1.0 (the sky is driven by the solar model now, so the static boost double-counted).
+  `config/rtx.conf.experimental` (`--rtx-conf-exp`) keeps the six changes that have never been
+  observed running, so a bad image can still be attributed.
+- **Added:** a VRAM preflight in `launcher/launch-rtx.sh`: under 6 GiB free it refuses to start and
+  names the process holding the card. Four launches and three config rollbacks had been spent on a
+  "white window then CPU exception in the bridge" that was a local LLM server holding 15,494 of
+  16,376 MiB — every log looked like a mod bug.
+
+### Tools
+
+- **Added:** `scripts/lighting-test.sh` measures mean screen brightness every 10 s, so "the screen
+  is white" becomes a number, and always restores `rtx.conf`, the ini and the shipped `.asi` on
+  exit — including on Ctrl-C.
+
+### Testing and docs
+
+- **Tests:** 30 lamps / 37 solar, native `g++`, no game needed.
+
+## [0.3.1] — 2026-11-10 (`ef2078c`)
+
+### Installer and launcher
+
+- **Fixed:** a fresh clone had nothing to install. The lamp and signal lists are derived from the
+  game's own data, so they stay out of git; `deploy.sh` already generated the traffic list and now
+  generates the street list the same way, and the build step no longer rebuilds the `.asi` just
+  because a list is absent.
+
+### Tools
+
+- **Changed:** `tools/lamp_list.py` and `tools/traffic_list.py` default `--table` to
+  `<game>/moonloader/SARemix_Light_Manager.dat` — that file belongs to the asset pack, so the repo
+  reads it in place instead of redistributing it. The gate asserts both facts: a clone that cannot
+  install, or that ships someone else's mod file, fails.
+
+## [0.3.0] — 2026-11-10 (`86a5ca9`)
+
+Answers the report "lights blink, some are missing, and they stop being visible far too soon". It
+also settles the open question from the previous phase: a light handed game-unit coordinates **is**
+visible, so `rtx.sceneScale = 0.01` does not apply to light positions.
+
+### Lighting
+
+- **Fixed:** four causes of the blinking, all ours.
+  1. `max_total_lights=64` against 163 requested handles: first-come-first-served starvation, in an
+     order that changes with the player. The cap is off by default.
+  2. A refused slot set the same disabled flag as a bridge rejection, so one bad frame switched the
+     street lights off for the session. `rhyCreateLight` now reports *why* (1 = server, 2 = our cap)
+     and only reason 1 disables.
+  3. A retired light's destroy could land **after** its replacement's create: the pending map was
+     keyed by a handle hash that is identical for a recreated lamp. `rhyFlushDelayedTag(tag)` now
+     runs before a module creates, and tags are namespaced per module.
+  4. One selection radius: a lamp on the boundary was created at one re-selection and destroyed at
+     the next. Now enter at `max_distance`, leave at `exit_distance`, with `sticky_extra` slots
+     reserved for lamps already lit.
+- **Fixed (range):** "not visible far enough" is a **count** problem, not a radius problem —
+  selection is nearest-first, so a `max_lights` smaller than the lamps inside `exit_distance` evicts
+  lamps that are already lit. Measured around Grove Street: 222 lamps within 300 units, ~350 within
+  380, 541 within 500, so the test profile pairs 300/380 with `max_lights=320` + `sticky_extra=90`.
+  The old 60 cut the world dark at ~140 units.
+- **Added:** the game-clock read (`*(uint8_t*)0xB70153` hours, `0xB70152` minutes) that the lighting
+  modules key off, and the sun/moon distant lights, probe calibration rig and the p02–p07 work the
+  fixes above depend on.
+
+### Traffic signals
+
+- **Fixed:** the phase key changed every 10 s and rebuilt every light in range, so signals churned.
+  `phase_near` keeps a phase change from moving lights.
+
+### Tools
+
+- **Added:** `tools/lamp_list.py` and `tools/traffic_list.py` generate both lists from the game's own
+  `gta3.img`, `.ide`, `.ipl` and the pack's lamp table. Model ids resolve through the `.ide` files,
+  not the `gta3.img` entry index (the four "text-IPL lamps" the old guess produced sat at positions
+  no lamp post occupies, and are gone); dedupe keys on position alone — a pole is instanced by more
+  than one model id — which took 7371 lines to 7002 real lamps, i.e. 360 light slots were being
+  burned by duplicates; `--report-missing` counts the lamp table's gaps instead of hiding them;
+  signal heads use the table's exact offsets (7.6 / 6.0 / 7.65) instead of `radius*0.09`, which put
+  the glow ~2 units below the head.
+- **Added:** the install and diagnosis tooling still in use today: `deploy.sh`, `scripts/shot.sh`,
+  `scripts/shot-watch.sh`, `scripts/diagnose.sh`, `scripts/abtest-lights.sh`,
+  `scripts/tidy-game.sh`, `plugin/lua/SARemix_Shot.lua`, and the crash-free capture path (the ASI
+  swallows `SetGammaRamp`, `block_gamma=1`, because the game's own `Ctrl+PrintScreen` took the Remix
+  server down with CPU crash `0xe06d7363`).
+- **Fixed:** the 70-argument config log line had drifted by one argument (19 `-Wformat` warnings,
+  log values printed misaligned); it is now three lines.
+
+### Testing and docs
+
+- **Added:** [docs/MODS-REPLACED.md](docs/MODS-REPLACED.md) — which mod does what, which of them the
+  plugin replaces, and the `OLD/` tidy-up inventory.
+- **Tests:** 25 unit tests (`.ide` parsing, position dedup, head-height matching, `.ipl` parsing);
+  the phase gate reports 112 checks.
+
+## [0.2.0] — 2026-11-09/10 (`1cbde45`, `e170ed2`, `09cdfc0`)
+
+### Lighting
+
+- **Added:** `rhyremix.asi` — the native 32-bit plugin skeleton: a `Present` hook on the game's
+  D3D9 device (`*(IDirect3DDevice9**)0xC97C28`, which in the RTX build belongs to the Remix bridge
+  client `d3d9.dll`), the Remix C API reached through that bridge's exported
+  `remixapi_InitializeLibrary`, a read of the player ped (`*(void**)0xB7CD98`) so the test light can
+  follow CJ, and one test light.
+- **Fixed:** the logger — `vsnprintf` for a `va_list` (the previous version formatted garbage), and
+  the log now lands next to the `.asi` as `scripts/rhyremix.log`.
+- **Changed:** the test light is brighter and follows CJ: at `rtx.sceneScale = 0.01` a 0.5-unit
+  light is effectively invisible, which is how it was first noticed.
+
+## [0.1.0] — 2026-11-09 (`4d90488`, `9f25f27`)
+
+The starting point: the fixes that make [GTASA-Remix](https://github.com/Hemry81/GTASA-Remix) and
+RTX Remix 1.6.1 run at all under Proton.
+
+### Installer and launcher
+
+- **Added:** `launcher/launch-rtx.sh` — Proton run **inside** `SteamLinuxRuntime_4` (outside it the
+  bridge server never starts and there is no audio), `PROTON_ENABLE_NVAPI=1` for DLSS/NGX,
+  `PROTON_PREFER_SDL=1 PROTON_ENABLE_HIDRAW=0` for the Wine `xinput` deadlock that froze the game on
+  start with a DualShock over hidraw, and the MangoHud-wine config.
+- **Added:** `apply.sh` + `patches/gtasa-remix-linux.patch` — the Linux patch set for the pack, with
+  a backup folder filled once so a re-run cannot overwrite the pristine pre-patch copies.
+- **Fixed:** `rtx.useNewGuiInputMethod = False` — without it the Remix menu does not respond under
+  Wine and the window goes white after the first frame.
+- **Fixed:** MoonLoader scripts dying at start (`getCharCoordinates` / `isCharInAnyCar` throw under
+  MoonLoader 0.27, and scripts started before CJ existed) — `moonloader/lib/sa_ped_safe.lua` reads
+  memory instead, and the scripts wait for the player.
+- **Fixed:** street lights that never appeared (the stale `SARemiv_LightMan.lua` used model ids from
+  before five cloud models were added to `remix.ide`, a +5 shift) and a flicker loop that re-triggered
+  the warm-up flicker forever.
+- **Fixed:** `VK_ERROR_DEVICE_LOST` when lights spawned — ~1000 lights declared
+  `inputs:shaping:focus` / `focusTint` with no value (NaN in 1.6), now defaulted by
+  `tools/usd_light_defaults.py`.
+- **Fixed:** the crash "Light prims anchored to a mesh replacement must also include actual meshes" —
+  the pack's USD references pointed at the author's `D:/Games/...`, now relative paths.
+- **Fixed:** the pack's vehicle toolkit could not load: it needs a `SARemix_DebugPrinter` module that
+  the pack does not ship (stub added), and the old `SARemiv_VTK.lua` used wrong ids — use
+  `SARemix_VTK.lua`.
+- **Fixed:** a gray square under CJ (MixSets' real-time ped shadow render target) and dim lamp heads
+  (emissive plate scaled to 0).
+
+### Tools
+
+- **Added:** `tools/img_unpack.py`, `tools/lua_check.py`, `tools/vtidx.py`,
+  `tools/usd_light_defaults.py`, and the `SARemix_DebugPrinter` stub module the pack's vehicle
+  toolkit needs.
+
+### Testing and docs
+
+- **Added:** [docs/FINDINGS.md](docs/FINDINGS.md) (logs, measurements, dead ends) and
+  [docs/notes/linux-modding-notes.md](docs/notes/linux-modding-notes.md) — the 1.0 US downgrade,
+  Proton issues, the Proper Shaders deadlock, 60 FPS, controllers, RTX on Linux generally.

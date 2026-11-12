@@ -99,14 +99,26 @@ For the traffic signals (s01) two more lines decide everything:
 
 ```
 signalhook: patched 0x49DD4C (was 'call 0x6FC580') -> stub at 0x65d55000, cap 256 heads per frame
-trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0
+trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0 reentrant=0
 ```
+
+The `hook:` counters are the whole diagnosis of the s19 hardening: `calls` is
+how often the patched instruction ran, `records` how many heads we kept,
+`dropped` how many the 256-per-frame cap refused, `bad` how many carried a
+pointer that failed the page check, and `reentrant` how many arrived while the
+recorder was already running (it must never be non-zero: it would mean the hook
+fires from two places at once).
 
 - **No `signalhook: patched` line**, and instead
   `trafficlights: source=game requested but the hook was not installed: ...` means
   the plugin is running the old pole-position mode (`source=list`). The reason is
   in that line; it is a different game build or a code page that would not take
-  the patch.
+  the patch. Since s19 the install is refused unless `[trafficlights]
+  source=game` **and** the bytes at 0x49DD4C decode to `call 0x6FC580` **and**
+  0x6FC580 is still the corona-type thunk **and** the caller's `add esp,0x54` is
+  where it must be; the reason names which one, and the extra log lines
+  (`signalhook: 0x49DD4C does not call ...`, `... is not the corona-type thunk`,
+  `... does not hold 'add esp,0x54'`) quote the bytes it actually found.
 - **`0 heads lit`** with `calls=0` means the hook is in but the game never
   reached it - the player is not near a signalised intersection, or it is daytime
   with `night_only=1`. With `calls>0` but `records=0` the hook *is* firing and we

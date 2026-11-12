@@ -16,6 +16,8 @@ This repo contains **only our fixes** (patches, an `.asi` plugin, helper scripts
 It does not include the game, NVIDIA's Remix runtime, or GTASA-Remix's assets — get those from their
 original sources. Our code is MIT; see [THIRD_PARTY.md](THIRD_PARTY.md) and
 [docs/MODS-REPLACED.md](docs/MODS-REPLACED.md) for what is installed and what our plugin replaces.
+What changed over time is in [CHANGELOG.md](CHANGELOG.md), release by release; what the newest build
+means for you as a player is [docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md).
 
 ## Requirements
 

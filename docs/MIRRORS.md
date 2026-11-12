@@ -19,10 +19,43 @@ sublayered into `mod.usda`.
 
 ---
 
-## 1. Collect the hashes — 2 minutes, in game
+## 1. Get the hashes — offline (`tools/remix_texhash.py`, s18)
 
-Remix computes the texture hash itself when the game uploads the texture, so it cannot be read out
-of the `.txd` files; you read it off the running game once and it never changes.
+Remix's texture hash is a plain xxHash over the pixels the game uploads, so it **can** be computed
+from the `.txd` files, no running game needed:
+
+```bash
+python3 tools/remix_texhash.py /media/rhy/data/Gamez/GTASA-RTX/models/generic/vehicle.txd xvehicleenv128
+# xvehicleenv128  128x128 A8R8G8B8 mip0=65536 bytes  xxh3=45DF1EA60BB202B5  xxh64=C69E8B0981F09694
+```
+
+It hashes exactly what Remix hashes — `XXH3_64bits` (xxHash 0.8.0, the copy bundled in dxvk-remix)
+over **mip 0** of the texture, nothing else — and it reads both loose `.txd` files and the `.txd`
+entries inside a `.img` archive. Proof that the algorithm is right: it reproduces **55 of the 167
+hashes in the live `rtx.conf`** (`rtx.particleTextures`, `rtx.decalTextures`, `rtx.uiTextures`, …)
+and **164 of the 207 hash-named replacement textures** that NVIDIA's own pack ships, e.g.
+`vehicledash32` → `texture/Vehicles/CBFFF905D20D2591_albedo.dds`. Derivation, code references and
+the full table: `.strata/notes-s18-remix-texture-hash.md`. Omit the name for a whole dictionary; `--conf <game>/rtx.conf` marks every hash that
+appears in Remix's texture lists and `--only-matches` prints only those (the comfortable way to scan
+all of `models/`); `--hash 0x…` asks "which texture in this file has this hash?"; and a directory or
+`.img` path searches everything under it.
+
+Both mirror hashes are already in `config/mirror-hashes.txt`, so this step is normally just
+background reading:
+
+| texture | in | hash |
+|---|---|---|
+| `xvehicleenv128` — hard 3-band strip (brown / light blue-grey / brown), 13 colours: **the mirror glass** | `models/generic/vehicle.txd` | `0x45DF1EA60BB202B5` |
+| `vehicleenvmap128` — smooth sky-to-ground gradient, 256 colours: the fake env reflection | `models/generic/vehicle.txd` | `0x6BAFC5F6AEE0A6B5` |
+
+The first one is confirmed by the pack itself: `SARemix_OriginalVehiclesPBR.usda` overrides
+`mat_45DF1EA60BB202B5` with translucent glass (`ior_constant 1.6`, `thin_walled 1`).
+
+### When you do have to read a hash in game
+
+Textures the game **generates or writes into** instead of loading as a raster — the sea, the skybox,
+some UI — hash over the generated pixels, so no offline tool can know them (that is what the other
+112 of rtx.conf's 167 hashes are). For those:
 
 1. Start the game with Remix (`launcher/launch-rtx.sh` / the `gtasa-rtx` launcher), get into any car.
    Stand outside and look at the door mirror, or drive in 1st person and look at the wing mirror.
@@ -34,15 +67,12 @@ of the `.txd` files; you read it off the running game once and it never changes.
    (The menu's own hint: "Hover over an object on screen, or an icon in the grid below.
    Left click to assign categories. Middle click to copy a texture hash.")
 4. If the hover is fiddly, go to the texture grid instead (**Step 1: Categorize Textures**): it shows
-   a thumbnail of every texture the game uploaded with its size. Look for
-   **128 x 128** and these two thumbnails:
-   * `xvehicleenv128` — a hard **3-band** strip: dark brown at the top, a light blue-grey band in
-     the middle, dark brown at the bottom. Only 13 distinct colours. **This is the mirror glass.**
-   * `vehicleenvmap128` — a smooth **sky-to-ground** gradient (blue at the top, pale in the middle,
-     brown, then black). The fake environment reflection; add it only if the first one is not enough.
-   Hovering a thumbnail also shows its hash, and middle-click copies it.
+   a thumbnail of every texture the game uploaded with its size, so look for **128 x 128** and the
+   two thumbnails in the table above. Hovering a thumbnail also shows its hash, and middle-click
+   copies it.
 5. Paste the hash (or both) into `config/mirror-hashes.txt` — one `0x… + 16 hex digits` per line,
-   keep the trailing `# comment` that says which texture it is.
+   keep the trailing `# comment` that says which texture it is. If `remix_texhash.py --hash` finds
+   the hash in a `.txd`, the texture is a plain raster and the tool would have given it to you.
 
 Do **not** add these, they are other car parts and would turn into mirrors:
 `vehicleshatter128` (cracked-window overlay), `vehiclegrunge256` (dirt), `vehiclescratch64`,

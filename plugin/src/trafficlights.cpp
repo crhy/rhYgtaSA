@@ -132,10 +132,16 @@ static void loadList() {
     }
 }
 
-// Install the corona hook, once, and say plainly what happened. If it cannot be
+// Install the corona hook, and say plainly what happened. If it cannot be
 // installed the module keeps working from the list file: a signal lit at the wrong
 // place in an approximate colour beats no signal at all, and the log says which
 // one the user is looking at.
+//
+// s19: this is only half of the kill switch. rhySignalHookInstall() itself
+// refuses unless [trafficlights] source=game AND the bytes at 0x49DD4C, at
+// 0x6FC580 and at the caller's `add esp,0x54` all match what the stub assumes,
+// so the hook cannot be installed by accident from any call path. What this
+// function adds is the other half: the fallback to source=list, logged.
 static void tryHook() {
     if (g_hookTried && rhySignalHookInstalled()) {
         return;
@@ -162,6 +168,12 @@ void rhyTrafficInitOnce() {
     if (cfg->traffic_source == 1) {
         tryHook();
     } else {
+        // The kill switch rhY uses to bisect a crash: with source=list nothing
+        // is ever written to the game's code, and the byte sanity check is not
+        // even run (rhySignalPatchCheck returns kRhyPatchSource before it looks
+        // at the exe). This is the one line that decides whether the hook can
+        // exist for this session.
+        g_hookTried = false;
         rhyLog("trafficlights: source=list, no code hook: one light per pole at "
                "the list position plus headz, colour from the local cycle");
     }
@@ -770,12 +782,13 @@ void rhyTrafficFrame() {
                    "(green=%d amber=%d red=%d, %u coronas registered this frame, "
                    "colour_swaps=%u expired=%u) | remix: live=%u create_fail=%u "
                    "draw_fail=%u budget_stop=%u | hook: calls=%u records=%u "
-                   "dropped=%u bad=%u",
+                   "dropped=%u bad=%u reentrant=%u",
                    static_cast<unsigned>(g_heads.size()), hd_drawn, green, amber,
                    red, g_recN, g_headSwaps, g_headExpired, rhyLiveLights(),
                    rhyCreateFailures(), rhyDrawFailures(), g_budgetStop,
                    rhySignalHookCalls(), rhySignalHookRecords(),
-                   rhySignalHookDropped(), rhySignalHookBad());
+                   rhySignalHookDropped(), rhySignalHookBad(),
+                   rhySignalHookReentrant());
         } else {
             int green = 0, amber = 0, red = 0;
             for (std::map<int, int>::iterator it = g_phase.begin();
