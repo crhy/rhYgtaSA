@@ -79,6 +79,27 @@ streetlights: N active, N drawn this frame
 sky: sun elev=... rad=... | moon elev=... rad=... (hour=...)
 ```
 
+For the traffic signals (s01) two more lines decide everything:
+
+```
+signalhook: patched 0x49DD4C (was 'call 0x6FC580') -> stub at 0x65d55000, cap 256 heads per frame
+trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0
+```
+
+- **No `signalhook: patched` line**, and instead
+  `trafficlights: source=game requested but the hook was not installed: ...` means
+  the plugin is running the old pole-position mode (`source=list`). The reason is
+  in that line; it is a different game build or a code page that would not take
+  the patch.
+- **`0 heads lit`** with `calls=0` means the hook is in but the game never
+  reached it - the player is not near a signalised intersection, or it is daytime
+  with `night_only=1`. With `calls>0` but `records=0` the hook *is* firing and we
+  are throwing what it hands us away; that is a bug in us, not a quiet scene.
+- **`dropped`** climbing means the hook is recording more than 256 heads a frame.
+- **`bad`** climbing means the hook was handed a pointer that is not readable
+  memory. It used to be a crash (2026-11-11 13:04:44); now it is a dropped
+  record, so a rising `bad` is a symptom to report, not a reason to stop playing.
+
 ## Step 3 - what to photograph, and what each one proves
 
 Take shots with **F12** in game (fixed 2026-11-11: before that every F12 failed silently, see below); they land in
@@ -104,8 +125,8 @@ without restarting the game.
 | 3 | Any warm (sodium) lamp close up | the spectrum fix | **yellow-orange**, no red halo, no blue. Compare against a 2000 K incandescent in shot 4 |
 | 4 | An interior or tungsten-lit shopfront | thermal vs discharge | tungsten should be visibly **redder/deeper** than the sodium street lamp. If they look the same colour the family mapping is not reaching the lights |
 | 5 | A Burger Shot or Pizza at night | the emissive gain fix | window readable as a bright rectangle with a **visible falloff onto the pavement**. Blown white with no readable interior means `emissiveIntensity` is still high |
-| 6 | A signalised intersection, close, all three aspects visible | the lens fix | red is **red**, not orange; green is distinctly **blue-green**; amber sits between. Radii should be small points, not glowing blobs |
-| 7 | Same intersection from the cross street | the unshaped-light limitation | both faces readable. If one face goes dark, that is the missing heading column (see below) |
+| 6 | A signalised intersection, close, all three aspects visible | the signal-head fix (s01) | **every head is lit where it is and in the colour the game is showing it**: the light sits at the head, not at the top of the pole, and on a mast-arm signal the head hanging out over the road is the one that glows. Each head matches its own corona - red is **red**, not orange; green is distinctly **blue-green**; amber sits between. Small points, not glowing blobs, and no red spill on the tree next to the pole |
+| 7 | Same intersection from the cross street | the unshaped-light limitation | both faces readable, and the face pointing at you shows the same aspect the game's corona shows. If one face goes dark, that is the missing lens direction (see below) - not a wrong position |
 | 8 | Sunset, facing east | the solar model + Beer-Lambert | horizon glow strongly red/orange, zenith still blue. The red comes from path length, it is not tuned |
 | 9 | Any street at ~05:30 with lamps still on | the twilight switching | lamps on before the sun clears the horizon, off shortly after |
 
@@ -125,6 +146,11 @@ few seconds - no restart.
 | Shopfronts blown out | `rtx.conf`: `rtx.emissiveIntensity = 0.5` |
 | Sky too bright at night | `rtx.conf`: `rtx.skyBrightness = 0.5` |
 | Signals too bright | `[trafficlights] radiance=0.8` |
+| A head is lit in a colour the game is not showing, or the lights land on the pole | `[trafficlights] source=list` puts back the pre-s01 behaviour (one light per pole, colour from a local cycle) and the log line says why the hook is off |
+| Game dies a few seconds after entering the level, `rhyremix.log` stops mid-frame, `rtx-remix/logs/crash-upload.log` says `type=CPU` | the signal-head hook is the first thing to suspect (it patches game code). `[trafficlights] source=list` takes it out; the log line then says `source=list, no code hook`. Fixed 2026-11-11: the stub had to supply the return address the deleted `call` would have pushed - see docs/FINDINGS.md |
+| A Wine trace (`logs/steam-12120.log`) full of `c0000005` at `eip=0x6FAAE0` during the level load | **not a crash and not ours**: Open Limit Adjuster's `Coronas = unlimited` moves the corona store to a reserved heap block and commits it page by page from its own vectored handler, so `CCoronas::Init`'s clear loop faults once per page - 478 first-chance exceptions, ~10 ms, handled. `Coronas = 0` in `modloader/OLA/III.VC.SA.LimitAdjuster.ini` makes them go away. See docs/FINDINGS.md |
+| Signals go out when you look away and come back slowly | `[trafficlights] head_ttl_ms=4000` (the game only registers the heads it draws, and a head with no corona for 2 s loses its light) |
+| Head light sits just inside the lens instead of on it | `[trafficlights] head_normal=1 head_forward=0.15` - the 2DFX entry has no direction, so this uses the model's own "at" axis and may point the wrong way; it is a knob to A/B, not a fix |
 
 ## Step 5 - send back
 

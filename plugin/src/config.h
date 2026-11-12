@@ -183,6 +183,16 @@ struct RhyConfig {
                             // away, so far lights just keep the colour they had.
     int traffic_night_only;   // 1 = only light up in the night window
     int traffic_resync_frames;
+    // Where the heads come from. 1 = "game": hook the corona the game registers
+    // for each signal head and light exactly that head, in exactly the colour the
+    // game chose (default). 0 = "list": one light per line of
+    // rhyremix_traffic.txt, at the pole origin plus a headz guess, coloured by a
+    // deterministic cycle - what shipped before s01, kept because it needs no
+    // code patch and is the fallback when the hook cannot be installed.
+    int traffic_source;
+    int traffic_head_ttl_ms;  // a head with no corona for this long loses its light
+    float traffic_head_forward;  // metres to move the light along head_normal
+    int traffic_head_normal;     // 1 = use the entity matrix's "at" axis; 0 = no offset
 };
 
 // Loads once on first call; returns the same pointer every time.

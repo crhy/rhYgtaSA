@@ -17,7 +17,9 @@ add_library(rhyremix SHARED
   src/lamps.cpp
   src/streetlights.cpp
   src/sun.cpp
-  src/trafficlights.cpp)
+  src/trafficlights.cpp
+  src/signalheads.cpp
+  src/signalhook.cpp)
 
 target_include_directories(rhyremix PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/remix")
 

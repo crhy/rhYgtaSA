@@ -31,7 +31,12 @@ enum LightTagNamespace {
     kTagTraffic = 100000,  // + traffic light list index
     kTagProbe = 200000,
     kTagSun = 300000,
-    kTagMoon = 400000
+    kTagMoon = 400000,
+    // s01: one tag per signal HEAD (entity pointer + 2DFX index, folded into a
+    // 32-bit tag). Two different heads can land on the same tag; the only
+    // consequence is that a flush-before-create retires the other head's handle
+    // a few frames early, and that handle was already off the draw list.
+    kTagSignalHead = 500000
 };
 
 // Number of handles still waiting to be destroyed (for the log line).

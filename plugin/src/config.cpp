@@ -155,7 +155,11 @@ static const char* const kIniDefaults =
     "exit_distance=300\r\n"
     "phase_near=150\r\n"
     "night_only=1\r\n"
-    "resync_frames=30\r\n";
+    "resync_frames=30\r\n"
+    "source=game\r\n"
+    "head_ttl_ms=2000\r\n"
+    "head_forward=0.15\r\n"
+    "head_normal=0\r\n";
 
 static std::string iniStringSec(const char* section, const char* key,
                                 const char* def) {
@@ -712,6 +716,27 @@ static void loadConfig() {
     c.traffic_night_only = iniIntSec("trafficlights", "night_only", 1);
     c.traffic_resync_frames =
         iniIntSec("trafficlights", "resync_frames", 30);
+    // "game" is the default: it is the only source that knows where the heads
+    // actually are and what colour the game is showing. "list" stays available
+    // for builds of the game where the hook cannot be installed.
+    std::string src = iniStringSec("trafficlights", "source", "game");
+    c.traffic_source = (src == "list" || src == "0") ? 0 : 1;
+    c.traffic_head_ttl_ms = iniIntSec("trafficlights", "head_ttl_ms", 2000);
+    if (c.traffic_head_ttl_ms < 200) {
+        c.traffic_head_ttl_ms = 200;  // shorter than this and a single dropped
+                                      // frame of coronas blanks the intersection
+    }
+    if (c.traffic_head_ttl_ms > 60000) {
+        c.traffic_head_ttl_ms = 60000;
+    }
+    c.traffic_head_forward = iniFloatSec("trafficlights", "head_forward", 0.15f);
+    c.traffic_head_normal = iniIntSec("trafficlights", "head_normal", 0);
+    if (c.traffic_head_forward < 0.0f) {
+        c.traffic_head_forward = 0.0f;
+    }
+    if (c.traffic_head_forward > 2.0f) {
+        c.traffic_head_forward = 2.0f;  // further than this is not a lens offset
+    }
     if (c.traffic_max_distance < 0) {
         c.traffic_max_distance = 0;  // 0 = no upper bound
     }
@@ -801,13 +826,16 @@ static void loadConfig() {
            c.radius, streetR, c.traffic_radius, signalR, k * k,
            c.fixture_size, c.fixture_scale, c.radius_ref);
     }
-    rhyLog("config: traffic=%d/%d list=%s period=%d radiance=%.2f radius=%.2f "
-           "max=%d dist=%d..%d phase_near=%d night_only=%d resync=%d",
-           c.traffic_enabled, c.traffic_mode, c.trafficPath.c_str(),
+    rhyLog("config: traffic=%d/%d source=%s list=%s period=%d radiance=%.2f radius=%.2f "
+           "max=%d dist=%d..%d phase_near=%d night_only=%d resync=%d "
+           "head_ttl=%dms head_normal=%d head_forward=%.2f",
+           c.traffic_enabled, c.traffic_mode,
+           c.traffic_source ? "game" : "list", c.trafficPath.c_str(),
            c.traffic_period, c.traffic_radiance, c.traffic_radius,
            c.traffic_max_lights, c.traffic_max_distance,
            c.traffic_exit_distance, c.traffic_phase_near, c.traffic_night_only,
-           c.traffic_resync_frames);
+           c.traffic_resync_frames, c.traffic_head_ttl_ms, c.traffic_head_normal,
+           c.traffic_head_forward);
     rhyLog("config: sun=%d radiance=%.2f col=%.2f,%.2f,%.2f ang=%.2f spin=%.1f "
            "tilt=%.1f roll=%.1f fade=%.2f minel=%.2f step=%.2f vol=%.2f hash=%llu "
            "| moon=%d radiance=%.3f col=%.2f,%.2f,%.2f ang=%.2f fade=%.2f "

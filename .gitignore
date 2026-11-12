@@ -9,3 +9,5 @@ screenshots/
 # out of <game>/moonloader/, so a local copy here is convenience only and does not
 # belong in the repo.
 data/SARemix_Light_Manager.dat
+# Staging for archives a user would download by hand (docs/CHARACTERS.md section 7). Never committed, never shipped.
+vendor/

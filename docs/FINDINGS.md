@@ -337,3 +337,179 @@ directional - visor plus refractor throw a narrow beam down the approach - but
 wrong way would put a dark face on every signal seen from the cross street, which
 is worse than an unshaped light. The honest fix is a heading column derived from
 the IPL placement rotation.
+
+## Traffic signal heads: where the game itself puts the light (2026-11-11, s01)
+
+The lamp list gives a pole position and a guessed head height. The game knows
+where the heads are, because it draws a corona on each one every frame. Reading
+that off the game is cheaper and more correct than guessing, so s01 hooks it.
+Evidence for every address below is in `.strata/notes-s01-signal-heads.md`
+(objdump walks of the PE plus two small esp-tracking scripts in `build/tmp/`).
+
+**`CTrafficLights::DisplayActualLight(CEntity*)` = 0x49DAB0** (cdecl, one stack
+argument; five callers in the renderer at 0x536960..0x536b6x, each guarded by a
+model-id comparison). It looks up the model's **2DFX light entries** (count at
+`CModelInfo+0xD`, entries through the thiscall getter at **0x4C4C70**), turns the
+selected entry's position offset into a world position with **0x59C890**
+(`out = m->right*e.x + m->up*e.y + m->at*e.z + m->pos`, i.e. matrix columns at
++0x00/+0x10/+0x20 and translation at +0x30), and registers a corona for the head
+whose colour index matches the intersection's current aspect.
+
+**The corona call is at 0x49DD4C**: `call 0x6FC580`, cleaned with `add $0x54,%esp`
+(21 arguments). 0x6FC580 is a thunk that maps argument 10 (corona type) through a
+table and tail-calls 0x6FC180, which writes the 60-byte corona store at
+0xC3E064: position from argument 7 at store+0x58, and r/g/b from arguments
+3/4/5 at store+0x84/0x85/0x86 (argument 6 = 0xff alpha). Hooking that one call
+site rather than 0x6FC580 gives traffic heads only, and still has `esi` = the
+entity and `ebx` = the head index in registers, which is the stable id.
+
+**The game's own aspect colours** are byte tables indexed by the head's colour
+index: 0x8A6214 red = {0,255,255}, 0x8A6218 green = {255,128,0}, 0xA9AD94 blue =
+{0,0,0} (the first two are in `.data` and can be read straight out of the file;
+the third is BSS). So phase 0 = green, 1 = amber, 2 = red - the same numbering
+`rhySignalLensRgb()` uses - scaled by the global factor `[0xB7C4E4]*[0x858CA8]`.
+The plugin matches the recorded colour against those three rather than indexing
+the tables, so a mod or settings profile that moves the global factor cannot
+turn a green head red.
+
+**The heading gap is now confirmed at the source, not just in our list.** The
+2DFX entry that supplies the head position carries a position offset and nothing
+directional (0x59C890 rotates three floats and adds the translation), so there is
+no lens normal to be had from the game's data either. `head_normal=1` uses the
+entity matrix's "at" axis as an experiment; the default leaves the light exactly
+on the corona position.
+
+## A `jmp` over a `call` does not come with a return address (2026-11-11, s01 crash)
+
+The signal-head hook replaces `call 0x6FC580` at 0x49DD4C with `jmp stub`. That
+one word is a trap that cost a crash: a `call` pushes the return address, a
+`jmp` does not, so inside the stub `esp` points at **argument 0**, not at a
+return address. The first version read the argument block at `esp+40` (36 saved
+registers + 4 for a return address that was never pushed) and jumped to the
+callee without supplying one. The callee then read every argument one dword
+late and its `ret` popped argument 0 - `lea eax,[ebx+esi]`, entity + head index,
+a small integer - as the return address. The game's call chain is one dword off
+from there, and execution wanders: the first version produced a fault at a
+small integer eip inside the render pass. (An earlier draft of this section
+blamed it for a "runaway corona-store clear loop" as well; that was wrong, see
+"The 478 faults at 0x6FAAE0 are Open Limit Adjuster's lazy commit" below.)
+
+The rule for hand-written detours over a call site: `lea` the arguments from
+`esp + <bytes the stub itself pushed>`, and `push <call site + 5>` before the
+tail `jmp`. Then the callee's `ret` lands on the instruction after the patched
+call and the caller's own `add $0x54,%esp` balances the stack again.
+
+Why it survived review: the stub was checked by reading its bytes out of
+`objdump -d build/rhyremix.asi` against the *source's* arithmetic, which was the
+thing in question. `tests/test_signal_hook.py` now asserts the encoding itself
+(`lea eax,[esp+0x24]`, the push of 0x49DD51 before the tail jump) against the
+compiled image, and fails against the crashing build.
+
+**Corrected the same evening, and it is worth keeping the correction in view:**
+the "runaway clear loop" is *not* caused by the detour at all. The 13:03 run
+(fixed stub, deployed 13:03:33) shows the identical 478 writes at 0x6FAAE0,
+`eax` starting at 0x0E153028 and `ecx` at 0x7F6F - and in that run the hook had
+not been entered once: the plugin's own counters read `records=0 dropped=0
+bad=0` at 13:03:58, and the Wine trace has no exception at the stub's address
+until 43243.606, sixteen seconds *after* the storm. Two different stubs,
+byte-for-byte different, same storm with the same register values. It is not
+us, and it is not a runaway either. See "The stack realignment was the crash"
+below for what our crash actually was, and the next section for the storm.
+
+## The 478 faults at 0x6FAAE0 are Open Limit Adjuster's lazy commit (s08)
+
+`0x6FAAE0` is the body of the clear loop at the tail of `CCoronas::Init`
+(0x6FAA70, single caller 0x5BA306 inside `CGame::processLoading`, between the
+"Setup game variables" and "Ped Init" progress messages). The loop is
+`movl $0,(eax); add eax,0x3C; dec ecx; jne` over the 64-entry, 60-byte corona
+store at 0xC3E064, and `eax`/`ecx` are loaded from **immediates** at 0x6FAACE
+(`mov eax,0xC3E064`, operand at 0x6FAACF) and 0x6FAAD3 (`mov ecx,0x40`, operand
+at 0x6FAAD4). So the storm's `eax=0x0E153028`, `ecx=0x7F6F` means those two
+immediates were rewritten in memory - and they were: `modloader/OLA/III.VC.SA.
+LimitAdjuster.asi` (`Coronas = unlimited`) has a patch table whose first entry
+is 0x6FAACF and registers 0x6FAAD4 in code (`push $0x6faad4` at its +0x310d7).
+The store now lives in a 32623-entry heap block (0x7F6F * 0x3C = 1,957,380
+bytes) that the mod **reserves but does not commit** - "it grows when the game
+needs more, and costs nothing until then".
+
+The 478 faults are that reservation being committed one page at a time. All 478
+Wine records share `esp=010bf5cc ebp=010bf660 ebx=ffffffff edx=00000420`; `eax`
+walks 0x0E153028 -> 0x0E33001C (exactly (0x7F6F-0x3C)*0x3C) and `ecx` 0x7F6F ->
+0x3C, and the per-fault `eax` delta is 0xFF0 = 68*0x3C (0x102C = 69*0x3C when
+the alignment needs it) - one fault per page, on the first loop address in each
+page, 478 pages for 478 faults. The handler is the mod's own:
+`AddVectoredExceptionHandler(1, +0x2c470)`, and that function checks for
+`0xC0000005`, looks the faulting address up in a table of ranges it owns and
+calls `VirtualAlloc(page & ~0xfff, 0x1000, MEM_COMMIT, PAGE_READWRITE)`. The
+write then succeeds, the loop finishes normally, `CCoronas::Init` returns to the
+level loader and the game carries on. Cost: ~10 ms per level load and 478
+first-chance exceptions in any Wine trace. Nothing to fix in rhyremix; set
+`Coronas = 0` in the mod's ini if the trace noise gets in the way.
+
+What *was* fatal in both crashes is a different thing and worth remembering:
+modloader unloads Limit Adjuster during teardown (Wine 43243.969) but leaves its
+vectored handler registered, so the next exception - our recorder's fault at
+43244.199 - makes Wine jump to unmapped memory at 0x77F5C470 (the s01 notes
+mislabelled this "the Remix bridge's handler"; the bridge client is at
+0x7A560000) about 650 times, each round burning 0x880 bytes of stack, until
+`err:virtual:virtual_setup_exception stack overflow`. A long chain of faults at
+one address inside a mod's range is a dangling handler, not the crash: check
+`grep -i unload logs/steam-12120.log` before believing it.
+
+## The stack realignment was the crash (2026-11-11 13:04:44, s01 crash #2)
+
+The 12:31 build fixed the return address and still crashed in the same place,
+~30 s after entering the level. The fault was ours again, in the same stub, one
+instruction later:
+
+```
+Unhandled exception: page fault on read access to 0xc48f9a27 in wow64 32-bit code (0x7876500f)
+0x7876500f rhyremix.asi+0x1500f: movl 0x18(%ebx), %ecx     <- rhySignalRecordCorona+0x1f, args[6]
+EIP:7876500f ESP:010bf4fc EBP:010bf51c EAX:78764ff0 EBX:c48f9a0f ECX:bebb9cff EDX:41a3ca0a
+Backtrace: =>0 0x7876500f in rhyremix.asi (+0x1500f)  1 0x78764fd5 in rhyremix.asi (+0x14fd5)
+```
+
+Frame 1 is the stub's `call *%eax`, so the hook *was* reached - with real
+arguments. Decoding the stack dump against the stub gives the whole story:
+
+| address | value | what it is |
+|---|---|---|
+| `0x010BF538` | `0x010BF54C` | pusha's saved-esp slot, so the call site's esp was **0x010BF54C** |
+| `0x010BF528` | `0x00200246` | pushfl |
+| `0x010BF51C` | `0x010BF54C` | arg1 as pushed: the argument block, = entry esp |
+| `0x010BF520` | `0x178DEFB4` | arg2: a real CEntity* |
+| `0x010BF524` | `0x00000001` | arg3: head index 1 |
+| `0x010BF510` | `0xC48F9A0F` | what the recorder read as arg1 (the float -575.2) |
+| `0x010BF514` | `0x41A3CA0A` | what it read as arg2 (the float 20.47) |
+| `0x010BF518` | `0x005540B2` | what it read as arg3 |
+
+The stub pushed the three arguments and *then* did `and $-16,%esp`. The call
+site's esp was 0x010BF54C, so `esp-48 = 0x010BF51C` is not 16-aligned: the
+realignment moved esp down by 12 bytes, below the arguments that had just been
+pushed, and the callee read its parameters from 0x010BF510/14/18 - the game's
+own stack, three floats. `args[6]` then meant a read at 0xC48F9A27, which is not
+mapped. That is the fault address in the log, exactly.
+
+Two rules for hand-written detours, then:
+
+- Realign the stack **before** anything is pushed onto it, and address the
+  caller's argument block off a register the realignment cannot move (`mov
+  ebp,esp; and $-16,esp; lea 36(%ebp),%eax`).
+- Never assume the *game's* esp is aligned. A renderer's call site sits at
+  whatever depth the code above it left the stack; here it was 12 off.
+
+The fix is `pusha; pushfl; mov ebp,esp; and $-16,esp; push 0; lea 36(%ebp),%eax;
+push ebx; push esi; push eax; call recorder; mov esp,ebp; popfl; popa; push
+0x49DD51; jmp 0x6FC580` - the padding also puts a 16-aligned esp at the `call`.
+`tests/test_signal_hook.py` now simulates the stub's esp for every alignment of
+the call site and asserts the three argument pushes land exactly where a cdecl
+callee reads them; it passes against the fixed image and fails against both
+crashing builds. A pure-C++ test cannot see any of this.
+
+The recorder also stopped trusting its arguments: every pointer it follows
+(the argument block, the CVector, the entity matrix, the matrix's "at" axis) is
+checked against the page table (`VirtualQuery`, 8-entry page cache, plus a pure
+`rhyRangePlausible()` that rejects 0xC48F9A0F on its own) before it is read, and
+the hook now counts `calls` separately from `records`, so "the game never reached
+the patched instruction" and "it reached it and we rejected the record" are
+distinguishable in the log.

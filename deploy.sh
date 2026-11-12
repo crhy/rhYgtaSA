@@ -49,6 +49,23 @@ for a in "$@"; do
   esac
 done
 [ -f "$R/rtx.conf" ] && [ -d "$R/scripts" ] || { echo "not a GTASA-RTX install: $R"; exit 1; }
+# Selftest guard (see apply.sh): scripts/installer-selftest.sh runs this against a
+# scratch tree with a marker in it, and this refuses anything else in that mode -
+# deploy.sh otherwise defaults to the real game folder.
+if [ "${RHYREMIX_INSTALLER_SANDBOX:-}" = 1 ] && [ ! -f "$R/.fake-install-marker" ]; then
+  echo "refusing to deploy into $R: sandbox mode needs $R/.fake-install-marker"; exit 1
+fi
+# Large Address Aware check - warn only. deploy.sh runs on every game start (via
+# launch-rtx.sh) and must not rewrite the exe there; apply.sh is what sets the
+# flag. Without it the 32-bit process gets ~2 GB of address space for the game,
+# the Remix bridge client and a 1900 MB streaming cap at once (docs/VEGETATION.md
+# cause 2, the V Vegetation Mix freeze), so it is worth shouting about.
+if [ -f "$R/gta-sa.exe" ]; then
+  python3 "$HERE/tools/laa.py" "$R/gta-sa.exe" --check \
+    || echo "WARN: $R/gta-sa.exe is not Large Address Aware - fix it with: ./apply.sh $R   (or python3 $HERE/tools/laa.py $R/gta-sa.exe --set)"
+else
+  echo "WARN: no $R/gta-sa.exe in $R - cannot check Large Address Aware"
+fi
 ASI="$HERE/build/rhyremix.asi"
 LIST="$HERE/build/rhyremix_lights.txt"
 TLIST="$HERE/build/rhyremix_traffic.txt"
@@ -167,6 +184,18 @@ moon_on() {
   fi
   if [ -f "$d" ]; then mv "$d" "$l"; echo "== $1.dat -> .lua (Lua script active again)"; fi
 }
+# The Lua light manager moves the game's own lamp meshes, which the Remix asset
+# pack already turns into lights; with our API lights on top of that every lamp
+# burns twice. So the default follows the ini instead of leaving it alone.
+# NOTE the order: the decision has to be made before the case that acts on it.
+# It used to sit below, so with the default (auto) neither branch matched and
+# SARemiv_LightMan.lua stayed loaded next to our own lamps - the dry run in
+# scripts/installer-selftest.sh is what caught that.
+if [ "$LUA" = auto ]; then
+  v=$(awk -F= 'BEGIN{v=1} /^\[/{s=($1=="[streetlights]")} s && /^enabled/{v=$2} END{print v+0}' "$INI" 2>/dev/null || echo 1)
+  if [ "${v:-1}" = 1 ]; then LUA=off; else LUA=on; fi
+  echo "== [streetlights] enabled=$v in $INI -> Lua light manager will be $LUA (override: --lua-on / --lua-off)"
+fi
 case "$LUA" in
   off) moon_off SARemiv_LightMan --lua-on; [ -f "$R/moonloader/SARemiv_LightMan.lua" ] || echo "== Lua light manager already disabled" ;;
   on)  moon_on SARemiv_LightMan; [ -f "$R/moonloader/SARemiv_LightMan.lua" ] || echo "== Lua light manager already active" ;;
@@ -174,14 +203,6 @@ esac
 # Two suns at once (the Lua mod's sun object + our Remix distant light) is exactly
 # the "everything is blown out at noon" symptom, so the default follows the ini
 # instead of leaving the Lua mod alone.
-# The Lua light manager moves the game's own lamp meshes, which the Remix asset
-# pack already turns into lights; with our API lights on top of that every lamp
-# burns twice. So the default follows the ini instead of leaving it alone.
-if [ "$LUA" = auto ]; then
-  v=$(awk -F= 'BEGIN{v=1} /^\[/{s=($1=="[streetlights]")} s && /^enabled/{v=$2} END{print v+0}' "$INI" 2>/dev/null || echo 1)
-  if [ "${v:-1}" = 1 ]; then LUA=off; else LUA=on; fi
-  echo "== [streetlights] enabled=$v in $INI -> Lua light manager will be $LUA (override: --lua-on / --lua-off)"
-fi
 if [ "$SUN" = auto ]; then
   v=$(awk -F= 'BEGIN{v=1} /^\[/{s=($1=="[sun]")} s && /^enabled/{v=$2} END{print v+0}' "$INI" 2>/dev/null || echo 1)
   if [ "${v:-1}" = 1 ]; then SUN=off; else SUN=on; fi
