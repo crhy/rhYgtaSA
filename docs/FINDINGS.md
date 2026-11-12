@@ -1399,3 +1399,93 @@ has settled.
   signal's phase while it is off screen, our light is wrong until the player looks
   back — invisible, but it is a lie, and the list-mode clock phase
   (`rhyTrafficPhase`) is the honest alternative if it ever matters.
+
+## The game hung on Quit (2026-11-12, n09 + n09b)
+
+`build/tmp/exit-hang-20261112.txt` is the first event, sampled by hand at 10:40 while it was
+happening. Read as a timeline it says more than it looked like at the time:
+
+```
+10:38:55 … 10:39:14.652   rhyremix.log: "remix: live=383 …" every second; streetlights
+                          "302 active, 302 drawn this frame"; player_gone_frames=693
+10:39:14.652              LAST plugin line. hkPresent is never entered again.
+10:39:14.989 / .997       moonloader: "Unloading…" / "Session terminated."  ← the game's exit path
+10:39:15.011              remix-dxvk.log: err: D3D9SwapChainEx: Failed to recreate swap chain
+10:39:15 → 10:41           gta-sa.exe alive, main thread 7716 state R 66 % CPU, window gone,
+                           NvRemixBridge.exe already exited, nothing further in any log.
+```
+
+* **What it is not.** Not our init thread (it had returned; it is bounded at 120 × 100 ms and joins
+  nothing — there is no `WaitForSingleObject`, no `std::thread` and no `atexit` anywhere in the
+  plugin). Not a MoonLoader script loop: `SARemix_Shot.lua`'s `while true do wait(0) end` yields to
+  the game and MoonLoader terminated every script 300 ms *before* the spin started. Not our `Present`
+  hook looping either: our own once-a-second line stops at 10:39:14.652, and the game went on to run
+  its own shutdown (unloading MoonLoader) after that, so the main thread was in game code, not stuck
+  inside our hook.
+* **What it is.** The exit path after the swap chain could not be recreated: `IDirect3DDevice9::Reset`
+  (vtable 16 — the one device call in that path we do not wrap) failing against a window that Quit
+  already destroyed, retried forever in user space. An ASI that never gets another `Present` cannot
+  end that loop.
+* **What was still ours to fix.** Until the latch added in n09, the plugin kept drawing 302 street
+  lights and 4 signal lights per frame into the bridge client `d3d9.dll` whose server process had
+  exited, kept the `0x49DD4C` code patch live through the game's model teardown, and logged nothing:
+  there was no `DLL_PROCESS_DETACH` branch at all, which is why "no shutdown line at all" was the
+  headline of the report. Detection is now `plugin/src/shutdown.cpp` (Present failures,
+  `TestCooperativeLevel`, `IsWindow()` on the HWND from `GetCreationParameters`, our own failing
+  call counters — each with a persistence window, because alt-tab looks like two of them), the latch
+  is `rhyRemixShutdown()` in `remix.cpp`, and the log says `shutdown: suspect` →
+  `shutdown: bridge gone (…)` → `shutdown: still running N ms …` → `shutdown: DLL_PROCESS_DETACH …`.
+* **The part an in-process tracker can never do.** If the game stops calling `Present`, nothing of
+  ours runs again — so the *outside* half has to end the run: `scripts/test-session.sh`'s watchdog
+  (n09) and, since n09b, `launcher/launch-rtx.sh`'s own cleanup. A `gta-sa.exe` still running 20 s
+  after its bridge process or its window is gone gets logged, evidenced (the same thread/log dump as
+  the hand-made file above, into `build/tmp/exit-hang-<stamp>.txt` or `<game>/logs/exit-hang-<stamp>.txt`)
+  and killed.
+
+### The second hang, 11:48: the bridge never noticed the client had left (n09b)
+
+The same Quit, started straight from `launcher/launch-rtx.sh`, `build/tmp/exit-hang-20261112-b.txt`:
+
+```
+11:51:07 … 11:51:10.018   rhyremix.log: "remix: live=401 …" every second, 320 street lights drawn
+11:51:10.521              bridge64.log: "Client window became inactive, disabling timeouts for
+                          bridge server..."      ← the last line the bridge ever wrote
+11:51 → 12:07 (16 min)    gta-sa.exe 18 % CPU AND NvRemixBridge.exe 406 % CPU: two geometry-proces
+                          threads and two main threads at 100 % each, dxvk-cs 11 %, 3.6 GB of VRAM
+                          held; the launcher still sitting in `waitforexitandrun`, so nothing cleaned up
+```
+
+* **Why the bridge did not exit on its own.** `NvRemixBridge.exe` registers an exit callback on the
+  client process (`RegisterExitCallback()`, and its own log says "The client process has unexpectedly
+  exited, shutting down server as well!") — that only fires when the client *process* exits, and the
+  client process is the spinning game. Its other liveness mechanism is the IPC timeout, and the
+  window going inactive switches that off: `bridge.defaults.conf` documents `disableTimeouts`
+  (default True) as "used internally for when the game window becomes inactive because the user
+  switches to another process", and `infiniteRetries` the same way. Both are flipped **at runtime**,
+  and the file says of both: "this setting may be changed dynamically at runtime based on application
+  state, therefore changing the default in the settings does not have much of an effect overall".
+  So there is a `bridge.conf` option that *asks* for timeouts to stay on
+  (`disableTimeouts = False`, `infiniteRetries = False`; `launcher/launch-rtx.sh`
+  `RHYS_BRIDGE_TIMEOUTS=1` writes them and backs the file up), but the runtime's own documentation
+  says it will override them when the window goes inactive — which is exactly the moment we need
+  them. **There is no bridge.conf setting that reliably keeps the timeout on for a destroyed window.**
+  `server.shutdownTimeout`/`server.shutdownRetries` only bound the bridge's *graceful* shutdown, and
+  `commandTimeout`/`commandRetries` (1000 ms × 300 = 5 min) are what `disableTimeouts` overrides.
+* **So the launcher ends the tree.** `launcher/launch-rtx.sh` waits for `gta-sa.exe`, which is the
+  process that never exits, so its own cleanup could never run. It now has
+  `end_wine_tree` (SIGTERM/SIGKILL `NvRemixBridge.exe` by pid, then Proton's
+  `files/bin/wineserver -k` with `WINEPREFIX=<compatdata>/pfx`, which is what takes `gta-sa.exe` with
+  it, then a sweep by name in case the wineserver was not found) called **after** the wait returns,
+  plus `watch_run_end` running **during** it: the game's window destroyed (armed only after the
+  window was seen, and `wmctrl` lists minimised windows so alt-tab is not "gone"), or
+  `gta-sa.exe` gone while `NvRemixBridge.exe` lives, for `RHYS_EXIT_GRACE` s (default 20) → log,
+  evidence file, end the tree. `scripts/launch-cleanup-selftest.sh` drives those functions against
+  stub processes (33 checks: the cleanup, the nothing-to-exit case, the window-gone hang, a live
+  window that must never be touched, no-probe-must-not-guess, and the bridge-outliving-the-game case).
+* **Still open, and how to settle it.** Whether the CPU was burning inside the bridge client's
+  `Present`, inside the game's reset loop, or inside the bridge server's geometry threads (the 11:48
+  sample says the bridge was the busiest by far, and it had no client to serve). Two switches answer
+  it: `[shutdown] stop_present_after_ms=1500` stops forwarding `Present` once the bridge has been
+  gone that long — if the game exits with that set, the spin was in the bridge client; and
+  `RHYS_BRIDGE_TIMEOUTS=1`, which tests whether the config default survives the runtime's own flip.
+  Either way the launcher now ends the run in 20 s instead of rhY waiting sixteen minutes.

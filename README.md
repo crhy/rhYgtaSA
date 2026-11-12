@@ -135,7 +135,9 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   `RHYS_ASI_REPO` (which checkout to build from), `GTASA_RTX_NO_DEPLOY=1` (run what is already
   installed), `RHYS_DRY_RUN=1` (deploy and report, do not start the game), `RHYS_WATER=calm|realistic|pack`,
   `RHYS_RTX_KNOBS=1` (add the measured `rtx.conf` water line, backing it up first),
-  `RHY_SKIP_VRAM_CHECK=1`, `RHYS_SHOT_WATCH=0`.
+  `RHY_SKIP_VRAM_CHECK=1`, `RHYS_SHOT_WATCH=0`, `RHYS_EXIT_GRACE=N` (seconds a game may outlive its
+  window before the launcher ends the Wine prefix; `0` = watch off), `RHYS_BRIDGE_TIMEOUTS=1` (ask
+  `.trex/bridge.conf` to keep the bridge's client timeouts on; see `docs/FINDINGS.md`).
 - To run the repo copy of the launcher against another install:
   ```
   GTASA_RTX_DIR="/path/to/your/GTASA-RTX" bash launcher/launch-rtx.sh

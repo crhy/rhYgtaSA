@@ -36,6 +36,26 @@ the thing that has to leave the card):
 bash scripts/test-session.sh --tour     # Strata off -> wait for the card -> launcher -> clean up -> Strata back
 ```
 
+Since n09 the same command also watches for the **exit hang**: if `gta-sa.exe` is still running 20 s
+after its `NvRemixBridge.exe` or its window has gone away (the 2026-11-12 10:39 Quit, see
+[FINDINGS.md](FINDINGS.md)), it is logged, dumped to `build/tmp/exit-hang-<stamp>.txt` (threads with
+STAT/%CPU/WCHAN plus the tails of `scripts/rhyremix.log`, `moonloader/moonloader.log` and
+`rtx-remix/logs/remix-dxvk.log`), killed, and the run continues so Strata comes back. Tune it with
+`RHYS_HANG_GRACE` (0 turns the watchdog off); `scripts/rhyremix.log` should by then contain
+`shutdown: bridge gone (…)` lines of its own.
+
+Since n09b the **launcher itself** does the same thing, so a run started by clicking the desktop
+entry (or by `launcher/launch-rtx.sh` directly, which is how the 11:48 hang happened) also ends:
+after `gta-sa.exe` returns it ends `NvRemixBridge.exe` and runs Proton's `wineserver -k` for the
+prefix, and while the game runs it watches for the window being destroyed (or the bridge outliving
+`gta-sa.exe`) for `RHYS_EXIT_GRACE` s (default 20) and then ends the whole wine tree, writing
+`<game>/logs/exit-hang-<stamp>.txt` first. If a run ever hangs again, send that file **and**
+`<game>/rtx-remix/logs/bridge64.log`: the line `Client window became inactive, disabling timeouts
+for bridge server...` is what says the bridge had stopped noticing the client had left.
+`RHYS_BRIDGE_TIMEOUTS=1` is the A/B that asks `.trex/bridge.conf` to keep those timeouts on
+(`docs/FINDINGS.md` says why that may not stick); `RHYS_EXIT_GRACE=0` turns the launcher's watchdog
+off without disabling the after-exit cleanup.
+
 `--tour` writes `<game>/screenshots/tour.req` first, so `SARemix_Tour.lua` runs the fixed
 stop list (names and order in `screenshots/tour-manifest.txt`, one run per flag file) instead
 of you walking to every shot with F12. The list ends with the three s15 subjects: the

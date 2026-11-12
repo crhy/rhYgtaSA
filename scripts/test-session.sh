@@ -18,7 +18,13 @@
 #   2. wait until nvidia-smi really reports < 1 GiB used
 #   3. --tour: create <game>/screenshots/tour.req so SARemix_Tour.lua runs once
 #   4. run launcher/launch-rtx.sh in the FOREGROUND (deploy first, Ctrl-C works, you see
-#      the log); its exit code is this script's exit code
+#      the log); its exit code is this script's exit code. While it runs, a watchdog watches
+#      for the n09 exit hang: a gta-sa.exe that is still running after its bridge process and/or
+#      its window has gone away. That is what happened on 2026-11-12 10:39 - rhY quit from the
+#      menu, NvRemixBridge.exe exited and the window disappeared, and gta-sa.exe then spun in
+#      user space for two minutes with nothing in any log about it. The watchdog logs it, writes
+#      the evidence file (threads + the tails of rhyremix.log / moonloader.log / remix-dxvk.log,
+#      the same shape as build/tmp/exit-hang-20261112.txt), kills the game and lets the run end.
 #   5. after the game exits: kill leftovers - gta-sa.exe, NvRemixBridge.exe and the wineserver
 #      of THIS prefix - so a crashed run cannot hold the card or the save file
 #   6. restart Strata with the starter, for the same --project DIR
@@ -42,6 +48,12 @@
 #   RHYS_VRAM_LIMIT_MIB   free the card below this many MiB used (default 1024)
 #   RHYS_VRAM_WAIT        seconds to wait for that            (default 120)
 #   RHYS_STOP_WAIT        seconds a SIGTERM gets before SIGKILL (default 25)
+#   RHYS_HANG_GRACE       seconds a game may outlive its window/bridge before it is called hung
+#                         (default 20; 0 = watchdog off)
+#   RHYS_HANG_POLL        watchdog poll interval in seconds (default 2)
+#   RHYS_WINDOW_PROBE     command that exits 0 while the game's window exists (default: wmctrl -l
+#                         with shot.sh's title filter, skipped when there is no DISPLAY/wmctrl)
+#   RHYS_HANG_EVIDENCE    folder for the exit-hang evidence file (default build/tmp)
 #   RHYS_TEST_SESSION_SANDBOX=<dir>  guard: refuse to run unless starter/launcher/smi/game
 #                                    live under <dir>, and only signal processes whose
 #                                    cmdline contains <dir>. A stub test can then never
@@ -90,6 +102,13 @@ WATCHDOG_MATCH="${RHYS_STRATA_WATCHDOG_MATCH:-memory-watchdog}"
 VRAM_LIMIT_MIB="${RHYS_VRAM_LIMIT_MIB:-1024}"
 VRAM_WAIT="${RHYS_VRAM_WAIT:-120}"
 STOP_WAIT="${RHYS_STOP_WAIT:-25}"
+# n09: the exit-hang watchdog. A game that is still running this long after its bridge process
+# and/or its window is gone is not playing any more, it is spinning; on 2026-11-12 that cost two
+# minutes of waiting and the evidence had to be collected by hand.
+HANG_GRACE="${RHYS_HANG_GRACE:-20}"
+HANG_POLL="${RHYS_HANG_POLL:-2}"
+WINDOW_PROBE="${RHYS_WINDOW_PROBE:-}"
+EVIDENCE_DIR="${RHYS_HANG_EVIDENCE:-$REPO/build/tmp}"
 SANDBOX="${RHYS_TEST_SESSION_SANDBOX:-}"
 
 log() { printf '[test-session] %s\n' "$*"; }
@@ -232,11 +251,16 @@ wait_for_vram() {
 # command line names THIS prefix: other prefixes belong to other games.
 GAME_PROCS=(gta-sa.exe NvRemixBridge.exe)
 pids_named() {
-  local want="$1" d pid comm
+  local want="$1" d pid comm joined
   for d in /proc/[0-9]*; do
     pid="${d#/proc/}"
     is_protected "$pid" && continue
     read_argv "$pid" || continue
+    # Same sandbox rule as pids_matching: a stub test can never signal a real game.
+    joined="${ARR[*]}"
+    if [ -n "$SANDBOX" ]; then
+      case "$joined" in *"$SANDBOX"*) : ;; *) continue ;; esac
+    fi
     case "${ARR[0]##*/}" in
       "$want") printf '%s\n' "$pid"; continue ;;
     esac
@@ -276,6 +300,111 @@ kill_leftovers() {
   done
   pids="$(pids_prefix_wineserver)"
   stop_pids "wineserver of $PREFIX" ${pids:-}
+}
+
+# ------------------------------------------------------------- the exit hang --
+# n09 (2026-11-12 10:39, .strata/notes-n09-exit-hang.md). The plugin cannot fix the spin itself -
+# the game stopped calling Present 340 ms before its own exit path began, so nothing inside the
+# process runs again - but everything OUTSIDE it can: notice the game outliving its bridge/window,
+# write down what the process was doing at that moment, kill it, and let the run finish so Strata
+# comes back. Without this, kill_leftovers below never runs, because the launcher never returns.
+#
+# n09b: launcher/launch-rtx.sh now watches the same thing itself (and ends the whole wine tree with
+# Proton's `wineserver -k`), because the second hang on 2026-11-12 - 11:48, both gta-sa.exe AND
+# NvRemixBridge.exe spinning for 16 minutes - was started straight from the launcher, with no
+# test-session.sh in front of it. The two watchdogs are independent on purpose: whichever of the two
+# entry points is in play, something ends the run, and the one here also covers a launcher that is
+# stuck somewhere other than its wait.
+#
+# "Over" means the bridge process is gone OR the game's window is gone. The watchdog is armed only
+# after it has seen the game UP (the bridge alive, or the window present), so the 2026-11-11 case
+# where the bridge never started at all (the card was full) is not mistaken for a hang.
+
+bridge_running() { [ -n "$(pids_named NvRemixBridge.exe)" ]; }
+
+# window_state -> 0 present, 1 gone, 2 cannot tell. The default probe reuses shot.sh's title
+# filter; with no DISPLAY or no wmctrl it answers "cannot tell", which never fires the watchdog on
+# its own (the bridge signal still does).
+window_state() {
+  if [ -n "$WINDOW_PROBE" ]; then
+    if bash -c "$WINDOW_PROBE" >/dev/null 2>&1; then return 0; fi
+    return 1
+  fi
+  [ -n "${DISPLAY:-}" ] || return 2
+  command -v wmctrl >/dev/null 2>&1 || return 2
+  wmctrl -l 2>/dev/null | tr -d '\r' | grep -qiE 'gta|grand theft auto|gta_sa' && return 0
+  return 1
+}
+
+# save_exit_hang <pid-list> <waited-seconds> <bridge-state> <window-state>
+save_exit_hang() {
+  local gpids="$1" waited="$2" bstate="$3" wstate="$4" f p t
+  mkdir -p "$EVIDENCE_DIR" 2>/dev/null
+  f="$EVIDENCE_DIR/exit-hang-$(date +%Y%m%d-%H%M%S).txt"
+  {
+    date
+    echo "gta-sa.exe still running ${waited}s after its window/bridge went away"
+    echo "bridge_running=${bstate} window_state=${wstate} (0 present, 1 gone, 2 unknown)"
+    echo
+    echo "== threads (TID STAT %CPU WCHAN COMMAND) =="
+    printf '  TID STAT %%CPU WCHAN                          COMMAND\n'
+    for p in $gpids; do
+      ps -T -p "$p" -o tid=,stat=,%cpu=,wchan:34=,comm= 2>/dev/null | sed 's/^/ /'
+    done
+    echo
+    echo "== per-task state (path comm state utime stime) =="
+    for p in $gpids; do
+      for t in /proc/$p/task/*; do
+        [ -d "$t" ] || continue
+        printf '%s %s %s %s %s\n' "$t" "$(cat "$t/comm" 2>/dev/null)" \
+          "$(awk '{print $3}' "$t/stat" 2>/dev/null)" \
+          "$(awk '{print $14}' "$t/stat" 2>/dev/null)" \
+          "$(awk '{print $15}' "$t/stat" 2>/dev/null)"
+      done
+    done
+    for lg in "$GAME/scripts/rhyremix.log" "$GAME/moonloader/moonloader.log" \
+              "$GAME/rtx-remix/logs/remix-dxvk.log"; do
+      echo
+      echo "== last 25 lines of ${lg#$REPO/} =="
+      if [ -f "$lg" ]; then tail -n 25 "$lg"; else echo "(not present)"; fi
+    done
+  } > "$f" 2>/dev/null
+  log "game: evidence written to $f"
+}
+
+# watch_exit_hang: runs as a background subshell around the launcher.
+watch_exit_hang() {
+  local gpids seen_up=0 over_since=0 bridge win over waited
+  while :; do
+    gpids="$(pids_named gta-sa.exe)"
+    if [ -z "$gpids" ]; then
+      # The game is gone: that is an exit, not a hang, whatever the bridge and window do.
+      over_since=0
+      sleep "$HANG_POLL"
+      continue
+    fi
+    bridge=0; bridge_running && bridge=1
+    window_state; win=$?
+    if [ "$bridge" = 1 ] || [ "$win" = 0 ]; then
+      seen_up=1
+    fi
+    over=0
+    [ "$bridge" = 0 ] && over=1
+    [ "$win" = 1 ] && over=1
+    if [ "$over" = 1 ] && [ "$seen_up" = 1 ]; then
+      [ "$over_since" = 0 ] && over_since=$(date +%s)
+      waited=$(( $(date +%s) - over_since ))
+      if [ "$waited" -ge "$HANG_GRACE" ]; then
+        log "game: STILL RUNNING ${waited}s after its window/bridge went away (bridge=${bridge} window_state=${win}) - the n09 exit hang"
+        save_exit_hang "$gpids" "$waited" "$bridge" "$win"
+        stop_pids "hung game gta-sa.exe" $gpids
+        return 0
+      fi
+    else
+      over_since=0
+    fi
+    sleep "$HANG_POLL"
+  done
 }
 
 # ----------------------------------------------------------------- strata ---
@@ -322,8 +451,20 @@ if [ "$TOUR" = 1 ]; then
 fi
 
 log "game: running the launcher in the foreground (Ctrl-C stops the game, then Strata comes back)"
+# n09: the exit-hang watchdog runs alongside the launcher. It is stopped the moment the launcher
+# returns, so it can never signal a leftover after the run - that part stays kill_leftovers' job.
+WATCHDOG=""
+if [ "$HANG_GRACE" != 0 ]; then
+  log "watch: watching for the n09 exit hang (a gta-sa.exe still running ${HANG_GRACE}s after its window/bridge is gone gets logged, evidenced and killed); evidence -> $EVIDENCE_DIR"
+  watch_exit_hang &
+  WATCHDOG=$!
+fi
 bash "$LAUNCHER"
 garc=$?
+if [ -n "$WATCHDOG" ]; then
+  kill "$WATCHDOG" 2>/dev/null
+  wait "$WATCHDOG" 2>/dev/null
+fi
 log "game: the launcher exited with $garc"
 
 kill_leftovers

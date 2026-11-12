@@ -175,6 +175,16 @@ If something in the update looks wrong, everything is reversible
   game, the Remix bridge client and the streaming cap at once); the launcher warns if it is missing.
 - **A desktop icon**: `scripts/install-desktop-entry.sh "<game>"` — it runs the same launcher, so a
   click still builds and installs the current code and still tells you when it failed.
+- **Quitting the game now quits.** Twice on 2026-11-12, choosing Quit left the game (and once also
+  the Remix bridge, at 400 % CPU and 3.6 GB of video memory) spinning for minutes, with the launcher
+  still waiting and the card never coming back. The launcher now ends the whole game setup itself:
+  if the game's window has been gone for 20 s, or the bridge is still running after the game stopped,
+  it writes `<game>/logs/exit-hang-<stamp>.txt` (what every thread was doing, plus the last lines of
+  the four logs) and shuts the bridge and the Wine prefix down. `RHYS_EXIT_GRACE=0` turns that watch
+  off. The plugin also logs what it saw — `shutdown: bridge gone (…)` in
+  `<game>/scripts/rhyremix.log` — and stops sending light updates into a renderer that has gone.
+  If a run ever hangs again, that evidence file plus `<game>/rtx-remix/logs/bridge64.log` is what we
+  need.
 - **F12 takes the screenshot** (never `Ctrl+PrintScreen`, which takes the renderer down). Fixed in
   this cycle: the hotkey was looking in the wrong folder and reading the key code in the wrong
   namespace, so every F12 silently did nothing.

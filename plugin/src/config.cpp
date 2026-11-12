@@ -191,7 +191,15 @@ static const char* const kIniDefaults =
     "handle_cadence_min_ms=150\r\n"
     "handle_step_deg=0.5\r\n"
     "handle_rel_lum=0.05\r\n"
-    "phase_fade_ms=250\r\n";
+    "phase_fade_ms=250\r\n"
+    "\r\n"
+    "[shutdown]\r\n"
+    "present_ms=1500\r\n"
+    "device_ms=3000\r\n"
+    "window_ms=750\r\n"
+    "calls_ms=4000\r\n"
+    "log_ms=5000\r\n"
+    "stop_present_after_ms=0\r\n";
 
 static std::string iniStringSec(const char* section, const char* key,
                                 const char* def) {
@@ -1019,6 +1027,39 @@ static void loadConfig() {
         c.handle_rel_lum = 1.0f;
     }
 
+    // --- n09: the [shutdown] section. These are persistence windows, not preferences: a signal has
+    // to hold this long before the plugin stops calling the Remix bridge (plugin/src/shutdown.h).
+    // Too small and an alt-tab takes the world's lighting out for the session; too big and the
+    // 2026-11-12 exit - 302 lights drawn per frame into a bridge whose server had already exited -
+    // comes back. 0 means "one frame is enough", which is what the tests use.
+    c.shutdown_present_ms = iniIntSec("shutdown", "present_ms", 1500);
+    c.shutdown_device_ms = iniIntSec("shutdown", "device_ms", 3000);
+    c.shutdown_window_ms = iniIntSec("shutdown", "window_ms", 750);
+    c.shutdown_calls_ms = iniIntSec("shutdown", "calls_ms", 4000);
+    c.shutdown_log_ms = iniIntSec("shutdown", "log_ms", 5000);
+    c.stop_present_after_ms = iniIntSec("shutdown", "stop_present_after_ms", 0);
+    if (c.shutdown_present_ms < 0) {
+        c.shutdown_present_ms = 0;
+    }
+    if (c.shutdown_device_ms < 0) {
+        c.shutdown_device_ms = 0;
+    }
+    if (c.shutdown_window_ms < 0) {
+        c.shutdown_window_ms = 0;
+    }
+    if (c.shutdown_calls_ms < 0) {
+        c.shutdown_calls_ms = 0;
+    }
+    if (c.shutdown_log_ms < 500) {
+        c.shutdown_log_ms = 500;  // a shutdown line every half second is a new log spam bug
+    }
+    if (c.shutdown_log_ms > 60000) {
+        c.shutdown_log_ms = 60000;
+    }
+    if (c.stop_present_after_ms < 0) {
+        c.stop_present_after_ms = 0;
+    }
+
     std::string list = iniString("list", "rhyremix_lights.txt");
     if (!list.empty() && (list.find(':') != std::string::npos ||
                           list[0] == '\\' || list[0] == '/')) {
@@ -1150,6 +1191,14 @@ static void loadConfig() {
            c.sun_rel_per_sec, c.sun_deg_per_sec, c.phase_fade_ms,
            c.handle_cadence_ms, c.handle_cadence_min_ms, c.handle_step_deg,
            100.0f * c.handle_rel_lum);
+    // n09: the shutdown windows, on one line, because "did the plugin notice the exit at all?" is
+    // the question the 2026-11-12 log could not answer.
+    rhyLog("config: shutdown present<=%dms device<=%dms window<=%dms calls<=%dms log=%dms "
+           "stop_present_after=%dms (%s)",
+           c.shutdown_present_ms, c.shutdown_device_ms, c.shutdown_window_ms,
+           c.shutdown_calls_ms, c.shutdown_log_ms, c.stop_present_after_ms,
+           c.stop_present_after_ms ? "Present is dropped once the bridge has been gone that long"
+                                   : "Present is always forwarded to the bridge client");
 }
 
 // Timestamp of the ini the loaded values came from.  A FILETIME is two 32-bit

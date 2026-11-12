@@ -8,6 +8,7 @@ add_library(rhyremix SHARED
   src/main.cpp
   src/log.cpp
   src/config.cpp
+  src/shutdown.cpp
   src/remix.cpp
   src/delayed.cpp
   src/game.cpp

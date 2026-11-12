@@ -322,6 +322,95 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   `kIniDefaults` agrees with both); `scripts/rtxprofile-selftest.sh` 37 → 73 checks (the nopops
   round-trip byte-for-byte, the nine-key diff pinned, the look keys and texture lists hashed).
 
+### Shutdown (n09) — the game hung for two minutes after Quit
+
+- **Fixed (n09): the plugin now notices the game is ending, and stops touching a dead Remix bridge.**
+  rhY, 2026-11-12 10:39: quit from the menu, `NvRemixBridge.exe` exited, the window disappeared, and
+  `gta-sa.exe` then sat there for ~2 min with its main thread in state **R** at 66 % CPU until it was
+  killed — with `rhyremix.log` still printing `remix: live=383 …` every second and **no shutdown line
+  at all** (evidence: `build/tmp/exit-hang-20261112.txt`). What the plugin was doing in that last
+  second: drawing **302 street lights + 4 signal lights per frame** into a bridge client whose server
+  process had already exited, with the `0x49DD4C` signal-head code patch still live. What the
+  timeline rules out: our init thread (long since returned, and bounded at 120 s), the MoonLoader
+  scripts (terminated 300 ms *before* the spin), and our own `Present` hook re-entering — our log
+  stops at 10:39:14.652, the game's own exit path (`Unloading…`, `Session terminated.`) starts at
+  10:39:14.989 and the last renderer line of the run is DXVK's `Failed to recreate swap chain`, so
+  the spin is the game / bridge client retrying a device reset, which no ASI sitting behind
+  `Present` can end. What is ours, and now fixed: the calls into the dead bridge, the missing
+  shutdown log, and the two minutes of nobody noticing.
+- **Added:** `plugin/src/shutdown.{h,cpp}` — a pure-C++ state machine for "is the bridge still worth
+  calling?". Four signals, each with its own **persistence window** so ordinary things cannot turn
+  the world's lighting off: `Present` failing (1500 ms), `TestCooperativeLevel` saying lost
+  (3000 ms — alt-tab says that too), the device's own window no longer being a window (750 ms, read
+  once from `IDirect3DDevice9::GetCreationParameters`, vtable 9, because the game hands `Present` no
+  HWND), and our own climbing `create_fail + draw_fail` counters (4000 ms, and **never on their
+  own** — that pattern is one light the server refuses, which `streetlights.cpp` already handles).
+  A signal must hold continuously (a gap resets its own timer), death **latches**, and
+  `DLL_PROCESS_DETACH` is instant. `tests/shutdown_check.cpp`, 44 checks, including the honest limit:
+  a tracker fed from `Present` cannot fire when the game stops presenting, which is exactly what
+  happened — hence the shell watchdog below.
+- **Added:** one latch in `remix.cpp` (`rhyRemixShutdown()` → `rhyRemixApi()` returns null) covers
+  every `CreateLight` / `DrawLightInstance` / `DestroyLight` / `SetConfigVariable` in the plugin,
+  because every one of them already funnels through that pointer and every module already starts
+  with `if (!api …) return;`. Skipped calls are counted (`rhyRemixSkippedCalls()`).
+- **Added:** the `shutdown:` log lines that were missing — `shutdown: suspect (…)`,
+  `shutdown: bridge gone (reasons=… signals_now=… first_signal=+Nms held=…ms uptime=…ms)`, one
+  `shutdown: still running N ms after the bridge went away (…)` every `shutdown_log_ms`, and
+  `shutdown: DLL_PROCESS_DETACH after N ms (…)` written without the log mutex (`rhyLogDetach()`,
+  because at detach another thread can have died holding it). At the latch the signal-head detour at
+  `0x49DD4C` is **unpatched** (`rhySignalHookUninstall()` restores the five original bytes it saved),
+  so the game's teardown runs its own code, and the init thread's device poll stops early.
+- **Added:** `rhyremix.ini [shutdown]` — `present_ms / device_ms / window_ms / calls_ms / log_ms /
+  stop_present_after_ms`, documented in `config/rhyremix-production.ini` and covered by
+  `tests/test_ini_keys.py` like `[clock]` and `[fade]`. `stop_present_after_ms` defaults to **0 =
+  always forward `Present`**; setting it is the A/B that says whether the spin is inside the bridge
+  client's `Present` (fixable from here) or inside the game's reset loop (not).
+- **Added:** `scripts/test-session.sh` now runs an **exit-hang watchdog** next to the launcher: once
+  it has seen the game up (bridge process alive or window present), a `gta-sa.exe` still running
+  `RHYS_HANG_GRACE` s (default 20) after its bridge process **or** its window went away is logged,
+  evidenced (`build/tmp/exit-hang-<stamp>.txt`: `ps -T` threads with STAT/%CPU/WCHAN, per-task state,
+  and the tails of `scripts/rhyremix.log`, `moonloader/moonloader.log`, `rtx-remix/logs/remix-dxvk.log`
+  — the same shape as the hand-made 2026-11-12 file), killed, and the run continues so Strata comes
+  back. `scripts/test-session-selftest.sh` 34 → 46 checks: a game that outlives its bridge, a game
+  that exits normally although its bridge died first (must NOT be called a hang), and a window that
+  vanishes while the bridge lives.
+
+### Exit hang, part 2 (n09b) — the launcher now ends the wine tree
+
+- **Fixed (n09b): `launcher/launch-rtx.sh` ends `NvRemixBridge.exe` and the prefix's `wineserver`,
+  during the run and after it.** The second hang, 11:48 the same day (`build/tmp/exit-hang-20261112-b.txt`,
+  started straight from the launcher): after Quit, **both** `gta-sa.exe` (18 % CPU) and
+  `NvRemixBridge.exe` (406 % CPU — two `geometry-proces` threads and two main threads at 100 % each,
+  `dxvk-cs` 11 %) kept running for **sixteen minutes** holding 3.6 GB of VRAM, and the launcher was
+  still inside `waitforexitandrun`, so its cleanup never ran. The bridge's own last line was
+  `Client window became inactive, disabling timeouts for bridge server...`: its exit callback only
+  fires when the client *process* exits (that process is the spinning game) and its IPC timeout is
+  switched off by the window going inactive. `end_wine_tree` SIGTERMs/SIGKILLs
+  `NvRemixBridge.exe` by pid and then runs Proton's `files/bin/wineserver -k` with
+  `WINEPREFIX=<compatdata>/pfx` — which is what takes `gta-sa.exe` with it — and a sweep by
+  pid/name covers a wineserver that `-k` did not take, or a Proton install with no wineserver where
+  it should be. The `-k` is only issued when a wineserver for this prefix is actually running:
+  invoking `wineserver` with no server up would start one just to kill it. It runs after the wait returns (so a clean exit cleans up too) and
+  `watch_run_end` runs during it: window destroyed (armed only after the window was seen; `wmctrl`
+  lists minimised windows, so alt-tab is not "gone") or `gta-sa.exe` gone while the bridge lives,
+  for `RHYS_EXIT_GRACE` s (default 20, `0` = watchdog off, the after-exit cleanup always runs) →
+  log, `<game>/logs/exit-hang-<stamp>.txt`, end the tree. New:
+  `scripts/launch-cleanup-selftest.sh`, 33 checks against stub processes, run by `check-all.sh`.
+- **Finding (n09b): there is no `bridge.conf` option that reliably keeps the timeout on.**
+  `.trex/bridge.defaults.conf` documents `disableTimeouts` (default True) and `infiniteRetries` as
+  the two the bridge flips itself "when the game window becomes inactive", and says of both that they
+  "may be changed dynamically at runtime based on application state, therefore changing the default
+  in the settings does not have much of an effect overall" — i.e. exactly when we need them on, the
+  runtime turns them off again. `RHYS_BRIDGE_TIMEOUTS=1` writes `disableTimeouts = False` +
+  `infiniteRetries = False` into `.trex/bridge.conf` (backup: `bridge.conf.bak-before-rhy-timeouts`)
+  as the A/B, and the launcher now reports what that file says on every start.
+- **Fixed (gate): `scripts/test-session-selftest.sh`'s real-Strata check is no longer a race.** That
+  check — not the shutdown code — is what parked n09: 45 of 46 checks passed and the last one failed
+  because a *real* Strata pid died mid-run (rhY took Strata down for the 11:48 game run two minutes
+  later). It now fails only if no real `serve/server.py` / `engine/strata` is running afterwards at
+  all, which is the thing the sandbox guard is there to protect and which the stub starter in the
+  test cannot bring back.
+
 ### Tools
 
 - **Added:** `tools/remix_texhash.py` — decodes a `.txd` / `gta3.img` raster the way D3D9 receives

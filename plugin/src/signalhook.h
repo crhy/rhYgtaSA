@@ -25,7 +25,8 @@ enum RhySignalHookReason {
     kSignalHookCallee = 4,   // 0x6FC580 is not the corona thunk the stub assumes
     kSignalHookSource = 5,   // [trafficlights] source is not "game": no patch
     kSignalHookCleanup = 6,  // the caller's `add esp,0x54` is not where it must be
-    kSignalHookUnreadable = 7  // the patch site itself could not be read
+    kSignalHookUnreadable = 7,  // the patch site itself could not be read
+    kSignalHookShutdown = 8     // n09: unpatched at shutdown, and never re-installed
 };
 
 // Install the detour. Safe to call more than once (it is a no-op once it is in).
@@ -38,6 +39,15 @@ bool rhySignalHookInstall(int* reason);
 // True once the detour is live. source=game only works when this is true; the
 // traffic module falls back to source=list when it is not.
 bool rhySignalHookInstalled();
+
+// n09 (the 2026-11-12 exit hang): put the game's five original bytes back.
+// The detour is a code patch in the game's own text page, and on Quit the game tears its models
+// and its renderer down while our stub would still be running inside it. Only ever called from the
+// render thread (hkPresent), which is the same thread that executes 0x49DD4C, so the write cannot
+// race with an execution of the bytes being replaced. One-way: after a shutdown the hook is not
+// re-installed, because the only thing that would re-install it is a rhyremix.ini edit during an
+// exit. Returns true when the patch was actually removed.
+bool rhySignalHookUninstall();
 
 // s30: resize the game's own signal-head corona (it registers one per lit head
 // at radius 15.0 = a 30 m additive green flare). iniRadius <= 0 restores the

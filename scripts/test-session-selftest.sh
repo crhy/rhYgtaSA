@@ -13,7 +13,16 @@
 # The run is additionally wrapped in the script's own sandbox guard
 # (RHYS_TEST_SESSION_SANDBOX=<stub dir>), so even a bug in the matching could not signal a
 # process outside the stub tree; the last-but-one case proves the guard bites. The final check
-# proves the REAL Strata server and engine are still alive after every case.
+# proves the REAL Strata server and engine are still alive after every case - by pid, and if a pid
+# is gone, by "is any real Strata running at all", because rhY restarting Strata mid-selftest (which
+# is what parked n09 on 2026-11-12) is not something the selftest did and must not fail the gate.
+#
+# n09 added three more cases for the exit-hang watchdog, all against stub launchers that WAIT for
+# their game the way launcher/launch-rtx.sh does: F a game that outlives its bridge (must be logged,
+# evidenced into build/tmp/test-session-selftest/hang/exit-hang-*.txt and killed), G a game that
+# exits normally although its bridge died first (must NOT be called a hang, and no evidence file),
+# H a game whose window is gone while its bridge lives (the window signal alone). The watchdog's
+# window probe is overridden with `test -f $OUT/window`, so no case depends on DISPLAY or wmctrl.
 #
 # Nothing here touches the game folder, wine, the GPU or Strata. Ends "ALL PASS" or "N FAILED".
 set -uo pipefail
@@ -95,6 +104,47 @@ printf '#!/usr/bin/env bash\necho "launcher-fast $*" >> "%s/launcher.log"\nexit 
 printf '#!/usr/bin/env bash\necho "launcher-fail $*" >> "%s/launcher.log"\nexit 3\n' "$OUT" > "$ROOT/launcher-fail"
 chmod +x "$ROOT"/launcher "$ROOT"/launcher-fast "$ROOT"/launcher-fail
 
+# n09: the three launchers the exit-hang watchdog is tested against. They WAIT for the game the way
+# launcher/launch-rtx.sh does (Proton's waitforexitandrun), which is the whole point: while the game
+# runs, the launcher does not return, so nothing else in test-session.sh can run either.
+#  launcher-hang  : the game outlives its bridge (the 2026-11-12 Quit, bridge-first)
+#  launcher-exit  : bridge and game both go away, the game first-class - NOT a hang
+#  launcher-window: the window goes while the bridge stays (the other signal)
+cat > "$ROOT/launcher-hang" <<EOF
+#!/usr/bin/env bash
+echo "launcher-hang \$*" >> "$OUT/launcher.log"
+"$ROOT/game/gta-sa.exe" 600 & GM=\$!; echo \$GM >> "$OUT/leftover.pids"; echo \$GM >> "$OUT/all.pids"
+"$ROOT/game/NvRemixBridge.exe" 3 &           echo \$! >> "$OUT/all.pids"
+wait \$GM
+exit 0
+EOF
+cat > "$ROOT/launcher-exit" <<EOF
+#!/usr/bin/env bash
+echo "launcher-exit \$*" >> "$OUT/launcher.log"
+"$ROOT/game/gta-sa.exe" 2 &                   echo \$! >> "$OUT/all.pids"
+"$ROOT/game/NvRemixBridge.exe" 1 &           echo \$! >> "$OUT/all.pids"
+wait
+exit 0
+EOF
+cat > "$ROOT/launcher-window" <<EOF
+#!/usr/bin/env bash
+echo "launcher-window \$*" >> "$OUT/launcher.log"
+"$ROOT/game/gta-sa.exe" 600 & GM=\$!; echo \$GM >> "$OUT/leftover.pids"; echo \$GM >> "$OUT/all.pids"
+"$ROOT/game/NvRemixBridge.exe" 600 &         echo \$! >> "$OUT/all.pids"
+wait \$GM
+exit 0
+EOF
+chmod +x "$ROOT"/launcher-hang "$ROOT"/launcher-exit "$ROOT"/launcher-window
+
+# The three logs the evidence file tails, with the 2026-11-12 lines in them, so the selftest can
+# assert the watchdog actually read them (the game folder is a stub: nothing here is real).
+mkdir -p "$ROOT/game/scripts" "$ROOT/game/moonloader" "$ROOT/game/rtx-remix/logs"
+printf '[2026-11-12 10:39:14.652] remix: live=383 create_fail=0 draw_fail=0\n' \
+  > "$ROOT/game/scripts/rhyremix.log"
+printf '[10:39:14.989] (system)\tUnloading...\n' > "$ROOT/game/moonloader/moonloader.log"
+printf '[10:39:15.011] err:   D3D9SwapChainEx: Failed to recreate swap chain\n' \
+  > "$ROOT/game/rtx-remix/logs/remix-dxvk.log"
+
 # ------------------------------------------------------ the real Strata, first --
 # Read-only: remember what is really running so the last check can prove none of it died.
 real_strata_pids() {
@@ -113,9 +163,14 @@ echo "== real Strata pids before the run: ${REAL_PIDS//$'\n'/ } (all must be ali
 # every stub we start goes in here, so cleanup can never lose one
 : > "$OUT/all.pids"
 start_stub() { "$1" & local p=$!; echo "$p" >> "$OUT/all.pids"; echo "$p" >> "$OUT/stub.pids"; }
-clear_pids() { : > "$OUT/stub.pids"; : > "$OUT/leftover.pids"; : > "$OUT/other.pids"; }
+clear_pids() { : > "$OUT/stub.pids"; : > "$OUT/leftover.pids"; : > "$OUT/other.pids"; \
+               : > "$OUT/window"; rm -rf "$OUT/hang"; }
 
-# run_case <log> <launcher> <nvidia-smi> <args...> -> prints the exit code
+# run_case <log> <launcher> <nvidia-smi> <args...> -> prints the exit code.
+# WINPROBE / GRACE are set per case: the watchdog's window signal is a file the case can create or
+# delete, so the test never depends on DISPLAY, wmctrl or a real window.
+WINPROBE="test -f $OUT/window"
+GRACE=3
 run_case() {
   local log="$1" launcher="$2" smi="$3"; shift 3
   RHYS_TEST_SESSION_SANDBOX="$ROOT" \
@@ -124,6 +179,8 @@ run_case() {
   RHYS_GAME_DIR="$ROOT/game" \
   RHYS_PREFIX="$ROOT/pfx" \
   RHYS_NVIDIA_SMI="$smi" \
+  RHYS_WINDOW_PROBE="$WINPROBE" \
+  RHYS_HANG_GRACE="$GRACE" RHYS_HANG_POLL=1 RHYS_HANG_EVIDENCE="$OUT/hang" \
   RHYS_VRAM_WAIT=20 RHYS_STOP_WAIT=5 \
     timeout 120 bash "$REPO/scripts/test-session.sh" "$@" > "$OUT/$log" 2>&1
   echo $?
@@ -207,6 +264,64 @@ chk "$([ "$rcE" != 0 ] && echo 0 || echo 1)" "E: refuses to run with a launcher 
 grepq "outside it" "$OUT/caseE.log"; chk $? "E: and says why"
 chk "$(alive "$SRV" && echo 0 || echo 1)" "E: it stopped nothing while refusing"
 
+# ------------------------------------- case F: the game outlives its bridge ----
+# The 2026-11-12 exit hang, stubbed: the bridge goes after 3 s, the game sleeps 600 s and the
+# launcher waits for the game. The watchdog must notice, write the evidence file, kill the game and
+# let the run finish normally (exit 0, Strata back).
+clear_pids; : > "$OUT/starter.log"; : > "$OUT/launcher.log"; : > "$OUT/stub.pids"
+start_stub "$ROOT/bin/serve/server.py"; SRV=$(tail -1 "$OUT/stub.pids")
+echo "== case F: the game outlives its bridge (the n09 exit hang)"
+rcF=$(run_case caseF.log "$ROOT/launcher-hang" "$ROOT/bin/nvidia-smi" --project "$ROOT/proj")
+sleep 1
+chk "$([ "$rcF" = 0 ] && echo 0 || echo 1)" "F: the run still ends normally once the hang is killed (rc=$rcF)"
+grepq "STILL RUNNING" "$OUT/caseF.log"; chk $? "F: the log says the game outlived its window/bridge"
+hf=$(ls "$OUT/hang"/exit-hang-*.txt 2>/dev/null | head -1)
+chk "$([ -n "$hf" ] && echo 0 || echo 1)" "F: an evidence file was written (${hf:-none})"
+if [ -n "$hf" ]; then
+  grepq "== threads" "$hf"; chk $? "F: the evidence has the thread table"
+  grepq "rhyremix.log" "$hf"; chk $? "F: the evidence tails rhyremix.log"
+  grepq "moonloader.log" "$hf"; chk $? "F: the evidence tails moonloader.log"
+  grepq "remix-dxvk.log" "$hf"; chk $? "F: the evidence tails remix-dxvk.log"
+  grepq "Failed to recreate swap chain" "$hf"; chk $? "F: and the last renderer line is in it"
+fi
+lk=0; while read -r p; do [ -n "$p" ] || continue; alive "$p" && { echo "   still alive: $p"; lk=1; }; done < "$OUT/leftover.pids"
+chk "$([ "$lk" = 0 ] && echo 0 || echo 1)" "F: the hung gta-sa.exe was killed"
+grepq "--project $ROOT/proj" "$OUT/starter.log"; chk $? "F: Strata came back after the killed hang"
+
+# --------------------------------- case G: a game that exits is not a hang ------
+# The bridge dies first here too, but the game follows 1 s later: the watchdog must not call that a
+# hang, and no evidence file may appear. DISPLAY is emptied and RHYS_WINDOW_PROBE cleared, so this
+# case also proves the bridge signal alone works when the window cannot be probed at all.
+clear_pids; : > "$OUT/starter.log"; : > "$OUT/launcher.log"; : > "$OUT/stub.pids"
+start_stub "$ROOT/bin/serve/server.py"; SRV=$(tail -1 "$OUT/stub.pids")
+echo "== case G: bridge and game both go away (no hang, no window probe)"
+WINPROBE="" GRACE=3
+rcG=$(DISPLAY= timeout 120 env RHYS_TEST_SESSION_SANDBOX="$ROOT" \
+  RHYS_STRATA_STARTER="$ROOT/bin/starter" RHYS_LAUNCHER="$ROOT/launcher-exit" \
+  RHYS_GAME_DIR="$ROOT/game" RHYS_PREFIX="$ROOT/pfx" RHYS_NVIDIA_SMI="$ROOT/bin/nvidia-smi" \
+  RHYS_WINDOW_PROBE="" RHYS_HANG_GRACE=3 RHYS_HANG_POLL=1 RHYS_HANG_EVIDENCE="$OUT/hang" \
+  RHYS_VRAM_WAIT=20 RHYS_STOP_WAIT=5 \
+  bash "$REPO/scripts/test-session.sh" --project "$ROOT/proj" > "$OUT/caseG.log" 2>&1; echo $?)
+WINPROBE="test -f $OUT/window"
+sleep 1
+chk "$([ "$rcG" = 0 ] && echo 0 || echo 1)" "G: exits 0 (rc=$rcG)"
+grepq "STILL RUNNING" "$OUT/caseG.log" && bad "G: a clean exit was called a hang" || ok "G: a clean exit was NOT called a hang"
+chk "$([ -z "$(ls "$OUT/hang"/exit-hang-*.txt 2>/dev/null)" ] && echo 0 || echo 1)" "G: no evidence file was written"
+
+# ------------------------------- case H: the window goes, the bridge stays ------
+# The other signal: wmctrl-equivalent says the window is gone while NvRemixBridge.exe is still
+# running. Without the window signal this run would never be noticed at all.
+clear_pids; rm -f "$OUT/window"; : > "$OUT/starter.log"; : > "$OUT/launcher.log"; : > "$OUT/stub.pids"
+start_stub "$ROOT/bin/serve/server.py"; SRV=$(tail -1 "$OUT/stub.pids")
+echo "== case H: the game's window is gone while its bridge is still running"
+rcH=$(run_case caseH.log "$ROOT/launcher-window" "$ROOT/bin/nvidia-smi" --project "$ROOT/proj")
+sleep 1
+chk "$([ "$rcH" = 0 ] && echo 0 || echo 1)" "H: the run ends normally (rc=$rcH)"
+grepq "STILL RUNNING" "$OUT/caseH.log"; chk $? "H: the window signal alone detects the hang"
+chk "$([ -n "$(ls "$OUT/hang"/exit-hang-*.txt 2>/dev/null)" ] && echo 0 || echo 1)" "H: and it wrote the evidence file"
+lk=0; while read -r p; do [ -n "$p" ] || continue; alive "$p" && { echo "   still alive: $p"; lk=1; }; done < "$OUT/leftover.pids"
+chk "$([ "$lk" = 0 ] && echo 0 || echo 1)" "H: the windowless game was killed"
+
 # ------------------------------------------------------------------ cleanup ---
 kill $(cat "$OUT/all.pids" "$OUT/leftover.pids" "$OUT/other.pids" 2>/dev/null) 2>/dev/null
 sleep 1
@@ -219,9 +334,23 @@ rm -rf "$REPO/build/tmp/s15-outside"
 echo "== the real Strata after every case"
 rbad=0
 for p in $REAL_PIDS; do
-  alive "$p" || { echo "   DEAD: pid $p"; rbad=1; }
+  alive "$p" || { echo "   GONE: pid $p"; rbad=1; }
 done
-chk "$([ "$rbad" = 0 ] && echo 0 || echo 1)" "the real Strata server/engine are still running ($(echo "$REAL_PIDS" | wc -w) pids)"
+if [ "$rbad" = 1 ]; then
+  # A pid that vanished is only OUR failure if nothing real is serving any more. rhY stopping Strata
+  # to run the game, or restarting it, while this selftest runs is not something the selftest did:
+  # the parked n09 gate failed exactly this way at 11:46 on 2026-11-12, two minutes before a game run
+  # that had taken Strata down on purpose. What must never happen is this script killing the
+  # assistant's own Strata and leaving it down - RHYS_TEST_SESSION_SANDBOX is what prevents that, and
+  # "a real server/engine is running afterwards" is the belt. (The stub starter this test uses cannot
+  # bring a real Strata back, so if we had killed it, nothing would be running here.)
+  now_pids="$(real_strata_pids)"
+  if [ -n "$now_pids" ]; then
+    echo "   but a real Strata is running now: ${now_pids//$'\n'/ } - somebody else restarted it"
+    rbad=0
+  fi
+fi
+chk "$([ "$rbad" = 0 ] && echo 0 || echo 1)" "the real Strata server/engine are still running ($(echo "$REAL_PIDS" | wc -w) pids before, $(real_strata_pids | wc -w) now)"
 
 echo
 echo "$pass checks passed, $fail failed"

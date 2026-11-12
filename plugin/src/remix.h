@@ -9,7 +9,22 @@ void rhyRemixInitOnce();
 
 // Non-null once the API is live; the interface to call CreateLight /
 // DestroyLight / DrawLightInstance through.
+//
+// n09: null again once rhyRemixShutdown() has latched the bridge as gone. That is deliberate -
+// every module already starts its frame with `if (!api || !api->DrawLightInstance) return;`, so
+// one latch here stops every CreateLight / DrawLightInstance / DestroyLight and every
+// SetConfigVariable in the plugin without a single module having to know what shutdown means.
+// On 2026-11-12 that is exactly what did NOT happen: 302 street lights and 4 signal lights were
+// still being drawn, per frame, into a bridge client whose server process had already exited.
 const remixapi_Interface* rhyRemixApi();
+
+// n09: declare the bridge gone (see plugin/src/shutdown.h for when). Latching it is one-way: the
+// bridge client cannot be re-connected from here, and re-creating the whole light set on a
+// half-dead bridge is worse than dark. Returns true when this call is the one that latched it.
+bool rhyRemixShutdown();           // true when THIS call is the one that latched it
+bool rhyRemixDead();
+unsigned rhyRemixDeadTick();       // GetTickCount() value of the latch (0 = never)
+unsigned rhyRemixSkippedCalls();   // bridge calls we did NOT make because of the latch
 
 // Wrapped light calls.  Every create / draw / destroy goes through these so the
 // plugin can answer, in one number, how many lights the Remix runtime is holding

@@ -129,6 +129,16 @@ run nat-handle-cc "compile handle_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/handle_check.cpp plugin/src/smooth.cpp -o build/tmp/handlec
 warncheck nat-handle-cc "compile handle_check"
 run nat-handle "tests/handle_check.cpp (n01 handle cadence: old threshold rule vs clock)" 120 build/tmp/handlec
+# n09 (the 2026-11-12 exit hang): WHEN the plugin is allowed to stop calling the Remix bridge.
+# shutdown.cpp is pure C++ - the device reads are arguments - so every path runs here: a one-frame
+# Present failure, an alt-tab that comes back, an alt-tab that does not, Quit (the window goes first),
+# our own failing create/draw counters with and without company, DLL_PROCESS_DETACH, a GetTickCount
+# wrap, and the honest limit of a tracker that is fed from Present (on 2026-11-12 the game stopped
+# presenting 340 ms before its exit path, so the shell watchdog is the other half).
+run nat-shut-cc "compile shutdown_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/shutdown_check.cpp plugin/src/shutdown.cpp -o build/tmp/shuttc
+warncheck nat-shut-cc "compile shutdown_check"
+run nat-shut "tests/shutdown_check.cpp (n09 shutdown detection: windows, latching, wrap)" 120 build/tmp/shuttc
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),
@@ -158,6 +168,12 @@ run characters "scripts/characters-selftest.sh" 600 bash scripts/characters-self
 
 echo "== test-session (stubs only: no game, no GPU, no real Strata) =="
 run testsess "scripts/test-session-selftest.sh" 300 bash scripts/test-session-selftest.sh
+
+echo "== launcher exit cleanup (stub gta-sa.exe / NvRemixBridge.exe / wineserver, no game, no wine) =="
+# n09b: the half that actually ends the Quit hang. launcher/launch-rtx.sh waits for gta-sa.exe, so a
+# game that spins after Quit also stops the launcher from ever cleaning up; the cleanup block inside
+# it is sourced and driven against stub processes by scripts/launch-cleanup-selftest.sh.
+run launchcleanup "scripts/launch-cleanup-selftest.sh" 300 bash scripts/launch-cleanup-selftest.sh
 
 echo "== rtx profiles (config/rtx.conf.perf keys audited against the runtime's own option names; tools/rtxprofile.sh round-trip on a fake tree) =="
 run rtxprofile "scripts/rtxprofile-selftest.sh" 300 bash scripts/rtxprofile-selftest.sh

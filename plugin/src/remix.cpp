@@ -60,8 +60,31 @@ void rhyRemixInitOnce() {
     g_ready = true;
 }
 
+// ---------------------------------------------------------------- n09: the latch
+
+// Set once the shutdown tracker (plugin/src/shutdown.h) has decided the bridge is not coming back.
+// Every Remix call in the plugin already funnels through rhyRemixApi(), so this one flag is what
+// stops creating, drawing and destroying lights - and the counters below are what lets the log
+// prove that nothing was called after the latch.
+static bool g_dead = false;
+static unsigned g_deadTick = 0;
+static unsigned g_skipped = 0;
+
+bool rhyRemixShutdown() {
+    if (g_dead) {
+        return false;
+    }
+    g_dead = true;
+    g_deadTick = GetTickCount();
+    return true;
+}
+
+bool rhyRemixDead() { return g_dead; }
+unsigned rhyRemixDeadTick() { return g_deadTick; }
+unsigned rhyRemixSkippedCalls() { return g_skipped; }
+
 const remixapi_Interface* rhyRemixApi() {
-    return g_ready ? &g_api : nullptr;
+    return (g_ready && !g_dead) ? &g_api : nullptr;
 }
 
 // ---------------------------------------------------------------- light calls
@@ -113,6 +136,16 @@ bool rhyCanCreateLight() {
 // the lights exist in the renderer.  reason separates "we said no to ourselves"
 // (1) from "the bridge said no" (2); see remix.h.
 remixapi_LightHandle rhyCreateLight(const remixapi_LightInfo* info, int* reason) {
+    if (g_dead) {
+        // n09: the bridge is gone. Do not touch it, and do not let a module read this as "the
+        // bridge refused one of my lights" and start a retry storm: reason 2 with no api pointer
+        // is what every module already treats as "this module is off".
+        ++g_skipped;
+        if (reason) {
+            *reason = 2;
+        }
+        return nullptr;
+    }
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->CreateLight) {
         if (reason) {
@@ -164,6 +197,10 @@ remixapi_LightHandle rhyCreateLight(const remixapi_LightInfo* info, int* reason)
 }
 
 void rhyDestroyLight(remixapi_LightHandle handle) {
+    if (g_dead) {
+        ++g_skipped;
+        return;  // the handles die with the process; destroying them is a call into a dead bridge
+    }
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->DestroyLight || !handle) {
         return;
@@ -174,6 +211,10 @@ void rhyDestroyLight(remixapi_LightHandle handle) {
 }
 
 bool rhyDrawLight(remixapi_LightHandle handle) {
+    if (g_dead) {
+        ++g_skipped;
+        return false;
+    }
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->DrawLightInstance || !handle) {
         return false;

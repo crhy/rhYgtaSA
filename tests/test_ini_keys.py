@@ -29,9 +29,9 @@ INI = os.path.join(REPO, "config", "rhyremix-production.ini")
 CFG = os.path.join(REPO, "plugin", "src", "config.cpp")
 HDR = os.path.join("plugin", "src", "config.h")
 
-# The two sections this task documents in the shipped ini. [fade] is s28's ramp/budget layer
-# plus n01's handle cadence; [clock] is s29's time axis.
-DOCUMENTED = ("clock", "fade")
+# The sections this repo documents in the shipped ini. [fade] is s28's ramp/budget layer plus
+# n01's handle cadence; [clock] is s29's time axis; [shutdown] is n09's exit detection.
+DOCUMENTED = ("clock", "fade", "shutdown")
 
 CALL = re.compile(r"\bini(Int|Float|String|U64|Rgb)(Sec)?\s*\(")
 LIT = re.compile(r'"([^"]*)"')

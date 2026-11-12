@@ -100,6 +100,12 @@ static const unsigned kStackAlign = 16;
 
 static RhySignalCollector g_col;
 static bool g_installed = false;
+// n09: the hook can be taken back out at shutdown, and must not come back afterwards.
+static bool g_uninstalled = false;
+// The game's own five bytes at 0x49DD4C, kept so rhySignalHookUninstall() can put them back. They
+// are the bytes rhyGameRead() read BEFORE anything was written, i.e. the only copy of the original
+// instruction that exists once the patch is in.
+static uint8_t g_savedCallSite[5] = {0};
 
 // Is [p, p+len) safe to read? The hook runs inside the game's render pass, where
 // a single bad pointer is the end of the process, and the arguments it is handed
@@ -260,6 +266,8 @@ const char* rhySignalHookReasonText(int reason) {
             return "the caller's 'add esp,0x54' stack cleanup is missing";
         case kSignalHookUnreadable:
             return "the patch site or the callee could not be read";
+        case kSignalHookShutdown:
+            return "the hook was unpatched at shutdown and is not re-installed";
         default: return "unknown";
     }
 }
@@ -334,6 +342,13 @@ bool rhySignalHookInstall(int* reason) {
             *reason = kSignalHookOk;
         }
         return true;
+    }
+    if (g_uninstalled) {
+        // n09: the game is on its way out; the shutdown path took the patch out on purpose.
+        if (reason) {
+            *reason = kSignalHookShutdown;
+        }
+        return false;
     }
     // The kill switch, in the one place every install attempt has to come
     // through: the hook exists only if the user asked for it AND the code we
@@ -421,6 +436,7 @@ bool rhySignalHookInstall(int* reason) {
     uint8_t* slot =
         reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(kRhySignalCallSite));
     const int32_t rel32 = static_cast<int32_t>(rel);
+    std::memcpy(g_savedCallSite, callSite, sizeof g_savedCallSite);  // for uninstall()
     slot[0] = 0xE9;  // jmp rel32
     std::memcpy(slot + 1, &rel32, sizeof rel32);
     FlushInstructionCache(GetCurrentProcess(),
@@ -445,6 +461,42 @@ bool rhySignalHookInstall(int* reason) {
 }
 
 bool rhySignalHookInstalled() { return g_installed; }
+
+// n09: put the game's instruction back. Called from the shutdown latch in main.cpp, on the render
+// thread, which is the only thread that ever executes 0x49DD4C - so the five-byte write cannot be
+// observed half-applied by another thread. The corona radius immediate (0x49DCDA) is left as the
+// ini asked for: it is data the game reads, not code of ours, and the process is ending.
+bool rhySignalHookUninstall() {
+    if (!g_installed || g_uninstalled) {
+        return false;
+    }
+    const DWORD start = GetTickCount();
+    DWORD old = 0;
+    const uintptr_t page = kRhySignalCallSite & ~0xFFFu;
+    if (!VirtualProtect(reinterpret_cast<void*>(page), 0x1000u,
+                        PAGE_EXECUTE_READWRITE, &old)) {
+        rhyLog("shutdown: VirtualProtect failed for the code page of 0x%08X: the signal-head hook "
+               "stays patched (%lu)", kRhySignalCallSite,
+               static_cast<unsigned long>(GetLastError()));
+        return false;
+    }
+    uint8_t* slot =
+        reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(kRhySignalCallSite));
+    std::memcpy(slot, g_savedCallSite, sizeof g_savedCallSite);
+    FlushInstructionCache(GetCurrentProcess(),
+                          reinterpret_cast<void*>(page), 0x1000u);
+    DWORD back = 0;
+    VirtualProtect(reinterpret_cast<void*>(page), 0x1000u, old, &back);
+    g_uninstalled = true;
+    g_installed = false;
+    rhyLog("shutdown: unpatched the signal-head hook at 0x%08X after %u ms (the game's own bytes "
+           "%02X %02X %02X %02X %02X are back; %u corona calls had been recorded) - the game's "
+           "teardown now runs its own code",
+           kRhySignalCallSite, static_cast<unsigned>(GetTickCount() - start),
+           g_savedCallSite[0], g_savedCallSite[1], g_savedCallSite[2], g_savedCallSite[3],
+           g_savedCallSite[4], g_col.calls);
+    return true;
+}
 unsigned rhySignalHookCalls() { return g_col.calls; }
 unsigned rhySignalHookRecords() { return g_col.records; }
 unsigned rhySignalHookDropped() { return g_col.dropped; }

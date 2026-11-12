@@ -684,6 +684,51 @@ same colour in all three phases, flux 304 under a luminaire's 3473) and the
 wiring in `tests/test_signal_glow.py` (both paths, both halves, drawn and
 destroyed together, no hash collision, the ini keys and the test doc).
 
+## Shutdown: noticing the game is ending (n09)
+
+`plugin/src/shutdown.{h,cpp}` owns one question — *is the Remix bridge still worth calling?* — and
+it owns it in plain C++ so `tests/shutdown_check.cpp` can drive every path without a game process:
+the device reads arrive as `RhyShutdownSignals`, the ini's persistence windows as
+`RhyShutdownLimits`, and every tick is a `unsigned` compared wrap-safely.
+
+* Four signals, four windows (`rhyremix.ini [shutdown]`): `present_ms=1500`, `device_ms=3000`,
+  `window_ms=750`, `calls_ms=4000`. A signal must be on **continuously** — a gap clears that
+  signal's own timer, because alt-tab and a resolution change look like `present` + `device`.
+* `calls` (our own climbing `create_fail + draw_fail`) **never ends the session on its own**: one
+  light the Remix server refuses makes those counters climb for a whole session, and
+  `streetlights.cpp`'s `g_apiBroken` is the mechanism for that. It only fires with another signal on.
+* Death **latches**. `rhyRemixShutdown()` makes `rhyRemixApi()` return null, which is the guard every
+  module already has, so no module has to know what shutdown is; `rhyRemixSkippedCalls()` counts what
+  was not called. `rhySignalHookUninstall()` puts the game's five bytes back at `0x49DD4C`, from the
+  render thread only (the same thread that executes that instruction), and `install()` refuses to
+  re-patch afterwards (`kSignalHookShutdown`).
+* The window handle comes from `IDirect3DDevice9::GetCreationParameters` (vtable 9), read once at
+  hook install: the game hands `Present` no `hFocusWindow`, and hardcoding a window class or a game
+  address is the kind of assumption this plugin has been burned by before.
+* `DLL_PROCESS_DETACH` logs through `rhyLogDetach()`, which takes no mutex — at detach another thread
+  can have been terminated holding it, and the whole complaint was that the run had no last line.
+* `stop_present_after_ms` defaults to 0. It is the experiment, not the fix: the 2026-11-12 evidence
+  puts the spin in the game's reset path, and this switch is what proves or disproves that on the
+  next run.
+
+### Ending the run from outside (n09b)
+
+The tracker above needs the game to call `Present` again, and on 2026-11-12 it never did — twice. The
+second hang (11:48, `build/tmp/exit-hang-20261112-b.txt`) also showed that the *bridge* does not end
+itself: `NvRemixBridge.exe` waits on an exit callback for the client process (which is the spinning
+game) and its IPC timeout was switched off by the window going inactive, so it burned 406 % CPU and
+3.6 GB of VRAM for sixteen minutes while `launcher/launch-rtx.sh` sat in `waitforexitandrun`.
+
+So the launcher owns the outside half now, in a block between `n09b cleanup (BEGIN)` and `(END)`
+that `scripts/launch-cleanup-selftest.sh` sources and drives against stub processes (33 checks):
+`pids_named` (comm or argv[0], by pid — never `pkill -f`, whose pattern this script's own command
+line would match), `window_state` (0/1/2, "cannot tell" never fires anything), `end_wine_tree`
+(bridge, then `WINEPREFIX=<compatdata>/pfx wineserver -k` **only if a wineserver for this prefix is
+running** — invoking `wineserver` with none up starts one just to kill it — then a sweep by pid/name) and
+`watch_run_end` (armed only after the window has been seen). Two rules worth keeping: a signal that
+cannot be measured must not be guessed at, and the cleanup after the wait returns is unconditional —
+`RHYS_EXIT_GRACE=0` stops the watchdog, never the cleanup.
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen

@@ -288,6 +288,23 @@ struct RhyConfig {
     int   phase_fade_ms;      // signal colour cross-fade; 0 = instant, as a real
                               // signal is. The light's appearance and disappearance
                               // always use fade_in_ms/fade_out_ms.
+
+    // --- n09: shutdown ([shutdown] section). The 2026-11-12 exit hang: rhY quit from the menu, the
+    // Remix bridge server and the window went away, and the plugin went on drawing 302 lights per
+    // frame into a bridge client whose server no longer existed, then logged nothing about it.
+    // plugin/src/shutdown.h holds the rules; these are how long each signal has to hold before the
+    // bridge is declared gone (0 = one frame is enough), how often the "shutdown: ..." line repeats,
+    // and the A/B switch that stops forwarding Present once the bridge has been gone that long.
+    int   shutdown_present_ms;  // Present must keep failing this long
+    int   shutdown_device_ms;   // ... TestCooperativeLevel keep saying the device is gone
+    int   shutdown_window_ms;   // ... the device's window stay destroyed (Quit does this)
+    int   shutdown_calls_ms;    // ... our own Create/Draw calls keep failing, WITH another signal
+                                // on: on its own that is one bad light, not a dead bridge
+    int   shutdown_log_ms;      // period of the "shutdown: still running ..." line
+    int   stop_present_after_ms; // 0 = always forward Present (default). >0 = once the bridge has
+                                // been gone this long, stop calling the bridge client's Present and
+                                // return D3D_OK: the experiment that says whether the exit spin is
+                                // inside that call or inside the game's own device-reset loop.
 };
 
 // Loads once on first call; returns the same pointer every time.
