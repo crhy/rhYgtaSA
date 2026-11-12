@@ -246,13 +246,21 @@ Short form for the three picks (use these in the installer's prompt):
 
 Everything on the list, actually — but these specifically because our side cannot get the file:
 
-| file | why we can't fetch it | where |
+Re-checked by s27 on 2026-11-12 (curl, one attempt per host, no fighting a captcha). The exact file
+name is now known for every one of these, because it is written in the download link:
+
+| file | why we can't fetch it | the button we would need to click |
 |---|---|---|
-| Proper Player Retex v3.2 (PC, 120 MB) | MixMods' download button is JS-obfuscated and the file host is Cloudflare-gated | the MixMods page above |
-| Proper Characters Retex HD (22 MB) | same | the MixMods page above |
-| PedFuncs v0.5.1 | same | the MixMods page above |
-| Emergency Peds Vary (71 MB, `.rar`) | LibertyCity download needs a login/queue (their "Auto-install" is an app) | the LibertyCity page above |
-| Criminal Peds Vary (196 MB, `.rar`) | same | the LibertyCity page above |
+| Proper Player Retex v3.2 (PC, 120 MB) | sharemods serves a Cloudflare **Turnstile** widget to the `op=download2` POST (measured: the POST returns the same page with `cf-turnstile`, no bytes) | `https://sharemods.com/dckdhp4ir86q/Proper_Player_Retex.7z.html` (the page also offers `Proper_Player_Retex_for_Android.7z` and `SADE_-_Proper_Player_Retex.7z` — take the first) |
+| Proper Characters Retex HD (22 MB) | same | `https://sharemods.com/eo1e9wvp3ank/SA_-_Proper_Characters_Retex_HD.7z.html` |
+| PedFuncs v0.5.1 | same | `https://sharemods.com/fkum0x0mhyu6/PedFuncs.7z.html` |
+| Restored Unused Peds (0.5 MB) | same | `https://sharemods.com/qcdn2us7y045/SA_-_Restored_Unused_Peds.7z.html` — **not** gtainside 194343, that is a different mod (§12.3) |
+| Emergency Peds Vary (71 MB, `.rar`) | LibertyCity's button is JS (`data-href=/index.php?do=files&op=showfile&v2=0&lid=246900`, `data-download-token=""`) and that endpoint 302s a logged-out curl back to the file page | `https://libertycity.net/files/gta-san-andreas/246900-emergency-peds-vary.html` → file `emergency-peds-vary_1793981681_509472.rar`, dated 2026-11-06 |
+| Criminal Peds Vary, **the 2026-11-03 build** | same | `https://libertycity.net/files/gta-san-andreas/240761-criminal-peds-vary.html` → `criminal-peds-vary_1793725831_688713.rar`, 205,560,101 B. The **2026-08-10 build is already fetched** (§12.1) |
+
+Alternate hosts were checked and mostly do not exist: gtainside has no Proper Retex / Peds Vary
+except Criminal Peds Vary (§12.1), LibertyCity has no MixMods re-upload, and `JuniorDjjr/PedFuncs`
+has no GitHub releases (source only, MIT, needs `DK22Pac/plugin-sdk` to build).
 
 Drop them into `REPO/vendor/characters/` (create it; add to `.gitignore`) with their original filenames.
 That directory is staging only — it is never committed and never shipped.
@@ -313,10 +321,12 @@ tools/characters.sh status [GAME_DIR]
 * **Where packs come from**: a stage dir, default
   `/media/rhy/data/Gamez/GTAmods/x/characters/stage`, then `REPO/vendor/characters`. A stage dir holds
   either an unpacked folder in modloader layout (`Proper Player Retex/`) or the archive the manifest
-  names (`proper-player-retex-3.2-pc.zip`), unpacked with `tools/unpack.sh`. **Nothing is staged today**
-  *(measured 2026-11-12: `x/characters/` has only `raw/part1..7`, the gtainside "Original Peds in HD"
-  parts, which are not the §5 shortlist)*, so `on` refuses and names each pack, the folder to put it in
-  and the author's page — it never installs half a set and calls it the recommended combination.
+  names (`proper-player-retex-3.2-pc.zip`), unpacked with `tools/unpack.sh`. **One of six is staged
+  today** *(s27, 2026-11-12: `stage/Criminal Peds Vary/` = 390 files / 670 MB from the gtainside
+  archive, plus `stage/_criminal-peds-vary-extras/` for the two pieces one target folder cannot carry;
+  `raw/part1..7` are still the gtainside "Original Peds in HD" parts, §12, not the §5 shortlist)*, so
+  `on` refuses and names each pack, the folder to put it in and the author's page — it never installs
+  half a set and calls it the recommended combination.
 * **Priorities land inside `[Profiles.Default.Priority]`**, never appended at EOF (where they would fall
   into whatever section comes last), the file's own comments and its mixed CRLF/LF line endings survive,
   and `modloader.ini` is backed up pristine once, in the state dir.
@@ -427,6 +437,79 @@ Everything lives in `modloader/`, so rollback is deletion, never restore-from-ba
 * If CJ looks flat after C1 (lost authored PBR, §2.2), the fallback is to remove C1 and keep P1 — the pack's
   three CJ `mat_*` overrides start matching again by themselves.
 * Keep the pre-change state documented in `docs/MODS-REPLACED.md` (inventory table) as part of the change.
+
+---
+
+## 12. s27 (2026-11-12): what is actually downloaded, and the gtainside HD ped parts
+
+### 12.1 Downloaded and verified
+
+| pack | from | bytes | sha256 | archive test |
+|---|---|---|---|---|
+| Criminal Peds Vary (2026-08-10 build) | `https://files.gtainside.com/202608/V8fzGui8_Criminal_Peds_Vary.rar` (page `/sanandreas/skins/other-skins-skin-packs/220708-criminal-peds-vary`, "Added 08/09/2026, Last update 08/10/2026", author wizvich) | 205,557,524 | `9b267df95116bfc495ea4c3d43a3adcfcee4bd51a66dd13c1f25bc1e4f640f65` | `unrar t` OK, 606 entries |
+
+GTAinside prints the file URL in clear text on its `/download` page and `files.gtainside.com` serves
+it to plain `curl -L` — that is how the seven "Original Peds in HD" parts got here too. **Licence
+note:** the LibertyCity page answers "No" to re-upload, so gtainside's copy is itself an unauthorised
+re-upload. We record the url so the fetch is reproducible; `redistribute` stays `no` and the pack is
+not bundled. LibertyCity's current file is 2,577 B larger (205,560,101 B, dated 2026-11-03) and stays
+a hand-download.
+
+What the archive contains *(measured after extract)*: `modloader/Criminal Peds Vary/` (390 files,
+670 MB, `peds.ide` + `pedgrp.dat` + `cargrp.dat` + 11 gang folders), **a second modloader folder**
+`modloader/Expaned gang wars/` (`ExGangWars.asi` + `.ini`, "or any mod that enables gang9 and gang10
+to spawn"), and `ModelVariations/ModelVariations_Peds.ini`, which must replace the file that comes
+with MixMods' ModelVariations. One manifest `target` = one folder, so the last two are staged at
+`GTAmods/x/characters/stage/_criminal-peds-vary-extras/` with a README naming the two `cp` commands.
+The pack's own `1. IMPORTANT!!!.txt` requires **PedFuncs, ModelVariations, Silent ASI Loader, OLA and
+ModLoader**; measured in the RTX copy: ModLoader (`modloader.asi`), `modloader/OLA` and
+`SilentPatchSA.asi` (which carries the ASI loader) are there, **PedFuncs and ModelVariations are not**.
+
+### 12.2 The gtainside "Original Peds in HD" parts vs Proper Characters Retex HD
+
+`dl/characters/gtainside_original_peds_in_hd_part{1..7}.7z` (34.4/30.4/33.9/32.9/31.2/29.2/18.1 MB),
+extracted to `x/characters/raw/part1..7/`, measured 2026-11-12:
+
+* 584 model files = **278 `.dff` + 278 `.txd`**, 278 unique ped names, no name appears in two parts.
+* **All 558 names exist in the stock `models/gta3.img`** (checked entry-by-entry against the TOC:
+  558/558) → it is a pure name-replacement of existing stock peds: no new ped id, no `.ide`/`.dat`.
+* It replaces **meshes as well as textures**, and both are much heavier than stock:
+  TXDs 361.9 MB vs 39.7 MB for the same names (**9.1×**), DFFs 184.9 MB vs 23.4 MB (**7.9×**).
+  Biggest: `cat.txd` 5,079,920 B, `gangrl3.txd` 4,138,120 B, `vhfyst3.txd` 3,573,572 B — above the
+  2.5 MB largest-TXD-inside-gta3.img figure of §1.
+* `tools/txd_sizes.py` parses the stock TXDs but finds **0 textures in every pack TXD**: the chunk
+  stream has the same RW shape (`ff ff 03 18`, raster chunk type `0x15`) but a raster header our
+  reader does not recognise, i.e. an old re-encoding by 2015-era tooling. So their RAM footprint
+  cannot be measured with our tooling; the 9.1× on-disk factor is the proxy.
+* The gtainside page is titled **"Original HD Peds Pack (Part 1)"** and its file URL is
+  `https://files.gtainside.com/201508/1472304724_original peds in hd part 1.7z` — a 2015/2016-era
+  upload (path month 201508, token timestamp 1472304724 = 2016-08-27), not a current pack.
+
+Overlap with P1: both are name-replacements of stock peds in `gta3.img`, so with both installed
+ModLoader priority decides per file (P1 is 40, the gtainside parts would default to 50 → the
+gtainside `.txd` would win unless the priorities say otherwise). The exact name intersection cannot
+be computed until P1 is on disk; P1 covers 133 peds textures-only, these cover 278 peds mesh+texture.
+
+**Recommendation: Proper Characters Retex HD (P1), and leave the gtainside parts parked in `raw/`.**
+Why: (a) P1 changes no geometry, so the Remix geometry-hash rule and §6's material story stay exactly
+as documented, while 278 replaced meshes move every one of those peds to a new mesh; (b) 22 MB vs
+547 MB of replacements (361.9 MB TXD + 184.9 MB DFF) in a 32-bit process — this is precisely the
+`docs/VEGETATION.md` failure mode; (c) 2022 art (AI upscale + manual redraw, deliberately
+lore-faithful) beats a 2015 re-sculpting of 2005 models, which is as likely to *hurt* the silhouette
+as improve it; (d) P1's TXDs are measurable by our own tools and the pack needs no plugin. If anyone
+ever wants the gtainside parts, they need their own manifest entries (one folder per part, or one
+merged folder) and a commit-size measurement first.
+
+### 12.3 A trap: gtainside's "Restored Unused Peds" is not P8
+
+gtainside 194343 `restored-unused-peds` → `https://files.gtainside.com/202401/1705784655_unused-peds.rar`,
+8,569 B, sha256 `ec95d71c8a7cbf80d9cd796a3610a7edb08afafab99e3a2d7130803e96c52c68`, `unrar t` OK.
+Contents: `data/peds.ide`, `data/pedgrp.dat`, `ReadMe.txt`, two YouTube/Discord links — a **data-only**
+mod by "Dragomazing" that adds `VHFYST`, `LVPDM1` and the `IMYST` voice, whose ReadMe says "DO NOT
+RE-UPLOAD TO ANY WEBSITE … WITHOUT MY PERMISSION". No cut ped models, so it is not the MixMods P8
+pack; extracted to `x/characters/raw/restored-unused-peds-gtainside-194343/` for the record and **not
+staged**. gtainside 188830 "restored unused peds esrgan upscaled" is the same author's texture set,
+also not P8.
 
 ---
 

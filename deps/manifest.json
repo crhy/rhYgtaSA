@@ -413,7 +413,7 @@
       "id": "proper-characters-retex-hd",
       "group": "characters",
       "name": "proper-characters-retex-hd.zip",
-      "upstream_name": "TBD",
+      "upstream_name": "SA_-_Proper_Characters_Retex_HD.7z",
       "version": "TBD",
       "date": "2022-07-24",
       "size": null,
@@ -432,13 +432,13 @@
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2022/07/sa-proper-characters-retex-hd-peds-remaster/" }
       ],
-      "notes": "docs/CHARACTERS.md P1: textures only, 133 peds, no new ped id, no plugin - the one ped pack that cannot conflict with the others. Breaks the pack's two generic pedestrian mat_* overrides (expected, section 2.2)."
+      "notes": "docs/CHARACTERS.md P1: textures only, 133 peds, no new ped id, no plugin - the one ped pack that cannot conflict with the others. Breaks the pack's two generic pedestrian mat_* overrides (expected, section 2.2). s27 (2026-11-12): NOT fetched - the MixMods button serves https://sharemods.com/eo1e9wvp3ank/SA_-_Proper_Characters_Retex_HD.7z.html, and that page posts op=download2 behind a Cloudflare Turnstile widget (curl gets the widget back, no bytes): rhY must download it by hand. upstream_name is the file name in that sharemods link, not a file we hashed. No alternate host of the same build: gtainside search 'retex'/'proper peds'/'proper characters' 2026-11-12 returns nothing related, LibertyCity has no MixMods re-upload, the PedFuncs-style GitHub release does not exist. The 7 gtainside 'Original Peds in HD' parts already on disk are NOT this pack: 278 stock ped names replaced as .dff+.txd pairs, 184.9 MB of meshes + 361.9 MB of textures vs 23.4/39.7 MB stock (docs/CHARACTERS.md 12)."
     },
     {
       "id": "proper-player-retex",
       "group": "characters",
       "name": "proper-player-retex-3.2-pc.zip",
-      "upstream_name": "TBD",
+      "upstream_name": "Proper_Player_Retex.7z",
       "version": "3.2",
       "date": "2025-12-05",
       "size": null,
@@ -457,15 +457,15 @@
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2024/12/proper-player-retex/" }
       ],
-      "notes": "docs/CHARACTERS.md C1, top pick: every CJ texture at 1024 px, same skeleton, no plugin. Pick the 'GTA San Andreas (classico) - PC' build, not the 150 MB Android one. Delete an older version first (its own note). Costs the pack's four CJ mat_* overrides until they are re-pointed (section 6)."
+      "notes": "docs/CHARACTERS.md C1, top pick: every CJ texture at 1024 px, same skeleton, no plugin. Pick the 'GTA San Andreas (classico) - PC' build, not the 150 MB Android one. Delete an older version first (its own note). Costs the pack's four CJ mat_* overrides until they are re-pointed (section 6). s27 (2026-11-12): NOT fetched - Cloudflare Turnstile on sharemods, same as proper-characters-retex-hd. The page (curl, 2026-11-12) offers exactly three buttons, and the file names are in the links: Proper_Player_Retex.7z (the PC classic build we want, https://sharemods.com/dckdhp4ir86q/Proper_Player_Retex.7z.html), Proper_Player_Retex_for_Android.7z (https://sharemods.com/44gazw5mqqjt/...), SADE_-_Proper_Player_Retex.7z (Definitive Edition, https://sharemods.com/gewtp59idbrn/...). Page footer says 'Atualizado 5/12/25' = the 2025-12-05 date below. No alternate host found (gtainside, LibertyCity, moddb searched 2026-11-12)."
     },
     {
       "id": "pedfuncs",
       "group": "characters",
       "name": "pedfuncs-0.5.1.zip",
-      "upstream_name": "TBD",
+      "upstream_name": "PedFuncs.7z",
       "version": "0.5.1",
-      "date": "TBD",
+      "date": "2022-09-15",
       "size": null,
       "size_mb_reported": null,
       "sha256": "TBD",
@@ -481,13 +481,13 @@
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2022/07/pedfuncs/" }
       ],
-      "notes": "one ModLoader .asi, open source, no CLEO/VehFuncs dependency (docs/CHARACTERS.md section 5). Not in the RTX copy today (measured modloader/ listing), so the Peds Vary packs below cannot work without it."
+      "notes": "one ModLoader .asi, open source, no CLEO/VehFuncs dependency (docs/CHARACTERS.md section 5). Not in the RTX copy today (measured modloader/ listing), so the Peds Vary packs below cannot work without it. s27 (2026-11-12): NOT fetched - the MixMods button serves https://sharemods.com/fkum0x0mhyu6/PedFuncs.7z.html, Cloudflare Turnstile gated, so it stays a hand-download. date 2022-09-15 is the page's 'Atualizado 15/09/22' and the last push of the source repo. The source IS public (MIT, github.com/JuniorDjjr/PedFuncs, commit b96f4b6, PedFuncs.cpp logs 'v0.5.1'), but it builds only against DK22Pac/plugin-sdk + injector, which the repo does not vendor, so no self-built stand-in exists either; do not stage a hand-made .asi under this id."
     },
     {
       "id": "emergency-peds-vary",
       "group": "characters",
       "name": "emergency-peds-vary.rar",
-      "upstream_name": "TBD",
+      "upstream_name": "emergency-peds-vary_1793981681_509472.rar",
       "version": "TBD",
       "date": "2026-11-07",
       "size": 71431946,
@@ -506,18 +506,18 @@
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://libertycity.net/files/gta-san-andreas/246900-emergency-peds-vary.html" }
       ],
-      "notes": "docs/CHARACTERS.md P2: 50 new police/paramedic/firefighter/sheriff peds, ~10 variants each. Size 71431946 B is the byte count the page showed on 2026-11-11 (measured by curl, not guessed). LibertyCity downloads need a login/queue, which is exactly the hand-download this manifest exists to remove."
+      "notes": "docs/CHARACTERS.md P2: 50 new police/paramedic/firefighter/sheriff peds, ~10 variants each. Size 71431946 B is the byte count the page showed on 2026-11-11 (measured by curl, not guessed); the page's own button says 'Download (68.12 MB)' = 71,431,946 B, and its file list dates the current file 6 November 2026 (page published 2026-11-07). s27 (2026-11-12): NOT fetched - LibertyCity's download button is JS (data-href=/index.php?do=files&op=showfile&v2=0&lid=246900, data-download-token=\"\"), and that endpoint 302s back to the file page for a logged-out curl: login/queue, rhY must download it by hand. No alternate host: gtainside has no 'emergency peds vary' (search 2026-11-12 returns only 'extended emergency peds pack', a different mod), moddb has nothing, and the author's name appears on no other site. Its own README (same author's sibling pack) lists PedFuncs + ModelVariations + Silent ASI Loader + OLA + ModLoader as required, so this pack needs more than the 'requires' above."
     },
     {
       "id": "criminal-peds-vary",
       "group": "characters",
       "name": "criminal-peds-vary.rar",
-      "upstream_name": "TBD",
-      "version": "TBD",
-      "date": "2026-11-03",
-      "size": 205560101,
+      "upstream_name": "V8fzGui8_Criminal_Peds_Vary.rar",
+      "version": "2026-08-10 build",
+      "date": "2026-08-10",
+      "size": 205557524,
       "size_mb_reported": 196,
-      "sha256": "TBD",
+      "sha256": "9b267df95116bfc495ea4c3d43a3adcfcee4bd51a66dd13c1f25bc1e4f640f65",
       "source_page": "https://libertycity.net/files/gta-san-andreas/240761-criminal-peds-vary.html",
       "author": "wizvich",
       "license": "LibertyCity page permissions: re-upload No; edits/convert only with permission",
@@ -529,15 +529,16 @@
       "urls": [
         { "kind": "mirror", "url": "TBD" },
         { "kind": "torrent", "url": "TBD" },
-        { "kind": "source", "url": "https://libertycity.net/files/gta-san-andreas/240761-criminal-peds-vary.html" }
+        { "kind": "source", "url": "https://libertycity.net/files/gta-san-andreas/240761-criminal-peds-vary.html" },
+        { "kind": "direct", "url": "https://files.gtainside.com/202608/V8fzGui8_Criminal_Peds_Vary.rar" }
       ],
-      "notes": "docs/CHARACTERS.md P3: 27 new Families/Ballas + 17 other-gang members, new Angels of Death. 205560101 B = the 196 MiB the page shows. Measure the process commit before enabling it: docs/VEGETATION.md cause 2 is a 2 GB -> 4 GB ceiling, not an infinite one."
+      "notes": "docs/CHARACTERS.md P3: 27 new Families/Ballas + 17 other-gang members, new Angels of Death. Measure the process commit before enabling it: docs/VEGETATION.md cause 2 is a 2 GB -> 4 GB ceiling, not an infinite one. s27 (2026-11-12): GOT IT from GTAinside/gtainside (page /sanandreas/skins/other-skins-skin-packs/220708-criminal-peds-vary, 'Added 08/09/2026, Last update 08/10/2026', author wizvich) - the /download page prints the file URL in clear text and files.gtainside.com serves it to plain curl. sha256/size are our measured bytes: 205,557,524 B, unrar t OK, 606 entries. That is the 2026-08-10 build; LibertyCity's current file (criminal-peds-vary_1793725831_688713.rar, dated 3 November 2026) is 205,560,101 B, 2,577 B larger, and LibertyCity is login/queue gated, so the newer build is still a hand-download. CAUTION: the LibertyCity page answers 'No' to re-upload, so gtainside's copy is itself an unauthorised re-upload - the direct url is recorded so a fetch is reproducible, NOT because we may mirror or bundle it (redistribute stays no). Layout measured after extract: the archive holds TWO modloader folders ('Criminal Peds Vary' and 'Expaned gang wars') plus ModelVariations/ModelVariations_Peds.ini; one manifest target can only carry the first, the rest is staged at GTAmods/x/characters/stage/_criminal-peds-vary-extras/ with a README. The pack's own '1. IMPORTANT!!!.txt' requires PedFuncs, ModelVariations, Silent ASI Loader, OLA and ModLoader - ModelVariations is not in the RTX copy and is not in this manifest yet."
     },
     {
       "id": "restored-unused-peds",
       "group": "characters",
       "name": "restored-unused-peds.zip",
-      "upstream_name": "TBD",
+      "upstream_name": "SA_-_Restored_Unused_Peds.7z",
       "version": "TBD",
       "date": "2022-08-13",
       "size": null,
@@ -555,7 +556,7 @@
         { "kind": "mirror", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2022/07/sa-restore-unused-peds/" }
       ],
-      "notes": "docs/CHARACTERS.md P8: 0.5 MB of cut ped models, ModLoader folder, no plugin - the cheap extra."
+      "notes": "docs/CHARACTERS.md P8: 0.5 MB of cut ped models, ModLoader folder, no plugin - the cheap extra. s27 (2026-11-12): NOT fetched - sharemods again (https://sharemods.com/qcdn2us7y045/SA_-_Restored_Unused_Peds.7z.html, Turnstile). The MixMods page says 'Atualizado 27/08/22'; the 2022-08-13 date below is the LibertyCity twin (179162), which is also login/queue gated. Trap: gtainside 194343 'Restored Unused Peds' is a DIFFERENT mod - 8,569 B rar by Dragomazing (sha256 ec95d71c8a7cbf80d9cd796a3610a7edb08afafab99e3a2d7130803e96c52c68, unrar t OK), data-only (data/peds.ide + data/pedgrp.dat adding VHFYST/LVPDM1/IMYST voices), no models, and its ReadMe says 'DO NOT RE-UPLOAD ... WITHOUT MY PERMISSION'. Extracted to GTAmods/x/characters/raw/restored-unused-peds-gtainside-194343/ for the record; it is NOT staged and must not be given this id. gtainside 188830 'restored unused peds esrgan upscaled' is the same author's texture set, also not this pack."
     },
     {
       "id": "v-vegetation-mix",
