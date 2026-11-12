@@ -28,7 +28,15 @@ What it writes, all inside `GAME_DIR/screenshots/report-<tour start>/`:
 
 `--since TIME` restricts the run to the tail of a manifest (a tour may be run several times
 a day): `YYYY-MM-DD HH:MM[:SS]`, `YYYY-MM-DD`, `HH:MM[:SS]` (date taken from the manifest)
-or a raw epoch seconds.
+or a raw epoch seconds. A manifest is append-only - the tour appends to one `tour-manifest.txt` -
+so it can hold several runs, each opened by a `tour start` line. With `--since`,
+`split_sections()` cuts the manifest at those lines and `pick_section()` reports the run the cut
+asks for - the run whose lines span it, else the first run starting at or after it - and a bare
+`HH:MM` is read on the newest manifest date. So `--since 00:48` on a manifest holding a
+2026-11-11 run and a 2026-11-12 00:49 run reports the 2026-11-12 run - it used to report the
+11th, because the cut was taken on the date of the first entry and the report directory was named
+after the first `tour start` in the file. A cut that falls inside one run still keeps only that
+run's tail, named after its first surviving entry.
 
 Nothing outside the report folder is written, and the game folder is never required: the
 tests run it against a fake tree under `build/tmp/`.
@@ -75,6 +83,7 @@ SHOT_FILE_RE = re.compile(
     r"^(?:shot_|rhyremix_|shot)?_?(\d{4})-(\d{2})-(\d{2})[_ ](\d{2})-(\d{2})-(\d{2})\.(png|jpe?g|bmp|tif|tiff)$",
     re.IGNORECASE)
 TOUR_START_RE = re.compile(r"tour start", re.IGNORECASE)
+TOUR_DONE_RE = re.compile(r"tour done", re.IGNORECASE)
 
 # rhyremix.log: "[2026-11-11 08:07:00.671] streetlights: 320 active, 320 drawn this frame ..."
 LOG_TS_RE = re.compile(r"^\[(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?\]\s*(.*)$")
@@ -125,7 +134,9 @@ def parse_manifest(path):
 
 def parse_since(spec, manifest_date=None):
     """--since TIME -> naive datetime, or None for 'no filter'. Accepts a full timestamp,
-    a bare date, a bare clock time (date from the manifest) or raw epoch seconds."""
+    a bare date, a bare clock time or raw epoch seconds. `manifest_date` is what a bare clock
+    time is read on: one datetime, or the list of manifest entry times (then the newest date in it
+    that is not after the newest entry wins - see split_sections)."""
     s = (spec or "").strip().replace("_", " ").replace("T", " ")
     s = re.sub(r"\s+", " ", s)
     if not s or s.lower() in ("none", "all", "0"):
@@ -139,10 +150,43 @@ def parse_since(spec, manifest_date=None):
             pass
     m = re.fullmatch(r"(\d{2}):(\d{2})(?::(\d{2}))?", s)
     if m:
+        if isinstance(manifest_date, (list, tuple)) and manifest_date:
+            latest = max(manifest_date)
+            cands = sorted({d.replace(hour=int(m.group(1)), minute=int(m.group(2)),
+                                     second=int(m.group(3) or 0), microsecond=0)
+                            for d in manifest_date})
+            not_after = [c for c in cands if c <= latest]
+            return not_after[-1] if not_after else cands[0]
         base = manifest_date or dt.datetime.now()
         return base.replace(hour=int(m.group(1)), minute=int(m.group(2)),
                             second=int(m.group(3) or 0), microsecond=0)
     raise ValueError("cannot read --since %r (try 'YYYY-MM-DD HH:MM:SS', 'HH:MM' or epoch)" % spec)
+
+
+def split_sections(shots, events):
+    """Cut a manifest into runs -> [(start, end, shots, events), ...].
+
+    A run starts at a `tour start` event and holds every shot entry and event up to the next one;
+    `end` is the next run's start, or None for the last run. Anything before the first `tour start`
+    (a manifest cut off mid-run, an older format) comes back as a leading section with start None.
+    The 2026-11-12 manifest holds the 2026-11-11 run and the 2026-11-12 run one after the other,
+    because the tour appends to one file: without this cut both runs land in one report and the
+    report directory is named after the older run.
+    """
+    marks = sorted(w for w, text in events if w and TOUR_START_RE.search(text))
+    if not marks:
+        return [(None, None, shots, events)]
+    secs = []
+    pre_s = [s for s in shots if s.dt < marks[0]]
+    pre_e = [ev for ev in events if ev[0] is None or ev[0] < marks[0]]
+    if pre_s or pre_e:
+        secs.append((None, marks[0], pre_s, pre_e))
+    for i, m in enumerate(marks):
+        nxt = marks[i + 1] if i + 1 < len(marks) else None
+        keep = lambda d: m <= d < nxt if nxt else d >= m
+        secs.append((m, nxt, [s for s in shots if keep(s.dt)],
+                     [ev for ev in events if ev[0] is not None and keep(ev[0])]))
+    return secs
 
 
 # -------------------------------------------------------------------- shot files ---
@@ -482,6 +526,9 @@ def render_report(pairs, sheets, events, cats, log_total, meta):
     L.append("| | |")
     L.append("|---|---|")
     L.append("| manifest | `%s` (%d shot entries, %d events) |" % (meta["manifest"], len(pairs), len(events)))
+    if meta.get("run_start"):
+        L.append("| run | `%s` .. `%s` (%d run(s) in the manifest) |"
+                 % (meta["run_start"], meta.get("run_end") or "end of file", meta.get("n_runs", 1)))
     L.append("| shots dir | `%s` (%d image files, %d not claimed by the manifest) |"
              % (meta["shots_dir"], meta["n_files"], len(meta["unpaired_files"])))
     L.append("| paired | %d of %d manifest entries |" % (meta["n_paired"], len(pairs)))
@@ -587,6 +634,28 @@ def parse_cell(spec):
     return (int(m.group(1)), int(m.group(2)))
 
 
+def pick_section(sections, since):
+    """Which run `--since` asks for, or None to fall back to filtering single entries.
+
+    First the run whose own lines span `since` - a run ends at its `tour done`, not at the next
+    `tour start`, so the gap between two runs belongs to neither of them; otherwise the first run
+    that starts at or after it. `--since 00:48` on a manifest whose first run ended at 09:06 on
+    2026-11-11 and whose second started at 00:49:09 on 2026-11-12 therefore picks the second.
+    """
+    for start, end, shots_, evs in sections:
+        if start is None:
+            continue
+        # A run spans its shots and its `tour done` line - not the "waiting" line of the next run,
+        # which sits in this section and would otherwise make the gap between runs part of it.
+        span = [s.dt for s in shots_] + [start]
+        span += [w for w, text in evs if w and TOUR_DONE_RE.search(text)]
+        last = max(span)
+        if start <= since <= last:
+            return (start, end, shots_, evs)
+    later = [sec for sec in sections if sec[0] is not None and sec[0] >= since]
+    return later[0] if later else None
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tools/tour-report.py",
                                  description="contact sheets + objective report for a photo tour")
@@ -628,17 +697,46 @@ def main(argv=None):
 
     since = None
     try:
-        since = parse_since(args.since, entries[0].dt if entries else None)
+        since = parse_since(args.since, [e.dt for e in entries] or None)
     except ValueError as e:
         log("tour-report: %s" % e)
         return 2
+    sections = split_sections(entries, events)
+    runs = [sec for sec in sections if sec[0] is not None]
+    all_shots = sum(len(sec[2]) for sec in sections)
+    run_start = run_end = None
     if since is not None:
-        entries = [e for e in entries if e.dt >= since]
-        events = [ev for ev in events if ev[0] is None or ev[0] >= since]
+        sec = pick_section(sections, since)
+        if sec is not None:
+            run_start, run_end, sec_shots, sec_events = sec
+            tail = [e for e in sec_shots if e.dt >= since]
+            if sec_shots and tail and since > sec_shots[0].dt:
+                # A cut inside a run keeps that run's tail, and the report directory stays named
+                # after the first entry that survived it (what --since did before runs were cut).
+                entries, events = tail, [ev for ev in sec_events
+                                         if ev[0] is not None and ev[0] >= since]
+                run_start = run_end = None
+                log("tour-report: --since %s -> the tail of the run started %s: %d of %d entries"
+                    % (args.since, sec[0], len(entries), all_shots))
+            else:
+                # The cut is before the run (or after its last shot): it selects the run itself.
+                entries, events = sec_shots, sec_events
+                log("tour-report: --since %s -> the run started %s: %d of %d entries, "
+                    "%d run(s) in the manifest" % (args.since, run_start, len(entries),
+                                                   all_shots, len(runs)))
+        else:
+            # No run at/after the cut: fall back to filtering entries, which is what a manifest
+            # that was cut off mid-run needs.
+            entries = [e for e in entries if e.dt >= since]
+            events = [ev for ev in events if ev[0] is None or ev[0] >= since]
+            log("tour-report: --since %s -> %d entries, no 'tour start' at/after it"
+                % (args.since, len(entries)))
 
     files = shot_files(shots_dir)
-    if since is not None:
-        files = [f for f in files if f.dt >= since]
+    lo, hi = run_start or since, run_end
+    if lo is not None or hi is not None:
+        files = [f for f in files
+                 if (lo is None or f.dt >= lo) and (hi is None or f.dt < hi)]
 
     if not entries:
         # no manifest (or everything filtered out): report on the files alone, in file order
@@ -651,11 +749,12 @@ def main(argv=None):
             "no pair within %.1f s" % (len(entries), len(files), args.tol))
         return 1
 
-    start = None
-    for when, text in events:
-        if when and TOUR_START_RE.search(text):
-            start = when
-            break
+    start = run_start
+    if start is None:
+        for when, text in events:
+            if when and TOUR_START_RE.search(text):
+                start = when
+                break
     start = start or paired[0][0].dt
     out_dir = args.out or os.path.join(game, "screenshots", "report-" + start.strftime("%Y-%m-%d_%H-%M-%S"))
     os.makedirs(out_dir, exist_ok=True)
@@ -673,6 +772,9 @@ def main(argv=None):
         "generated": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "tol": args.tol, "window": args.window, "signals": args.signals,
         "n_files": len(files), "n_paired": len(paired), "unpaired_files": unpaired_files,
+        "run_start": run_start.strftime("%Y-%m-%d %H:%M:%S") if run_start else None,
+        "run_end": run_end.strftime("%Y-%m-%d %H:%M:%S") if run_end else None,
+        "n_runs": len(runs),
     }
     text = render_report(measured, sheets, events, cats, log_total, meta)
     report = os.path.join(out_dir, "report.md")

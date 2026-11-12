@@ -193,6 +193,115 @@ class TestSince(unittest.TestCase):
         with self.assertRaises(ValueError):
             T.parse_since("half past nine")
 
+    def test_a_bare_clock_time_with_the_manifest_times_uses_the_newest_date(self):
+        """s31: a manifest can hold two days of runs. The date of its first line is then the
+        wrong date for a bare HH:MM - that is what made --since 00:48 re-report 2026-11-11."""
+        dates = [dt.datetime(2026, 11, 11, 9, 6, 8), dt.datetime(2026, 11, 11, 9, 9, 32),
+                 dt.datetime(2026, 11, 12, 0, 49, 24), dt.datetime(2026, 11, 12, 0, 53, 39)]
+        self.assertEqual(T.parse_since("00:48", dates), dt.datetime(2026, 11, 12, 0, 48, 0))
+        # a clock time that the newest date cannot mean falls back to the newest date that can,
+        # and never to a date after the last entry
+        self.assertEqual(T.parse_since("09:00", dates), dt.datetime(2026, 11, 11, 9, 0, 0))
+        self.assertEqual(T.parse_since("09:00", []), T.parse_since("09:00", None))
+
+
+TWO_RUN_MANIFEST = """2026-11-11 09:03:09  waiting: step outside to start the tour
+2026-11-11 09:05:53  tour start, 2 stops
+2026-11-11 09:06:08  shot 01 00-baseline-noon-grove
+2026-11-11 09:06:25  shot 02 05-burger-shot-marina-2100
+2026-11-11 09:06:28  tour done
+2026-11-12 00:48:57  waiting: step outside to start the tour
+2026-11-12 00:49:09  tour start, 2 stops
+2026-11-12 00:49:24  shot 01 00-baseline-noon-grove
+2026-11-12 00:49:41  shot 02 14-vegetation-vinewood-noon
+2026-11-12 00:53:41  tour done
+"""
+
+
+class TestTwoRunsInOneManifest(TempCase):
+    """s31: the tour appends to one tour-manifest.txt, so the 2026-11-12 run sat behind the
+    2026-11-11 run in the same file. --since 00:48 then took its date from the first entry, and
+    the report directory was named after the first tour start: the 11th was reported again and
+    the 12th never was."""
+
+    def setUp(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+        os.makedirs(TMP, exist_ok=True)
+        self.game = fake_tree(os.path.join(TMP, "game"))
+        self.shots = os.path.join(self.game, "screenshots", "shots")
+        with open(os.path.join(self.game, "screenshots", "tour-manifest.txt"), "w",
+                  encoding="utf-8") as f:
+            f.write(TWO_RUN_MANIFEST)
+        flat(os.path.join(self.shots, "shot_2026-11-12_00-49-24.png"), (10, 120, 200), (40, 24))
+        flat(os.path.join(self.shots, "shot_2026-11-12_00-49-41.png"), (20, 90, 30), (40, 24))
+        self.manifest = os.path.join(self.game, "screenshots", "tour-manifest.txt")
+
+    def tearDown(self):
+        shutil.rmtree(TMP, ignore_errors=True)
+
+    def report(self, *argv):
+        rc = T.main(["--no-sheets"] + list(argv) + [self.game])
+        self.assertIn(rc, (0, 1))
+        return rc
+
+    def test_split_sections_cuts_the_manifest_at_every_tour_start(self):
+        shots, events = T.parse_manifest(self.manifest)
+        secs = T.split_sections(shots, events)
+        # the "waiting" line before the first tour start is a preamble section, not lost
+        self.assertEqual([s[0] for s in secs],
+                         [None, dt.datetime(2026, 11, 11, 9, 5, 53),
+                          dt.datetime(2026, 11, 12, 0, 49, 9)])
+        self.assertEqual([len(s[2]) for s in secs], [0, 2, 2])
+        self.assertEqual(secs[1][1], secs[2][0])            # a run ends where the next starts
+        self.assertIsNone(secs[2][1])
+        self.assertEqual([s.name for s in secs[2][2]],
+                         ["00-baseline-noon-grove", "14-vegetation-vinewood-noon"])
+        self.assertEqual([t for _w, t in secs[0][3]], ["waiting: step outside to start the tour"])
+        # a manifest with no tour start line at all is one section
+        self.assertEqual(len(T.split_sections(shots, [])), 1)
+
+    def test_since_a_bare_clock_time_reports_the_newest_run_only(self):
+        self.report("--since", "00:48")
+        new = os.path.join(self.game, "screenshots", "report-2026-11-12_00-49-09", "report.md")
+        old = os.path.join(self.game, "screenshots", "report-2026-11-11_09-05-53")
+        self.assertTrue(os.path.isfile(new), "the report went to the newest run")
+        self.assertFalse(os.path.isdir(old), "the 2026-11-11 run is not reported again")
+        text = open(new, encoding="utf-8").read()
+        self.assertIn("14-vegetation-vinewood-noon", text)
+        self.assertNotIn("05-burger-shot-marina-2100", text)
+        self.assertIn("2026-11-12 00:49:09", text)          # the run window is in the header
+
+    def test_since_a_full_timestamp_picks_the_run_it_falls_inside(self):
+        self.report("--since", "2026-11-12 00:50")
+        text = open(os.path.join(self.game, "screenshots", "report-2026-11-12_00-49-09",
+                                 "report.md"), encoding="utf-8").read()
+        self.assertIn("14-vegetation-vinewood-noon", text)
+        self.assertNotIn("05-burger-shot-marina-2100", text)
+
+    def test_since_the_older_run_still_reports_the_older_run(self):
+        self.report("--since", "2026-11-11 09:05")
+        text = open(os.path.join(self.game, "screenshots", "report-2026-11-11_09-05-53",
+                                 "report.md"), encoding="utf-8").read()
+        self.assertIn("05-burger-shot-marina-2100", text)
+        self.assertNotIn("14-vegetation-vinewood-noon", text)
+
+    def test_pick_section_the_cut_between_two_runs_belongs_to_neither(self):
+        shots, events = T.parse_manifest(self.manifest)
+        secs = T.split_sections(shots, events)
+        pick = lambda spec: T.pick_section(secs, T.parse_since(spec, [s.dt for s in shots]))
+        self.assertEqual(pick("00:48")[0], dt.datetime(2026, 11, 12, 0, 49, 9))
+        self.assertEqual(pick("2026-11-11 09:06")[0], dt.datetime(2026, 11, 11, 9, 5, 53))
+        self.assertEqual(pick("2026-11-11")[0], dt.datetime(2026, 11, 11, 9, 5, 53))
+        self.assertEqual(pick("2026-11-12 00:50")[0], dt.datetime(2026, 11, 12, 0, 49, 9))
+        self.assertIsNone(pick("2026-11-13"))
+
+    def test_without_since_the_whole_file_is_still_one_report(self):
+        self.report()
+        text = open(os.path.join(self.game, "screenshots", "report-2026-11-11_09-05-53",
+                                 "report.md"), encoding="utf-8").read()
+        self.assertIn("05-burger-shot-marina-2100", text)
+        self.assertIn("14-vegetation-vinewood-noon", text)
+
 
 class TestMetrics(TempCase):
     def test_flat_grey_is_exactly_its_own_value(self):
