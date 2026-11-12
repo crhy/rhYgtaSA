@@ -25,6 +25,22 @@ nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
 
 Roughly 8 GiB free is enough to start; more is better for the asset pack.
 
+Since s15 the whole dance is one command, from a terminal (not from the assistant, which is
+the thing that has to leave the card):
+
+```bash
+bash scripts/test-session.sh --tour     # Strata off -> wait for the card -> launcher -> clean up -> Strata back
+```
+
+`--tour` writes `<game>/screenshots/tour.req` first, so `SARemix_Tour.lua` runs the fixed
+stop list (names and order in `screenshots/tour-manifest.txt`, one run per flag file) instead
+of you walking to every shot with F12. The list ends with the three s15 subjects: the
+rear-view mirror of the car parked at the Grove Street curb (docs/MIRRORS.md), a pedestrian
+close-up in Pershing Square at noon, and the Mulholland/Vinewood hillside vegetation (the s03
+streaming hang). If the mirror shot frames an empty curb, that stop's numbers are the ones to
+nudge in `plugin/lua/SARemix_Tour.lua` - parked street cars come from the compiled main
+script, so their position is not readable out of the game's data files.
+
 ---
 
 ## Step 1 - deploy the conservative config

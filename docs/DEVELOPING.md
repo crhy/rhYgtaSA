@@ -60,11 +60,78 @@ bash scripts/check-all.sh          # ends "ALL GATES PASSED", or lists the failu
 It runs `plugin/build.sh`, the three native test binaries (`tests/lamps_check.cpp` with
 `lamps.cpp`+`solar.cpp`, `tests/solar_check.cpp` alone because it `#include`s `solar.cpp`,
 `tests/signals_check.cpp` with `signalheads.cpp`+`lamps.cpp`+`solar.cpp`, all host `g++ -std=c++17
--Wall -Wextra -Iplugin/src` into `build/tmp/`), every `tests/test_*.py`, `scripts/installer-selftest.sh` and
-`bash -n` on every `*.sh` in the tree except `build/`. One PASS/FAIL line per check, logs under
-`build/tmp/check-all/`. It is not a replacement for `check.sh <phase>`, which asserts the
-per-phase invariants (imports, ini keys, which files are compiled in); check-all.sh is the
-"nothing regressed anywhere" pass, and it never touches the game folder, wine or the GPU.
+-Wall -Wextra -Iplugin/src` into `build/tmp/`), every `tests/test_*.py`, `scripts/installer-selftest.sh`,
+`scripts/vegetation-selftest.sh`, `scripts/test-session-selftest.sh` and `bash -n` on every `*.sh` in the tree except `build/`. One
+PASS/FAIL line per check, logs under `build/tmp/check-all/`. It is not a replacement for
+`check.sh <phase>`, which asserts the per-phase invariants (imports, ini keys, which files are
+compiled in); check-all.sh is the "nothing regressed anywhere" pass, and it never touches the
+game folder, wine or the GPU.
+
+Since s15 there is one command for the part that cannot be tested here - the session where the
+assistant's own LLM server has to leave the GPU so the game can run:
+
+```
+bash scripts/test-session.sh --tour        # Strata off, wait for the card, launcher, clean up, Strata on
+```
+
+It stops the Strata server/engine by PID read out of `/proc/*/cmdline` (never `pkill -f`: the
+word "strata" is in the pi window's own command line, and the needles are matched against whole
+argv entries because the text of a task can end up in a running process's command line), waits
+until `nvidia-smi` really reports under 1 GiB used, runs `launcher/launch-rtx.sh` in the
+foreground, kills the leftovers a crashed run leaves (`gta-sa.exe`, `NvRemixBridge.exe`, the
+prefix's `wineserver`) and restarts the starter for the same `--project`. Its test is
+`bash scripts/test-session-selftest.sh`: fake server/engine/watchdog processes, fake leftovers,
+a fake `nvidia-smi` and a starter that only logs its argv, all under `build/tmp/s15-stubs/`, run
+through the script's own `RHYS_TEST_SESSION_SANDBOX` guard so a bug in the matching cannot
+signal a real process. It never starts the game and never stops the Strata serving this session.
+
+Since s16 the vegetation retry is one switchable command instead of a page of shell (the causes
+and their ranking live in `docs/VEGETATION.md`):
+
+```
+tools/vegetation.sh on     /path/to/GTASA-RTX --step 3   # install the pack + causes 1..3
+tools/vegetation.sh status /path/to/GTASA-RTX            # which step is live, and what the inis say now
+tools/vegetation.sh off    /path/to/GTASA-RTX            # back to the pre-`on` bytes
+```
+
+The steps are that doc's ranking: 1 = the pack's `procobj.ide`/`vegepart.ide` left out of the
+install, 2 = the streaming caps in the two `MixSets.ini` and two `ImprovedStreaming.ini` copies
+(`StreamMemory`/`StreamMemoryForced` 1024, `RemoveUnusedWhenPercent` 70, `[Range4]`/`[Range5]`
+`Enabled = 0`), 3 = the `rtx.opacityMicromap` budget in `rtx.conf`, 4 = also drop the two
+heaviest `.txd` (the bisect - it costs textures, so it is opt-in; the default is 3). Everything
+it copies or edits is recorded in `<game>/modloader/.rhys-vegetation/` - the list of files it
+added plus one pristine backup per edited file - so `off` restores the tree byte-for-byte and
+leaves no state behind, and a pack folder the user installed by hand is refused rather than
+deleted. Its test is `bash scripts/vegetation-selftest.sh`: the installer self-test's fake tree
+under `build/tmp/`, `status -> off -> on --step 3 -> on --step 4 -> on --step 2 -> off`, a
+synthetic pack plus the real staged 192 MB pack when it is present (`--no-real-pack` skips it),
+and `sha256sum` of every file in the tree before and after the round-trip. It never writes
+outside `build/tmp/`, and `RHYREMIX_INSTALLER_SANDBOX=1` + `.fake-install-marker` guard it the
+same way as `apply.sh`/`deploy.sh`.
+
+Since s17 the character packs are one switchable command too (the shortlist, the order and the
+priorities live in `docs/CHARACTERS.md` §5/§8, the machine-readable copy in `deps/manifest.json`
+group `characters`):
+
+```
+tools/characters.sh on     /path/to/GTASA-RTX            # the staged packs, in the documented order
+tools/characters.sh status /path/to/GTASA-RTX            # what is staged/installed, priorities, lost Remix materials
+tools/characters.sh off    /path/to/GTASA-RTX            # back to the pre-`on` bytes
+```
+
+`--pack NAME` narrows the set (manifest id, modloader folder name or a path) and `--stage DIR`
+says where packs are staged; a pack that `requires` another one (the Peds Vary packs need
+PedFuncs) pulls it in by itself. Priorities are written **inside** `[Profiles.Default.Priority]`
+of `modloader.ini` — the writer is section-aware and CRLF-aware, because ModLoader's own ini is
+CRLF with one hand-edited LF line in it — and the state dir `modloader/.rhys-characters/` holds
+the pack list, the copied files, one pristine backup per edited file and anything moved out
+(`--drop-ped-spec` moves `modloader/Ped Spec/` rather than deleting it). `on` refuses to install
+half a set (nothing is staged yet: `GTAmods/x/characters/stage` does not exist) and refuses to
+merge into a pack folder it did not create; `off` refuses to delete one either. Its test is
+`bash scripts/characters-selftest.sh`: the same fake tree, a synthetic six-pack stage dir, the
+documented order, the priority lines landing in the right section, subset/dependency/missing-stage
+behaviour, the guards, and `sha256sum` of every file before and after — the on/off round-trip has
+to hash back byte-identical.
 
 The C++ is warning-clean and stays that way (s13): `plugin/CMakeLists.txt` carries
 `-Wall -Wextra` permanently, the three native test compiles pass the same flags, and

@@ -36,6 +36,32 @@ local stops = {
   {"09-grove-dawn-0530",            5, 30, 2440.0, -1670.0, 13.5,  2438.0, -1671.0, 15.5,  2500.0, -1668.0, 13.5},
   {"10-water-santa-maria-noon",    13, 0,   305.0, -1925.0,  6.0,   300.0, -1932.0,  5.0,   200.0, -2060.0,  0.0},
   {"11-water-santa-maria-2100",    21, 0,   305.0, -1925.0,  6.0,   300.0, -1932.0,  5.0,   200.0, -2060.0,  0.0},
+  -- s15: three subjects the pack's own material work targets and the list above had no
+  -- shot for. Positions come from the game's IPL data (see .strata/notes-s15-test-session.md):
+  -- the road in front of CJ's house is lae2_roads89 at (2489.3, -1668.5), Pershing Square is
+  -- the plaza of pershingsq1/pershingpool_lan at (1479.6, -1631..-1693) with its parkbench1
+  -- ring at z 13.5, and the Vinewood sign (VineSign1_cunte, txd group "mulhouslahills") stands
+  -- at (1413.4, -804.7, 83.4) with a sm_bevhiltree/pinetree grove at z 90 just north of it.
+  -- Rear-view mirror at Grove Street. SA has no mirrors, it has paint: the glass is triangles
+  -- inside the body atomic, textured with a pre-baked strip (docs/MIRRORS.md) - under Remix a
+  -- smooth metallic material on that hash reflects the road that is really behind CJ. CJ does
+  -- not have to be in a car: the camera sits a metre behind and above the driver's door mirror
+  -- of the car parked at the curb in front of the house and looks back along it. NOTE: SA ships
+  -- no car-generator IPL sections (the LA text IPLs only have inst/cull/path/grge/enex/pick/
+  -- jump/tcyc/auzo/mult and every bnry IPL in gta3.img is instance-only), so parked cars come
+  -- from the compiled main script and cannot be read out of the data files. This is the one
+  -- stop whose numbers may have to be nudged to wherever a car actually sits - the manifest
+  -- line names the shot, re-framing it costs one run.
+  {"12-car-mirror-grove-1300",     13, 0,  2487.0, -1671.0, 13.0,  2487.6, -1665.6, 14.7,  2490.8, -1667.8, 14.0},
+  -- Pedestrian close-up. Pershing Square at noon is the one downtown plaza whose bench ring
+  -- and palm walkways (18 parkbench1 + veg_palmkb1 in lan_stream0.ipl) keep peds crossing in
+  -- front of a low camera; the fountain at (1479.6, -1639.6) is the backdrop.
+  {"13-ped-crowd-pershing-noon",   12, 0,  1479.6, -1650.0, 13.5,  1481.0, -1647.5, 14.6,  1467.0, -1646.5, 13.6},
+  -- Vegetation. The s03 hang was in the vegetation streaming, and the hills are where the
+  -- game packs it: Mulholland climbs the Vinewood hillside here (the streetlamp1 line from
+  -- (1313,-836,61) to (1381,-833,72)) and the grove north of the sign is five sm_bevhiltree
+  -- plus pinetree01/05 at z 90-93. Noon, clear weather, so the leaves are lit from the front.
+  {"14-vegetation-vinewood-noon",  12, 0,  1348.0,  -826.0, 68.5,  1345.0,  -821.0, 70.2,  1290.0,  -762.0, 92.0},
 }
 
 local function exists(p) local f = io.open(p, "r"); if f then f:close(); return true end; return false end

@@ -3,6 +3,7 @@
 Plan only — **nothing was downloaded and nothing was written to the game folder.**
 Measured facts are marked *(measured)*, everything else is what the mod page says *(reported)*.
 Research date: 2026-11-11. Notes: `.strata/notes-s04-characters.md`.
+Since s17 the install/rollback in §8/§10 is a script: `tools/characters.sh on|off|status` (§8.1).
 
 ---
 
@@ -19,7 +20,7 @@ The pack's ped material coverage, read out of the `.usda` files *(measured)*:
 
 | usda | materials overridden | albedo size |
 |---|---|---|
-| `characters/CJ/CJ.usda` | `mat_0AB982F62FEF3381`, `mat_1AB00AD812498A17`, `mat_8645663DE7AFBB81`, `mat_C23DD21AE7ED34B1` — CJ's face / legs / torso / feet, i.e. exactly the four `player_*.txd` | 1024² (legs 512×1024) |
+| `characters/CJ/CJ.usda` | `over "mat_0AB982F62FEF3381"`, `over "mat_1AB00AD812498A17"`, `over "mat_C23DD21AE7ED34B1"` — **three** Looks, not four: CJ's face / torso / legs (or feet), i.e. three of the four `player_*.txd`. The fourth hash `8645663DE7AFBB81` exists only as the *shared normal/rough source* (`8645663DE7AFBB81_normal.dds` + `_rough.dds`, also used by `mat_0AB982F62FEF3381`); its `_albedo.dds` is on disk but no Look references it *(re-measured 2026-11-12, §6)* | 1024² (one of them 512×1024) |
 | `characters/Ryder/Ryder.usda` | 1 body material + glasses | 4096² / 1024² |
 | `characters/Kendl/Kendl.usda` | 1 material | 4096² |
 | `characters/Big_Smoke/Big_Smoke.usda` | **empty stub** (`#usda 1.0` only) | — |
@@ -57,7 +58,8 @@ this copy (`docs/VEGETATION.md`), and it rules out the 800 MB-class ped packs by
    mod are ignored — Remix does not read them.
 
 Practical consequence for the shortlist: prefer **texture-only, same-model, ModLoader-folder** packs
-(nothing in the pack breaks that the pack actually uses, except CJ's 4 materials), and treat
+(nothing in the pack breaks that the pack actually uses, except CJ's materials — three Looks plus a
+shared normal/rough pair, §6), and treat
 "new mesh + new textures" packs as a bigger win only if we are ready to re-capture CJ in Remix afterwards.
 
 ---
@@ -104,8 +106,8 @@ Practical consequence for the shortlist: prefer **texture-only, same-model, ModL
 | P7 Extended and Enhanced Gangs | gang life/territory | needs CLEO, which is parked in this copy; overlaps P3 | skip for now |
 | P8 Restored Unused Peds | free bits of lost content, 0.5 MB | nothing | cheap extra |
 | P9 RoSA Evolved | HD map/vehicle textures + AI-upscaled peds as a bonus | already on disk but parked because of the Proper Fixes/Proper Shaders deadlock history (`GTAmods/.strata/PLAN.md`); under Remix the shader half is irrelevant, the textures are not | separate decision, not part of this shortlist |
-| C1 Proper Player Retex v3.2 | CJ's face/skin/clothes/tattoos at 1024 px, same skeleton ⇒ animations, cutscenes, gang IDs, barbershop/skin selectors all keep working, no plugin | the pack's 4 CJ `mat_*` overrides stop matching ⇒ CJ loses the authored normal/roughness until we re-point them (§6) | **do it — top pick** |
-| C2 / C3 Insanity CJ | a much better CJ head sculpt, facial expressions in cutscenes | old, wardrobe incomplete (C3 is a stopgap mix), 570/185 MB, and it also breaks the 4 CJ overrides | phase 2, after C1 works |
+| C1 Proper Player Retex v3.2 | CJ's face/skin/clothes/tattoos at 1024 px, same skeleton ⇒ animations, cutscenes, gang IDs, barbershop/skin selectors all keep working, no plugin | the pack's three CJ `mat_*` overrides stop matching ⇒ CJ loses the authored normal/roughness until we re-point them (§6) | **do it — top pick** |
+| C2 / C3 Insanity CJ | a much better CJ head sculpt, facial expressions in cutscenes | old, wardrobe incomplete (C3 is a stopgap mix), 570/185 MB, and it also breaks the three CJ overrides | phase 2, after C1 works |
 | C4 HD CJ | nothing better than C1/C2 in quality terms | model replacement with unknown rigging/wardrobe state, 2021 | skip |
 | C5 15 CJ skins | outfit variety | does not improve quality | optional extra |
 
@@ -117,7 +119,7 @@ Practical consequence for the shortlist: prefer **texture-only, same-model, ModL
    textures, keeps the stock CJ skeleton (so nothing in the game's ped plumbing moves), needs no plugin,
    is complete for the classic PC game, and was updated 2025-12-05. Under Remix it replaces the 2004
    18–788 KB CJ textures with 1024 px art, which is exactly the axis Remix rewards (§2). Cost: the pack's
-   four CJ `mat_*` overrides must be re-pointed (§6) to get CJ's authored normal/roughness back.
+   four CJ material hashes must be re-pointed (§6) to get CJ's authored normal/roughness back.
 2. **Proper Characters Retex HD (P1)** — the NPC counterpart: 133 peds, textures only, 22 MB, no plugin,
    deliberately lore-friendly ("the same original GTA SA faces, in high definition"). It is the only ped
    pack that improves the *majority* of NPCs without adding a single new ped id, so it cannot conflict
@@ -135,17 +137,54 @@ a memory problem names itself.
 
 ---
 
-## 6. Re-pointing the pack's CJ materials (the one real piece of work)
+## 6. Which pack materials stop applying, and how to re-point them (the one real piece of work)
 
-After C1, CJ's captured material hashes change. Two ways to get the authored PBR back:
+Remix matches a ped by **material hash**, so a game-side `.txd` replacement silently drops the pack's
+authored PBR for that ped (§2.2). What that means per pack, with the exact node names re-read from the
+`.usda` files on 2026-11-12 *(measured, read-only)*:
 
-* **Cheap**: in the Remix developer/replacement menu, tag CJ's new materials and point them at the pack's
-  existing `texture/characters/CJ/*_normal.dds` / `*_rough.dds` (the pack's normal/rough maps are derived
-  from the same original art, so they still fit). Keep the new mod's albedo.
-* **Proper**: capture with replacements off (re-add the capture hotkey to `rtx.conf` — it was removed
-  again on 2026-11-09 22:45, `docs/FINDINGS.md`), find the four new
-  `mat_<HASH>` names for CJ, and add four `over "mat_<HASH>"` blocks modelled on
-  `texture/characters/CJ/CJ.usda`. Keep the old blocks too — the old hashes simply stop matching.
+| pack | overrides that stop applying | where they live |
+|---|---|---|
+| **C1 Proper Player Retex** | `mat_0AB982F62FEF3381` (1024²), `mat_1AB00AD812498A17` (512×1024), `mat_C23DD21AE7ED34B1` (1024²) — the three CJ Looks — plus the shared `8645663DE7AFBB81_normal/rough.dds` pair they borrow from | `rtx-remix/mods/gameReadyAssets/texture/characters/CJ/CJ.usda` |
+| **P1 Proper Characters Retex HD** | `mat_E6E920AB99F5FC23`, `mat_A3537FCA9CCB9E69` (1024²) — the two generic pedestrian Looks, for whichever of the 133 retexed peds used them | `…/texture/pedestrians/Pedestrian_materials.usda` |
+| **P2 Emergency Peds Vary** | the two pedestrian Looks again for the firefighters it re-textures; the new cop/medic/sheriff ids never had overrides | same file |
+| **P3 Criminal Peds Vary** | same, for the gang members it re-textures | same file |
+| **P8 Restored Unused Peds** | nothing — it only re-adds cut ped models, it replaces no existing texture | — |
+| not touched by any of these | `mat_389470BE6FE18A28` + `mat_1A74DD726E1EDCFE` + `mat_D355E496381564E1` (Ryder, 4096² + 1024² glasses), `mat_B10446A2B08526A8` (Kendl, 4096²), `mat_DA50E6D8BA27A905` (512²) | `…/texture/characters/{Ryder,Kendl,Character_materials}.usda` |
+
+Two corrections to §1 as first written *(measured 2026-11-12)*: `CJ.usda` contains **three** `over
+"mat_…"` blocks, not four — `8645663DE7AFBB81` is only the file-name prefix of the normal/rough maps the
+CJ Looks share (its `_albedo.dds` sits in the folder unreferenced) — and `Big_Smoke.usda` is an empty
+stub, so Big Smoke never had an override to lose.
+
+Getting the authored PBR back after C1, two ways:
+
+* **Cheap** (no capture, works the same evening): open the Remix developer/replacement menu, look at CJ,
+  read the new `mat_<HASH>` names, and point each at the pack's existing
+  `texture/characters/CJ/8645663DE7AFBB81_normal.dds` / `…_rough.dds` (they were derived from the same
+  original art, so they still fit the new albedo). Keep the mod's albedo as `inputs:diffuse_texture`.
+* **Proper** (survives a pack update): capture with replacements off (re-add the capture hotkey to
+  `rtx.conf` — it was removed again on 2026-11-09 22:45, `docs/FINDINGS.md`), read the new
+  `mat_<HASH>` names out of the capture, and add one `over "mat_<HASH>"` block per CJ material to
+  `CJ.usda`, copied from the existing blocks with only the node name changed. Keep the old blocks too —
+  the old hashes simply stop matching, they cost nothing. The block shape is:
+
+  ```text
+  over "mat_<NEWHASH>"
+  {
+      over "Shader"
+      {
+          asset inputs:diffuse_texture = @./<NEWHASH>_albedo.dds@ ( … )   # or the mod's own albedo
+          asset inputs:normalmap_texture = @./8645663DE7AFBB81_normal.dds@ ( … )
+          asset inputs:reflectionroughness_texture = @./8645663DE7AFBB81_rough.dds@ ( … )
+      }
+  }
+  ```
+
+  Same recipe for the two pedestrian Looks in `Pedestrian_materials.usda` after P1/P2/P3.
+
+`tools/characters.sh on` and `… status` print this list (which hashes die for the packs actually
+installed), so nobody has to remember it — see §8.1.
 
 Do **not** re-enable the `rtx.geometryAssetHashRuleString` pin (it was wrong, `docs/FINDINGS.md`
 2026-11-09 22:35).
@@ -254,6 +293,42 @@ GTASA-RTX/modloader/
 6. Restart once per pack. Then check `modloader/modloader.log` for the `Removing imported model file at
    index …` lines and the Remix developer menu for CJ's new material hashes (§6).
 
+### Implemented (s17): `tools/characters.sh` — the whole set as one switchable step
+
+The list above is a script now, so "install the character packs" and "undo them" are one command each:
+
+```bash
+tools/characters.sh on     [GAME_DIR] [--pack NAME ...] [--stage DIR ...] [--partial] [--drop-ped-spec]
+tools/characters.sh off    [GAME_DIR]
+tools/characters.sh status [GAME_DIR]
+```
+
+* **Which packs, in which order, at which priority**: `deps/manifest.json`, group `characters`, read
+  through the repo's one manifest reader (`tools/fetch-deps.sh --dump`). That order is §5's install
+  order (NPC retex → CJ retex → PedFuncs → Emergency → Criminal → Restored Unused Peds), and the
+  priorities are the §8.3 numbers. `--pack` takes a subset (manifest id, modloader folder name, or a
+  path); the order stays the documented one however you name them.
+* **PedFuncs is pulled in automatically** when a selected pack lists it in `requires` (the two Peds Vary
+  packs do), and `--partial` prints a warning instead of installing them without it.
+* **Where packs come from**: a stage dir, default
+  `/media/rhy/data/Gamez/GTAmods/x/characters/stage`, then `REPO/vendor/characters`. A stage dir holds
+  either an unpacked folder in modloader layout (`Proper Player Retex/`) or the archive the manifest
+  names (`proper-player-retex-3.2-pc.zip`), unpacked with `tools/unpack.sh`. **Nothing is staged today**
+  *(measured 2026-11-12: `x/characters/` has only `raw/part1..7`, the gtainside "Original Peds in HD"
+  parts, which are not the §5 shortlist)*, so `on` refuses and names each pack, the folder to put it in
+  and the author's page — it never installs half a set and calls it the recommended combination.
+* **Priorities land inside `[Profiles.Default.Priority]`**, never appended at EOF (where they would fall
+  into whatever section comes last), the file's own comments and its mixed CRLF/LF line endings survive,
+  and `modloader.ini` is backed up pristine once, in the state dir.
+* **State**: `modloader/.rhys-characters/` (a dot-dir ModLoader does not scan) records the pack folders,
+  the copied files, the pristine backups and anything moved out (`--drop-ped-spec` *moves*
+  `modloader/Ped Spec/` there instead of deleting it). `off` deletes only the folders `on` created,
+  restores every backup byte-for-byte, moves Ped Spec back and removes the state dir; a pack folder it
+  did not create is never touched, `on` and `off` both refuse it. `scripts/characters-selftest.sh` proves
+  the round-trip hashes back identical against a fake tree under `build/tmp/` (it is part of
+  `scripts/check-all.sh`), and the sandbox guard means it cannot be pointed at a real install by accident.
+* **It also prints §6** — which `mat_<HASH>` overrides the installed packs knock out — on `on` and `status`.
+
 ---
 
 ## 9. Fitting the two-step end-user installer (and the licence reality)
@@ -339,6 +414,10 @@ The design above is now a file and a script, so "we host everything" is a checkl
 
 Everything lives in `modloader/`, so rollback is deletion, never restore-from-backup:
 
+* One command (s17): `tools/characters.sh off <game>` — it deletes exactly the pack folders
+  `on` created, restores `modloader.ini` from the pristine copy in `modloader/.rhys-characters/backups/`,
+  moves `modloader/Ped Spec/` back if `--drop-ped-spec` had moved it, and removes the state dir.
+  `scripts/characters-selftest.sh` checks that this leaves the tree byte-identical.
 * One pack: move `modloader/<pack>/` out (e.g. to `GTAmods/removed-from-game/rtx-parked/`), restart.
 * Everything: move the five pack folders out, delete the `[Profiles.Default.Priority]` lines, put
   `modloader/Ped Spec/` back if it was kept, restart. The game is back to stock 1.0 peds, because
@@ -346,7 +425,7 @@ Everything lives in `modloader/`, so rollback is deletion, never restore-from-ba
 * Softer switch without deleting: `modloader.ini` → `[Profiles.Default.IgnoreMods]` with the pack name, or
   priority `0` (the ini's own comment says priority 0 = ignored).
 * If CJ looks flat after C1 (lost authored PBR, §2.2), the fallback is to remove C1 and keep P1 — the pack's
-  four CJ `mat_*` overrides start matching again by themselves.
+  three CJ `mat_*` overrides start matching again by themselves.
 * Keep the pre-change state documented in `docs/MODS-REPLACED.md` (inventory table) as part of the change.
 
 ---

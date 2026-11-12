@@ -172,6 +172,14 @@ mv "/media/rhy/data/Gamez/GTASA-RTX/modloader/V Vegetation Mix/gta3.img/insanity
 
 ## Test order
 
+**One command does this whole ladder** (s16): `tools/vegetation.sh on <game> --step N` installs
+the staged pack (`/media/rhy/data/Gamez/GTAmods/removed-from-game/rtx-copy/V Vegetation Mix`)
+into `<game>/modloader/` with causes 1..N applied — step 1 leaves the two IDEs out, step 2 is
+the streaming caps, step 3 the opacity-micromap budget, step 4 the pack bisect — `status` prints
+which of them are live, and `off` puts every byte back (state + one pristine backup per edited
+file under `<game>/modloader/.rhys-vegetation/`; test: `scripts/vegetation-selftest.sh`). The
+commands below are what each step really changes, kept because they are what you check by eye.
+
 0. **LAA is already applied** — `gta-sa.exe` is `0x012f` (`tools/laa.py`, backup `gta-sa.exe.noLAA-backup`),
    `apply.sh` sets it and `deploy.sh` warns if it is missing. Start every retest from that state: if the exe
    came from a fresh downgrader run, re-run `./apply.sh` (or `tools/laa.py <exe> --set`) before reading a

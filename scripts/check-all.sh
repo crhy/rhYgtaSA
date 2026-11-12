@@ -5,9 +5,15 @@
 #
 # scripts/check.sh <phase> is the per-phase gate and stays the thing CI-style work goes
 # through; this file is the "am I done with everything" sweep: the cross-compiled plugin
-# build, the three native test binaries, every python test file, the installer self-test
-# and a syntax check of every shell script we ship. One PASS/FAIL line per check, then
-# either the list of failures or "ALL GATES PASSED".
+# build, the three native test binaries, every python test file, the installer self-test,
+# the vegetation switch self-test (s16: an on/off/status round-trip against the same fake
+# tree, every file in it sha256'd before and after), the character-pack switch self-test (s17:
+# the six "characters" packs of deps/manifest.json staged synthetically, installed in the
+# documented order with their priorities written inside [Profiles.Default.Priority], and an
+# on/off round-trip that hashes back byte-identical), the test-session stub test (s15: fake
+# Strata/game/nvidia-smi under build/tmp, never the real ones) and a syntax check of every
+# shell script we ship. One PASS/FAIL line per check,
+# then either the list of failures or "ALL GATES PASSED".
 #
 # Since s13 the C++ also has to compile without a single warning: the plugin carries
 # -Wall -Wextra in plugin/CMakeLists.txt and the native test compiles below pass them on
@@ -16,7 +22,8 @@
 #
 # Nothing here touches the game folder, wine or the GPU: the native tests are host-side
 # g++ binaries, the python tests use fake paths, and installer-selftest.sh installs into
-# a fake tree under build/tmp/. All output goes to build/tmp/check-all/.
+# a fake tree under build/tmp/ (vegetation-selftest.sh reuses that same tree). All output
+# goes to build/tmp/check-all/.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -101,6 +108,15 @@ done
 
 echo "== installer =="
 run installer "scripts/installer-selftest.sh" 600 bash scripts/installer-selftest.sh
+
+echo "== vegetation switch (tools/vegetation.sh on/off/status against a fake tree) =="
+run vegetation "scripts/vegetation-selftest.sh" 600 bash scripts/vegetation-selftest.sh
+
+echo "== character packs (tools/characters.sh on/off/status against a fake tree) =="
+run characters "scripts/characters-selftest.sh" 600 bash scripts/characters-selftest.sh
+
+echo "== test-session (stubs only: no game, no GPU, no real Strata) =="
+run testsess "scripts/test-session-selftest.sh" 300 bash scripts/test-session-selftest.sh
 
 echo "== shell syntax (bash -n) =="
 # Every .sh in the tree except generated output (build/, rule 2) and git internals. A
