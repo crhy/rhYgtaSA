@@ -86,6 +86,25 @@ rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate = 2048
 rtx.opacityMicromap.cache.maxBudgetSizeMB = 768
 rtx.translucentMaterial.normalIntensity = 0.35
 
+# s32: the hillside vegetation (grass/bush/fern/leaf cards) comes out as soft scribbled lines.
+# These are the alpha-cutout card textures of the game's procedural-vegetation objects: every
+# texture in the dictionaries those objects reference, kept only where the texture really has
+# cutout content (>=5 % fully transparent or >=5 % mid-alpha texels; the opaque bark/dirt in the
+# same dictionaries is left alone). Regenerate with:
+#   python3 tools/vegetation_hashes.py models/gta3.img --emit rtx.hairCardTextures
+# (the dictionary allow-list is the tool's default; --verbose prints the per-texture alpha table).
+# Measured on the mip-0 alpha: gta_proc_rushes gras03Si 76.5 % alpha 0 / 20.8 % mid / 2.7 %
+# opaque; gta_proc_grassland oak2b 89.8 / 10.2 / 0; gta_proc_bush newtreeleaves128 30.2 / 20.6 /
+# 49.2. The cards are painted with soft gradients and not one of them is in any rtx.conf category
+# list today, so the runtime blends them instead of alpha-testing them - which is what the
+# hair-card tooltip is for ("Textures in this category will preserve fine texture detail, render
+# as cutouts instead of alpha blends, and disable backface culling"), and it is also what makes
+# the opacity micromaps apply to them ("a ground densely covered with grass blades ... multiple
+# trees with a lot of foliage").
+# If the vegetation looks unchanged in game, this line may be too long for the parser: retry with
+# the procobj-only subset (45 hashes, 922 chars) - .strata/notes-s32-water-vegetation.md.
+rtx.hairCardTextures = 0x0504F3815DC61AA1, 0x08E10D793AD4E2AA, 0x0B1832275CFCB7C9, 0x0D9C21ADF10ADDE7, 0x0E03AA6D740C7A91, 0x0ECD773BC6EABD04, 0x107EEC5B4E018765, 0x1606014E1D0CA857, 0x1860952EB12C1012, 0x187275A5E2C6C9D1, 0x192EDED43163A36B, 0x19A9E6323C3D65D6, 0x1ABD08BDE3184A6A, 0x1D17FC39CBBAFBA0, 0x1D4FCD7A1998F57C, 0x1E41E0E8E5A5F9A4, 0x2248220BFCFA63C1, 0x22614A2DEDEBA2A5, 0x287CE07C692737AD, 0x29686669C64AA3FC, 0x29D8D740AD006BCF, 0x2C08084131222891, 0x2C9C995996103E27, 0x2E1B3B8C149F4E99, 0x2FDF80B499595FB4, 0x3151EA6E45845C17, 0x321DBA0CE6203EB7, 0x3413BBC2B13512CD, 0x38DB281EB8824EF5, 0x3B707642F71E687A, 0x3D719CD78ECABA71, 0x3E2544BE257E9554, 0x3F2C07157A990E6A, 0x423FE28B06E6650F, 0x469CCDAFB47946D7, 0x47F55D5FAE08C379, 0x4963A56F7F16FC89, 0x4B719C27ED8C8836, 0x4BD59785193B3FEA, 0x4F460C663667E09F, 0x4FA612073739FEFF, 0x510C705713853845, 0x56DDB2B8AD2A2DDA, 0x570BD70B9046B029, 0x58927C54CAADD295, 0x5A56C1B9FEEDBAB9, 0x5FE4D31FBE4EEAC6, 0x63145CA4E3F292C8, 0x635F3F989E80F1C7, 0x6497C0EF21A78B78, 0x65FBBEF39CEFAC90, 0x6A42FEBBCB8F029E, 0x6DBCFD70FE455DC5, 0x7595A7450C46CAEB, 0x76266E5CD4DC9500, 0x76D8A0DB60C19639, 0x76F57DDFF86D0779, 0x77081216EC352583, 0x7DC36B000E4FED76, 0x7FAE254C2096AD57, 0x805989154B38E599, 0x80CC572629B0188E, 0x86524E16BDF6E88C, 0x865CD43443A18E6A, 0x898447444F91E3B5, 0x89C0F60CBAABBDAD, 0x8AFFAE2946E92ABE, 0x922928507FECE299, 0x947A4D782DB1FCCD, 0x990161BE04651B62, 0x9C8ACB804A7C77FC, 0x9CC908221052AB72, 0x9D57CFBF4DC5C6C8, 0x9E124DD250F748E7, 0x9EE2BA6525CC97C5, 0x9EE9CA1E2022ECF9, 0x9F83826776AAC0DF, 0xA1075B471E2068D3, 0xA5054FBA0D8C1527, 0xA697D6AAA35DF2FF, 0xA7B9605620133102, 0xA99DAA70B90EE5BD, 0xAA6A767CD75FB268, 0xAB9BD5DC7B72F88A, 0xAC51BF60BF3865CD, 0xAE2E8A7685B242D8, 0xB3EC1CF75134B94C, 0xB48687BBCB9F7448, 0xB50FA269D9BCE0D7, 0xB530EC1CADC74E3D, 0xB53B57E78B7D329A, 0xB5D1BC076C8FE0C7, 0xB6093296B6A1B04B, 0xBAD068D6DD5B10B3, 0xBF04D252D688E8C8, 0xC1278B21D7B39CF1, 0xC3E69221BE9DF2DD, 0xC3F81A23C145E731, 0xC5CD0D4F434AEA31, 0xC6ECDA6547C665F9, 0xC8835200DF303C5C, 0xC8EEFC3B47219C97, 0xC99DBC4B82253C50, 0xCE043A54EBBA15F9, 0xD6D0726F33098B7B, 0xD79327181A4A8DE0, 0xD8FDE69FE1FA3032, 0xD9A4C29EB4CF0C8E, 0xDAFDE2A978A4380E, 0xDBC6603A5C5A1713, 0xDD8318C52803E0BB, 0xDDE8E851C606AB69, 0xDEE802C5F8BA3B46, 0xE9467F583312AA0A, 0xE9DA42F6E7483E74, 0xEB832349DE93EB27, 0xF20884563EA70C55, 0xF4A9329FF093BED7, 0xF5B6C02742843D30
+
 # --- Tier A: applied ---------------------------------------------------------
 # rtx.pathMinBounces 0 -> 1. Tooltip: "The minimum number of indirect bounces the path must
 #   complete before Russian Roulette can be used. Must be < 16. This value is recommended to

@@ -230,3 +230,25 @@ cp -a "$G/modloader/modloader.log" "$G/modloader/Improved Streaming/ImprovedStre
       "$G/rtx-remix/logs/bridge64.log" "$G/moonloader/moonloader.log" "$D"/
 bash /home/rhy/rhYgtaSA/tools/winedbg-hang.sh      # while it is still hung: backtraces + address-space snapshot
 ```
+
+## s32: the cards themselves (why they read as scribbled lines, and what changed)
+
+The freeze question and the look question are different, but they share one mechanism: the
+hillside is **alpha-tested cards** (procobj `genVEG_*` + vegepart), and their textures were in no
+category list of `rtx.conf` at all — measured with `tools/vegetation_hashes.py --check-conf`, 0 of
+119. Decoding the mip-0 alpha of the 190 textures in the 40 foliage dictionaries shows why that
+matters: `gta_proc_rushes gras03Si` is 76.5 % alpha 0, 20.8 % mid, 2.7 % opaque, and
+`gta_proc_grassland oak2b` is 89.8 / 10.2 / 0. The cards are painted with soft gradients, so a
+hard 50 % cut keeps 10.2 % of `gras03Si`'s texels and discards 13.3 % of soft coverage — and
+blending them, which is what Remix did, is what makes a blade of grass read as a grey stroke.
+
+`config/rtx.conf` and `config/rtx.conf.perf` now carry `rtx.hairCardTextures = <119 hashes>`
+("preserve fine texture detail, render as cutouts instead of alpha blends, and disable backface
+culling"), which is also the condition for the opacity micromaps of Cause 3 to apply at all
+("geometries with textures that have alpha cutouts ... a ground densely covered with grass
+blades"). Regenerate or narrow the list with
+`python3 tools/vegetation_hashes.py models/gta3.img --emit rtx.hairCardTextures`; the dictionary
+allow-list is deliberate (`veg.*` matches the Las Vegas *building* dictionaries, `.*grass.*`
+matches `tikigrass`, which is pool and concrete wall textures). Note that most of these rasters
+read as "16bit" through `tools/remix_texhash.py` — their fourcc sits in the raster header, not the
+window that module scans — they are DXT3; the hash is unaffected.

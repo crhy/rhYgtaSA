@@ -1,113 +1,134 @@
 #!/usr/bin/env bash
-# s02: switch GTA SA (RTX Remix) water material between the variants in REPO/config/water/.
+# s02/s32: switch the GTA SA RTX Remix water material between variants, with an A/B switch.
 #
-#   tools/water.sh calm       [GAME_DIR]   gentle, shallow water (bay/harbour)
-#   tools/water.sh realistic  [GAME_DIR]   moderate open-coast water
-#   tools/water.sh pack       [GAME_DIR]   the pack's original material (Water_materials.usda.orig)
-#   tools/water.sh status     [GAME_DIR]   which variant is currently installed
-#   tools/water.sh revert     [GAME_DIR]   same as `pack`, kept for muscle memory
+#   usage: tools/water.sh {status|soft|realistic|calm|pack} [GAME_DIR] [--dry-run]
 #
-# GAME_DIR defaults to the installed RTX pack. The pack's original file is preserved as
-# Water_materials.usda.orig next to the material; it is written once and never overwritten,
-# so `pack`/`revert` is always a safe way back.
+#   soft       (s32, what we recommend) 'realistic' plus a REGENERATED normal sheet:
+#              inputs:normalmap_texture -> ./water_normal_soft.dds, which this script generates
+#              on demand with tools/water_normal_soft.py from the pack's own water_normal.dds
+#              (the pack's file is never written over). Measured on the pack's sheet: median
+#              facet tilt 44 deg, 32 % of texels over 60 deg, |grad tilt| 21.3 deg/texel, tilt
+#              decorrelated after 10 px of a 512 px frame. Generated sheet: 12 deg, 0 %,
+#              2.2 deg/texel, 17 px of a 128 px frame. That is the fix for the "speckled
+#              white/black sheet": the mdl has no normal-strength/roughness/UV-scale input, so
+#              the map is the only place the high frequencies can be removed (see
+#              .strata/notes-s32-water-vegetation.md).
+#   realistic  (s02) same material, the pack's own sheet, transmittance (0.05,0.22,0.45) @ 20 m,
+#              i.e. Jerlov I clear ocean, IOR 1.33, diffuse layer off, 12 fps, encoding pinned.
+#   calm       'realistic' plus thin_walled = 1 (the sea behaves as a single-sided surface).
+#   pack       the GTASA-Remix pack's own material, byte for byte (the control).
 #
-# The script validates the variant first (tools/water_check.py: text USD, balanced braces,
-# same prim paths as the original, only inputs the mdl declares) and refuses to install a
-# variant that fails. It never edits rtx.conf; it only prints the rtx.conf lines that go with
-# the variant, because the normal-strength knob lives there and not in the USD.
+# Why a variant file and not a patch: the pack's material is a 15 KB text USD
+# (Water_materials.usda) that overrides the Shader prim of the two water materials
+# (mat_59296793798A7318 = the sea texture the game generates, mat_A75A0B41F2454F04 = the game's
+# waterclear256). Every parameter we want is an input of AperturePBR_Translucent.mdl, so the
+# variant is a whole file and switching is a rename.
+#
+# It never edits rtx.conf; it prints the rtx.conf lines that go with the variant you chose,
+# because the normal-strength knob (rtx.translucentMaterial.normalIntensity) lives there and
+# multiplies whatever the map does - with 'soft' it should be back at 1.0, with 'realistic'
+# 0.35 is what s02 measured as good.
+#
+# The original file is kept once, as Water_materials.usda.orig, and `pack` restores it byte for
+# byte. Everything else is a copy of a file in REPO/config/water/.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GAME_DEFAULT="/media/rhy/data/Gamez/GTASA-RTX"
+GAME="${2:-/media/rhy/data/Gamez/GTASA-RTX}"
+DRY=0
+for a in "$@"; do [ "$a" = "--dry-run" ] && DRY=1; done
+WATER_DIR="$GAME/rtx-remix/mods/gameReadyAssets/texture/Water"
+MATERIAL="$WATER_DIR/Water_materials.usda"
+ORIG="$WATER_DIR/Water_materials.usda.orig"
+SOFT_DDS="$WATER_DIR/water_normal_soft.dds"
+SOFT_SRC="$WATER_DIR/water_normal.dds"
 
-action="${1:-}"
-game="${2:-$GAME_DEFAULT}"
+die() { echo "water.sh: $*" >&2; exit 1; }
+note() { echo "  $*"; }
+run() { echo "  + $*"; [ "$DRY" = 1 ] || "$@"; }
 
-if [ -z "$action" ]; then
-    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    exit 2
-fi
+[ -d "$WATER_DIR" ] || die "no water directory: $WATER_DIR (pass the game dir as argument 2)"
+[ -f "$MATERIAL" ] || die "no water material: $MATERIAL"
 
-matdir="$game/rtx-remix/mods/gameReadyAssets/texture/Water"
-target="$matdir/Water_materials.usda"
-orig="$matdir/Water_materials.usda.orig"
+ensure_orig() {
+  if [ ! -f "$ORIG" ]; then
+    die "no $ORIG - copy the pack's Water_materials.usda to that name first
+  (cp '$MATERIAL' '$ORIG'); water.sh refuses to guess which file was the original"
+  fi
+}
 
-if [ ! -d "$matdir" ]; then
-    echo "water.sh: no water material dir: $matdir" >&2
-    echo "          pass the game dir as the second argument (default: $GAME_DEFAULT)" >&2
-    exit 1
-fi
-if [ ! -f "$target" ] && [ ! -f "$orig" ]; then
-    echo "water.sh: neither $target nor $orig exists - nothing to switch." >&2
-    exit 1
-fi
-
-# keep the pack's original exactly once, never overwrite it
-if [ ! -f "$orig" ]; then
-    cp -n "$target" "$orig"
-    echo "saved the pack's original to $orig"
-fi
+# The 'soft' variant points at a generated texture; make sure it exists before the USD does.
+ensure_soft_dds() {
+  if [ -f "$SOFT_DDS" ]; then
+    note "generated sheet already there: $SOFT_DDS"
+    return 0
+  fi
+  [ -f "$SOFT_SRC" ] || die "'soft' needs the pack's sheet to generate from: $SOFT_SRC is missing"
+  echo "  generating $(basename "$SOFT_DDS") from $(basename "$SOFT_SRC"):"
+  if [ "$DRY" = 1 ]; then
+    echo "  + python3 $REPO/tools/water_normal_soft.py '$SOFT_SRC' '$SOFT_DDS'"
+  else
+    python3 "$REPO/tools/water_normal_soft.py" "$SOFT_SRC" "$SOFT_DDS" | sed 's/^/    /' ||
+      die "water_normal_soft.py failed"
+    [ -s "$SOFT_DDS" ] || die "generated $SOFT_DDS is empty"
+  fi
+}
 
 status() {
-    local live="none (file differs from every variant)"
-    for v in calm realistic pack; do
-        if cmp -s "$REPO/config/water/$v.usda" "$target" 2>/dev/null; then live="$v"; fi
-    done
-    echo "game dir : $game"
-    echo "material : $target"
-    echo "installed: $live"
-    if cmp -s "$orig" "$target"; then echo "           (identical to $orig)"; fi
+  echo "== $MATERIAL"
+  python3 - "$MATERIAL" "$ORIG" <<'PY'
+import re, sys, hashlib, os
+path, orig = sys.argv[1], sys.argv[2]
+def grab(p, name):
+    if not os.path.exists(p):
+        return None
+    t = open(p, encoding="utf-8", errors="replace").read()
+    m = re.findall(r'inputs:%s\s*=\s*([^(\n]+)' % name, t)
+    return [v.strip() for v in m] or None
+cur = {k: grab(path, k) for k in ("use_diffuse_layer", "transmittance_color",
+                                  "transmittance_measurement_distance", "sprite_sheet_fps",
+                                  "thin_walled", "encoding", "normalmap_texture")}
+for k, v in cur.items():
+    print("  %-34s %s" % (k, " / ".join(v) if v else "-"))
+name = "unknown"
+if os.path.exists(path) and os.path.exists(orig) and \
+        hashlib.sha256(open(path, "rb").read()).hexdigest() == \
+        hashlib.sha256(open(orig, "rb").read()).hexdigest():
+    name = "pack (the GTASA-Remix pack's own material)"
+elif cur.get("normalmap_texture") and any("water_normal_soft" in v for v in cur["normalmap_texture"]):
+    name = "soft (s32: regenerated normal sheet)"
+elif cur.get("thin_walled") and cur["thin_walled"][0] == "1":
+    name = "calm (s02)"
+elif cur.get("use_diffuse_layer") and cur["use_diffuse_layer"][0] == "0":
+    name = "realistic (s02)"
+print("  installed variant: %s" % name)
+print("  original kept: %s" % ("yes" if os.path.exists(orig) else "NO - run nothing until this is fixed"))
+PY
 }
 
-case "$action" in
-status)
-    status
-    exit 0
-    ;;
-revert)
-    action="pack"
-    ;;
-calm|realistic|pack)
-    ;;
-*)
-    echo "water.sh: unknown action '$action' (calm|realistic|pack|status|revert)" >&2
-    exit 2
-    ;;
-esac
-
-src="$REPO/config/water/$action.usda"
-if [ ! -f "$src" ]; then
-    echo "water.sh: missing variant $src" >&2
-    exit 1
-fi
-
-python3 "$REPO/tools/water_check.py" "$src" "$orig" || {
-    echo "water.sh: refusing to install $src (validation failed)" >&2
-    exit 1
+install() {
+  local src="$REPO/config/water/$1.usda"
+  [ -f "$src" ] || die "no variant file $src"
+  ensure_orig
+  python3 "$REPO/tools/water_check.py" "$src" "$ORIG" || die "variant $1 does not validate"
+  if [ "$1" = soft ]; then ensure_soft_dds; fi
+  run cp "$src" "$MATERIAL"
+  echo "installed water variant '$1'."
+  echo "next: restart the game (Remix loads the mod's USD at boot), then tools/tour.sh --water-only."
+  echo "rtx.conf lines that go with '$1' (water.sh does not touch rtx.conf):"
+  case "$1" in
+    soft)      echo "  rtx.translucentMaterial.normalIntensity = 1.0   # the map already carries the softening" ;;
+    realistic) echo "  rtx.translucentMaterial.normalIntensity = 0.35  # s02: 1.0 is boiling, 0.2 is glass" ;;
+    calm)      echo "  rtx.translucentMaterial.normalIntensity = 0.35" ;;
+    pack)      echo "  rtx.translucentMaterial.normalIntensity = 1.0   # the pack's default" ;;
+  esac
 }
 
-cp "$src" "$target"
-echo "installed water variant '$action' -> $target"
-status
-
-# suggested (not applied) rtx.conf normal strength for this variant; see the notes for the
-# tilt-vs-factor table that these numbers come from
-case "$action" in
-    calm)      ni="0.2  # median facet tilt ~6 deg (glassy, sheltered)" ;;
-    realistic) ni="0.35 # median facet tilt ~12 deg (moderate chop)" ;;
-    pack)      ni="0.5  # median facet tilt ~17 deg, still steep" ;;
+case "${1:-status}" in
+  status)   status ;;
+  soft)     install soft ;;
+  realistic) install realistic ;;
+  calm)     install calm ;;
+  pack)     ensure_orig; run cp "$ORIG" "$MATERIAL"; echo "restored the pack's water material byte for byte." ;;
+  *)        sed -n '2,4p' "$0"; exit 2 ;;
 esac
-
-cat <<EOF
-
-Restart the game (or reload the mod in the Remix runtime) to pick it up.
-
-The USD cannot soften the normals: AperturePBR_Translucent.mdl has no normal-strength,
-roughness or UV-scale input. The runtime does, in rtx.conf - NOT written by this script,
-check the exact spelling in the Remix UI (Material Options > PBR Material Modifiers):
-  rtx.translucentMaterial.normalIntensity = $ni
-      # the pack's water_normal.dds decodes to a median facet tilt of 46 deg as-is
-  rtx.translucentMaterial.animatedWaterSecondaryNormalLodBias = 2   # 2nd normal sample from a
-      # blurrier mip -> lower frequency waves (runtime's own layered-water detail layer)
-See REPO/.strata/notes-s02-water.md for the measurements and the key descriptions.
-EOF
