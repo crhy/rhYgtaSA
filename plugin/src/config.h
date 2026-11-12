@@ -192,9 +192,21 @@ struct RhyConfig {
     int traffic_enabled;    // 0 = traffic light feature off
     int traffic_mode;       // 0 = off, 1 = cycle, 2 = fixed green
     std::string trafficPath;
-    float traffic_radius;   // sphere light radius
+    float traffic_radius;   // sphere light radius (legacy fixture_size=0 path)
     float traffic_radius_ref;  // radius traffic_radiance was calibrated at
     float traffic_radiance; // radiance scale for the lamp colour
+    // s30: with fixture_size=1 (the default) a signal is a BULB: `bulb_radius`
+    // is the lens radius in metres and `bulb_radiance` is the lens luminance in
+    // nits at that radius, with no flux-preserving (ref/r)^2 - see
+    // rhySignalBulb() in signalheads.h. 5400 nits over a 0.1 m sphere is the
+    // output of a street luminaire in a marble, and sixty of them near a player
+    // is a green street rather than sixty small bright heads.
+    float traffic_bulb_radius;   // metres (game units)
+    float traffic_bulb_radiance; // nits at the lens
+    // s30: the radius we leave the game's OWN signal-head corona (it registers
+    // one per lit head at radius 15.0 = a 30 m green flare). 0 = do not touch
+    // the game's code beyond the hook itself.
+    float traffic_corona_radius;
     int traffic_period;     // seconds per full red/amber/green cycle
     int traffic_max_lights; // cap on simultaneous traffic light Remix lights
     int traffic_max_distance; // metres, 2D (new lights)

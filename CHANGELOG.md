@@ -24,6 +24,51 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
 
 ### Traffic signals
 
+- **Fixed (s30): the corona hook had not been installable since s19.** `rhySignalHookInstall()`
+  asked the source question by calling `rhySignalPatchCheck(source, NULL, NULL, NULL, NULL)`, and
+  that function answered a null-byte-window call with `kRhyPatchCallSite` — "the bytes are wrong".
+  The install path read that as a verdict, never read the exe, and fell back to `source=list` on
+  every build of the game. The 2026-11-12 00:48 run logs exactly that: *"the bytes at 0x49DD4C are
+  not 'call 0x6FC580'"* about an exe whose bytes at `0x49DD4C` are `E8 2F E8 25 00` = `call
+  0x6FC580` (verified against `gta-sa.exe`, md5 `85662cbb…`). The null-window answer is now its own
+  value, `kRhyPatchNoBytes` = "go and read the bytes", and the install walk is asserted step by
+  step in `tests/signals_check.cpp`. Until this fix, no run had ever lit a head: every signal light
+  since s01 sat on the pole.
+- **Fixed (s30): the green flood, which was two separate things.** Measured on the tour's signal
+  stops (1920×1080, `build/tmp/s30/`): 10–39% of the frame saturated green, spread over every
+  block, and **not one green pixel above luma 200** in any of the four shots — a huge area at
+  moderate radiance, i.e. ambient, never a bulb. The 2026-11-11 tour, where the plugin created
+  **zero** traffic lights, still shows 10–30% green, so most of it is the game's own doing: each
+  lit head is registered with a corona of **radius 15.0** — a 30 m additive pure-green flare, drawn
+  by the Remix bridge as emissive geometry. Our own lights were the second half: `fixture_size=1`
+  scaled `radiance=1.5` by `(radius_ref 6.0 / 0.10)²` = ×3600, so each 0.1 m sphere published
+  **5400 nits** (log 00:48:56: `radiance=9.64,5400.00,1845.57 radius=0.10`) — the whole output of
+  the old six-metre blob squeezed into a marble, sixty times over.
+- **Added (s30): `corona_radius=0.45`** resizes the game's own flare by rewriting one immediate —
+  `push 0x41700000` at `0x49DCD9`, the 15.0-unit radius argument of the same `RegisterCorona` call
+  we already hook — so the visible green becomes a lens-sized bulb instead of a street-wide wash
+  (area ÷ 1111). Same kill-switch discipline as the hook: gated on `source=game`, the five bytes
+  are checked against `68 00 00 70 41` before anything is written, `corona_radius=0` puts the game's
+  flare back, and `tests/test_signal_hook.py` asserts those bytes against the real exe.
+  `rhySignalCoronaApply()` is idempotent and re-runs on every `rhyremix.ini` edit, so the A/B needs
+  no restart.
+- **Added (s30): the bulb model** — `rhySignalBulb()` in `plugin/src/signalheads.cpp`, used by both
+  the head path and the list path so they cannot drift. With `fixture_size=1` the radius is the
+  real lens (0.10 m) and `[trafficlights] bulb_radiance=1200` **is** the lens luminance in nits at
+  that radius, with no `(radius_ref/radius)²`; the flux-preserving rule stays for `fixture_size=0`,
+  where the user is driving a blob on purpose. One signal now puts out under 5% of one street
+  luminaire's flux (asserted against `rhyStreetFixture()` in the native test; the old 5400-nit bulb
+  failed that bound by 2×). New keys: `bulb_radius` (0 = the lens from `lamps.h`), `bulb_radiance`,
+  `corona_radius`.
+- **Added (s30): a safety net for the corona resize.** Shrinking the game's flare while our hook
+  lights nothing would leave the heads dark — worse than the flood. `rhyHeadsHealthy()` falls back
+  to the list lights when the hook has been live for 20 s without one record (the 2026-11-11 13:03
+  run installed the patch and read `records=0`), and the log line says so and points at
+  `corona_radius=0`.
+- **Tests (s30):** `tests/signals_check.cpp` 89 → 124 checks (the install walk step by step, the
+  corona push recognised/refused, the bulb's radius, radiance, flux bound and off switches, head
+  position on the lens); `tests/test_signal_hook.py` 25 → 28 (the `push 15.0` at `0x49DCD9` in the
+  real exe, the no-bytes-vs-bad-bytes regression, the corona patch's own gates).
 - **Added:** a kill switch inside `rhySignalHookInstall` (`plugin/src/signalhook.cpp`, decision logic
   in `plugin/src/signalheads.cpp`): the code patch is installed only when `[trafficlights]
   source=game` **and** the call site `0x49DD4C` still decodes to `call 0x6FC580` **and** `0x6FC580`

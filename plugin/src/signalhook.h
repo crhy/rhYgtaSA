@@ -39,6 +39,13 @@ bool rhySignalHookInstall(int* reason);
 // traffic module falls back to source=list when it is not.
 bool rhySignalHookInstalled();
 
+// s30: resize the game's own signal-head corona (it registers one per lit head
+// at radius 15.0 = a 30 m additive green flare). iniRadius <= 0 restores the
+// game's 15.0. Byte-verified against 0x49DCD9 before anything is written,
+// idempotent, and callable on every rhyremix.ini edit, so corona_radius is a
+// live A/B knob. Only ever called with the hook's own kill switch satisfied.
+bool rhySignalCoronaApply(float iniRadius);
+
 // Human-readable form of an RhySignalHookReason.
 const char* rhySignalHookReasonText(int reason);
 

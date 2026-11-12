@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "lamps.h"  // s30: rhySignalLensRgb() for the bulb model
+
 // ---------------------------------------------------------------- identity
 
 uint64_t rhyHeadId(uint32_t entity, uint32_t index) {
@@ -84,6 +86,19 @@ int rhyHeadStale(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs) {
     // over after ~49.7 days of uptime.
     const uint32_t age = nowTick - lastSeenTick;
     return age > ttlMs ? 1 : 0;
+}
+
+int rhyHeadsHealthy(unsigned records, uint32_t installedTick, uint32_t nowTick,
+                    uint32_t graceMs) {
+    if (records > 0u) {
+        return 1;  // it has produced a head at some point: keep using it
+    }
+    if (!(graceMs > 0u)) {
+        return 0;
+    }
+    // Still inside the grace window: the player may simply not have seen a
+    // signal yet (the 2026-11-11 13:03 run logged 12 seconds at the spawn).
+    return (nowTick - installedTick) > graceMs ? 0 : 1;
 }
 
 // ---------------------------------------------------------------- geometry
@@ -206,6 +221,91 @@ unsigned rhyChooseHeads(const RhySignalHead* heads, unsigned nHeads,
 // ---------------------------------------------------------------------------
 
 const uint8_t kRhyPatchCalleeBytes[5] = {0x0F, 0xB6, 0x54, 0x24, 0x28};
+// `push $0x41700000` at 0x49DCD9: the 15.0 game-unit radius the game hands its
+// own signal-head corona (argument 18 of the RegisterCorona call at 0x49DD4C).
+const uint8_t kRhyPatchCoronaBytes[5] = {0x68, 0x00, 0x00, 0x70, 0x41};
+
+int rhySignalCoronaPatchCheck(const uint8_t* pushBytes, float* gameRadius) {
+    if (!pushBytes) {
+        return kRhyPatchCorona;
+    }
+    for (unsigned i = 0; i < sizeof kRhyPatchCoronaBytes; ++i) {
+        if (pushBytes[i] != kRhyPatchCoronaBytes[i]) {
+            return kRhyPatchCorona;
+        }
+    }
+    if (gameRadius) {
+        const uint32_t bits = static_cast<uint32_t>(pushBytes[1]) |
+                              (static_cast<uint32_t>(pushBytes[2]) << 8) |
+                              (static_cast<uint32_t>(pushBytes[3]) << 16) |
+                              (static_cast<uint32_t>(pushBytes[4]) << 24);
+        std::memcpy(gameRadius, &bits, sizeof bits);
+    }
+    return kRhyPatchOk;
+}
+
+float rhySignalCoronaRadius(float gameRadius, float iniRadius) {
+    if (!(iniRadius > 0.0f)) {
+        return gameRadius;  // 0 = leave the game's own sprite alone
+    }
+    // A corona is a soft radial gradient, not a disc: under 5 cm the head stops
+    // reading as a light at all, and over 1.2 m we are back to the wash the
+    // patch exists to remove. rhY tunes inside that window from the ini.
+    if (iniRadius < 0.05f) {
+        return 0.05f;
+    }
+    if (iniRadius > 1.2f) {
+        return 1.2f;
+    }
+    return iniRadius;
+}
+
+void rhySignalBulb(int phase, int fixtureSize, float lensRadius,
+                   float bulbRadiance, float radianceAtRef, float radiusRef,
+                   float radianceScale, RhySignalBulb* out) {
+    if (!out) {
+        return;
+    }
+    // The colour is the passband of a real signal lens, integrated across the
+    // visible spectrum (lamps.h), not a hand-picked triple: sampling a single
+    // "red" wavelength like 620 nm gives orange, because the eye's response
+    // there still carries a lot of green, whereas a real red lens has cut the
+    // green out entirely.
+    float col[3];
+    rhySignalLensRgb(phase, col);
+
+    float radius = lensRadius;
+    if (!(radius > 0.0f)) {
+        radius = 0.10f;  // a 200 mm lens; never let a bad ini value reach Remix
+    }
+    float base = 0.0f;
+    out->legacy = fixtureSize ? 0 : 1;
+    if (fixtureSize) {
+        // bulb_radiance is the lens luminance in nits, used at the lens radius.
+        // No (radiusRef/radius)^2: that rule exists so a shrunken STREET lamp
+        // keeps the street lit; applied to a signal it turns a lens into a
+        // 5400-nit flood lamp (see the header comment).
+        base = bulbRadiance;
+    } else {
+        base = rhyRadianceForFlux(radianceAtRef, radius, radiusRef);
+    }
+    if (!(base > 0.0f)) {
+        base = 0.0f;
+    }
+    if (!(radianceScale > 0.0f)) {
+        radianceScale = 1.0f;
+    }
+    base *= radianceScale;
+
+    out->radius = radius;
+    float mean = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        out->radiance[i] = col[i] * base;
+        mean += out->radiance[i];
+    }
+    mean /= 3.0f;
+    out->flux = 4.0f * 3.14159265358979f * radius * radius * mean;
+}
 
 int rhySignalPatchCheck(int sourceIsGame, const uint8_t* callSite,
                         const uint8_t* callee, const uint8_t* cleanup,
@@ -217,7 +317,13 @@ int rhySignalPatchCheck(int sourceIsGame, const uint8_t* callSite,
         return kRhyPatchSource;
     }
     if (!callSite || !callee || !cleanup) {
-        return kRhyPatchCallSite;
+        // s30: this used to answer kRhyPatchCallSite, and rhySignalHookInstall()
+        // called the check exactly this way to ask the source question. The two
+        // together meant the exe was never read and the hook never installed on
+        // any build of the game: every run since s19 fell back to source=list,
+        // lit the pole instead of the head, and logged a byte mismatch that was
+        // not true. "No bytes yet" is a different answer from "wrong bytes".
+        return kRhyPatchNoBytes;
     }
     // 0x49DD4C must be a `call rel32` whose target is the corona thunk. The
     // rel32 is read little-endian, exactly as the CPU decodes it.

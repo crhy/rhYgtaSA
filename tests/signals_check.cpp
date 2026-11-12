@@ -389,9 +389,166 @@ int main() {
     ok("no cleanup at all is refused",
        rhySignalPatchCheck(1, kGoodCall, kGoodCallee, kNoCleanup, &target) ==
            kRhyPatchCleanup);
-    ok("a null byte window is refused rather than read",
+    ok("a null byte window is not a verdict, it is a step (s30)",
        rhySignalPatchCheck(1, nullptr, kGoodCallee, kGoodCleanup, nullptr) ==
-           kRhyPatchCallSite);
+           kRhyPatchNoBytes);
+    ok("... and the source answer still comes first, before any byte is looked at",
+       rhySignalPatchCheck(0, nullptr, nullptr, nullptr, nullptr) ==
+           kRhyPatchSource);
+    // s30 REGRESSION. rhySignalHookInstall() asks the source question with null
+    // windows and then, if that answer says "go and read", reads them and asks
+    // again. When the null-window answer was kRhyPatchCallSite the two calls
+    // together meant the exe was never read and the hook never installed: every
+    // run from s19 to the 2026-11-12 test logged "the bytes at 0x49DD4C are not
+    // 'call 0x6FC580'" about an exe whose bytes are exactly that, and lit zero
+    // heads. This is the install sequence, spelled out, so it cannot break again
+    // without turning this binary red.
+    {
+        int why = rhySignalPatchCheck(1, nullptr, nullptr, nullptr, nullptr);
+        ok("install step 1 with source=game asks for the bytes instead of refusing",
+           why == kRhyPatchNoBytes);
+        if (why == kRhyPatchNoBytes) {
+            why = rhySignalPatchCheck(1, kGoodCall, kGoodCallee, kGoodCleanup,
+                                      &target);
+        }
+        ok("install step 2 with the real exe bytes allows the patch (hook installs)",
+           why == kRhyPatchOk && target == 0x6FC580u);
+        // and the same walk with source=list never reaches the exe at all
+        int whyList = rhySignalPatchCheck(0, nullptr, nullptr, nullptr, nullptr);
+        ok("install with source=list stops at step 1", whyList == kRhyPatchSource);
+    }
+
+    // ---- s30: the game's own corona, which is the green flood ------------
+    // 0x49DCD9 pushes the 15.0 game-unit radius for the head's corona: a 30 m
+    // wide additive pure-green sprite per lit head. Measured in
+    // .strata/notes-s30-signal-bulbs.md: 10-39% of the signal-stop frames are
+    // saturated green with not one green pixel above luma 200, and that wash is
+    // there even in the 2026-11-11 tour, where the plugin created no traffic
+    // lights at all. Resizing that immediate is the fix; it is only done when
+    // the bytes say it is the radius push.
+    const uint8_t kGoodCoronaPush[5] = {0x68, 0x00, 0x00, 0x70, 0x41};  // push 15.0f
+    float gameRadius = 0.0f;
+    ok("the corona radius push is recognised and reads back as 15.0",
+       rhySignalCoronaPatchCheck(kGoodCoronaPush, &gameRadius) == kRhyPatchOk &&
+           gameRadius == 15.0f);
+    ok("the constant in signalheads.cpp is those bytes",
+       std::memcmp(kRhyPatchCoronaBytes, kGoodCoronaPush, 5) == 0);
+    const uint8_t kOtherPush[5] = {0x68, 0x00, 0x00, 0x48, 0x42};  // push 50.0f
+    ok("a different push is refused (the corona is left alone)",
+       rhySignalCoronaPatchCheck(kOtherPush, &gameRadius) == kRhyPatchCorona);
+    ok("a null pointer is refused, not read",
+       rhySignalCoronaPatchCheck(nullptr, &gameRadius) == kRhyPatchCorona);
+    ok("corona_radius=0 keeps the game's own value (the off switch)",
+       rhySignalCoronaRadius(15.0f, 0.0f) == 15.0f);
+    ok("corona_radius=0.45 asks for 0.45 m",
+       rhySignalCoronaRadius(15.0f, 0.45f) == 0.45f);
+    ok("a tiny corona is clamped to something that still reads as a light",
+       rhySignalCoronaRadius(15.0f, 0.001f) == 0.05f);
+    ok("a huge one is clamped before it can flood the street again",
+       rhySignalCoronaRadius(15.0f, 40.0f) == 1.2f);
+    ok("the resize shrinks the sprite's area by more than a thousand",
+       (15.0f * 15.0f) / (0.45f * 0.45f) > 1000.0f);
+    // And the safety net that goes with it: the corona is only shrunk when the
+    // hook is live, so a hook that is live but records nothing must not be left
+    // as the only signal layer (that would be dark heads, worse than a flood).
+    ok("a hook that has recorded a head is the source", rhyHeadsHealthy(1, 0, 100000, 20000) == 1);
+    ok("a fresh hook with no records yet gets the grace window",
+       rhyHeadsHealthy(0, 100000, 115000, 20000) == 1);
+    ok("a hook with no record after the grace window is not the source",
+       rhyHeadsHealthy(0, 100000, 125001, 20000) == 0);
+    ok("the health check survives the GetTickCount() wraparound",
+       rhyHeadsHealthy(0, 0xFFFFFFF0u, 0x00000100u, 20000) == 1);
+    ok("and it is cumulative: one head years ago keeps the source",
+       rhyHeadsHealthy(7, 100000, 10000000, 20000) == 1);
+
+    // ---- s30: the bulb - radius and intensity of the light WE create -----
+    // The 2026-11-12 run created `radius=0.10 radiance=9.64,5400.00,1845.57`:
+    // 1.5 nits flux-scaled by (6.0/0.10)^2 = x3600, i.e. the output of the old
+    // six-metre blob squeezed into a 0.1 m sphere. Sixty of those is a green
+    // street, not sixty small heads. The bulb model uses the lens radius and a
+    // lens luminance, and a signal must stay far dimmer in total output than a
+    // street luminaire (a real signal is ~10^2 lm against ~10^4 lm).
+    RhySignalBulb bulb;
+    rhySignalBulb(0, 1, rhySignalRadius(1.0f), 1200.0f, 1.5f, 6.0f, 1.0f, &bulb);
+    ok("the bulb radius is the real lens, 0.10 m", bulb.radius == 0.10f);
+    ok("the bulb radiance is the ini nits at the lens, not x3600",
+       bulb.radiance[1] == 1200.0f);
+    ok("the green lens colour is still applied to the other channels",
+       bulb.radiance[1] > 0.0f && bulb.radiance[0] < 0.01f * bulb.radiance[1] &&
+           bulb.radiance[2] < 0.5f * bulb.radiance[1]);
+    ok("the bulb model is not the legacy path", bulb.legacy == 0);
+    ok("the old numbers are gone: no channel reaches the 5400 of the flux rule",
+       bulb.radiance[0] < 5400.0f && bulb.radiance[1] < 5400.0f &&
+           bulb.radiance[2] < 5400.0f);
+    // A mid-size street luminaire, same functions, same ini defaults: the bound
+    // that keeps a signal from out-lighting the lamp over its head.
+    RhyFixture street;
+    rhyStreetFixture(1, &street);
+    const float streetRad = rhyRadianceForFlux(2.0f, street.radius, 15.0f);
+    float streetMean = 0.0f;
+    float lampCol[3];
+    rhyLampFamilyRgb(RHY_LAMP_HPS, lampCol);
+    for (int i = 0; i < 3; ++i) {
+        streetMean += lampCol[i] * streetRad;
+    }
+    streetMean /= 3.0f;
+    const float streetFlux = 4.0f * 3.14159265f * street.radius * street.radius *
+                             streetMean;
+    ok("one signal puts out under 5% of one street luminaire",
+       bulb.flux < streetFlux / 20.0f);
+    ok("and the old 5400-nit bulb would not have passed that bound",
+       4.0f * 3.14159265f * 0.10f * 0.10f * (5400.0f * 0.447f) > streetFlux / 20.0f);
+    ok("the flux grows with r^2 and not with the ini radius alone",
+       (rhySignalRadius(2.0f) * rhySignalRadius(2.0f)) >
+           (rhySignalRadius(1.0f) * rhySignalRadius(1.0f)));
+    // legacy fixture_size=0: the blob path keeps the flux-preserving rule, so
+    // nobody's old ini silently goes dark.
+    RhySignalBulb legacy;
+    rhySignalBulb(2, 0, 6.0f, 2500.0f, 1.5f, 6.0f, 1.0f, &legacy);
+    ok("fixture_size=0 still gets the flux-preserving radiance (1.5 nits at 6 m)",
+       legacy.legacy == 1 && legacy.radiance[0] == 1.5f && legacy.radius == 6.0f);
+    RhySignalBulb legacySmall;
+    rhySignalBulb(2, 0, 0.1f, 2500.0f, 1.5f, 6.0f, 1.0f, &legacySmall);
+    ok("... which is exactly the x3600 the 2026-11-12 log shows at 0.1 m",
+       std::fabs(legacySmall.radiance[0] - 5400.0f) < 1.0f);
+    // Guards: a bad ini value must not reach Remix.
+    RhySignalBulb noRadius;
+    rhySignalBulb(0, 1, 0.0f, 2500.0f, 1.5f, 6.0f, 1.0f, &noRadius);
+    ok("a zero radius falls back to the lens size instead of a zero-area light",
+       noRadius.radius == 0.10f && noRadius.flux > 0.0f);
+    RhySignalBulb off;
+    rhySignalBulb(0, 1, 0.1f, 0.0f, 1.5f, 6.0f, 1.0f, &off);
+    ok("bulb_radiance=0 publishes a dark light (the off switch)",
+       off.radiance[0] == 0.0f && off.radiance[1] == 0.0f && off.flux == 0.0f);
+    RhySignalBulb scaled;
+    rhySignalBulb(0, 1, 0.1f, 1200.0f, 1.5f, 6.0f, 0.5f, &scaled);
+    ok("[streetlights] radiance_scale scales the bulb too",
+       std::fabs(scaled.radiance[1] - 600.0f) < 1e-3f);
+    RhySignalBulb scaleBad;
+    rhySignalBulb(0, 1, 0.1f, 1200.0f, 1.5f, 6.0f, -2.0f, &scaleBad);
+    ok("a nonsense radiance_scale is ignored rather than going negative",
+       scaleBad.radiance[1] == 1200.0f);
+    // The same bulb for both paths: a head light and a list light for the same
+    // phase must be the same bulb, or the fallback changes the look.
+    RhySignalBulb b1, b2;
+    rhySignalBulb(1, 1, rhySignalRadius(1.0f), 1200.0f, 1.5f, 6.0f, 1.0f, &b1);
+    rhySignalBulb(1, 1, rhySignalRadius(1.0f), 1200.0f, 1.5f, 6.0f, 1.0f, &b2);
+    ok("head and list paths get identical bulbs",
+       b1.radius == b2.radius && b1.radiance[1] == b2.radiance[1]);
+    // Positions: the head light sits on the lens, and the bulb size does not
+    // move it (a 0.1 m sphere at the lens, not a 6 m ball around it).
+    RhySignalHead lensHead = head(0x87F2C0u, 2, 2520.0f, -1729.2f, 23.4f,
+                                  0, 255, 0, 1000);
+    float lpos[3];
+    rhyHeadLightPos(&lensHead, nullptr, 0.0f, lpos);
+    RhySignalBulb lensBulb;
+    rhySignalBulb(0, 1, rhySignalRadius(1.0f), 1200.0f, 1.5f, 6.0f, 1.0f,
+                  &lensBulb);
+    ok("the bulb is small enough to fit inside the head it sits on",
+       2.0f * lensBulb.radius < 0.25f);
+    ok("and its centre is the lens the game drew, to the millimetre",
+       lpos[0] == lensHead.pos[0] && lpos[1] == lensHead.pos[1] &&
+           lpos[2] == lensHead.pos[2]);
 
     // ---- the recorder: fake memory, then every path ----------------------
     // Windows-side rhyReadable() is "plausible range + committed page"; here it

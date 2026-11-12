@@ -264,6 +264,70 @@ const char* rhySignalHookReasonText(int reason) {
     }
 }
 
+// s30: resize the game's own signal-head corona. The game registers every lit
+// head with radius 15.0 game units, i.e. a 30 m wide additive pure-green sprite;
+// the Remix bridge renders that as emissive geometry, and a street full of them
+// is the "ambient signal glow" of the 2026-11-12 report (measured: 10-39% of the
+// signal-stop frames are saturated green, and not one green pixel in any of them
+// reaches luma 200 - a huge area at moderate radiance is ambient, not a bulb).
+// The radius is an immediate in the caller, so this is a 4-byte code patch next
+// to the call-site patch: verified against the exe before it is written, and
+// idempotent, so it can be re-applied when rhyremix.ini is edited - which is how
+// rhY A/Bs corona_radius without restarting the game. iniRadius <= 0 restores
+// the game's own 15.0.
+bool rhySignalCoronaApply(float iniRadius) {
+    uint8_t pushBytes[5] = {0};
+    if (!rhyGameRead(nullptr, kRhySignalCoronaPush, pushBytes, 5)) {
+        rhyLog("signalhook: cannot read 0x%08X to check the corona radius push",
+               kRhySignalCoronaPush);
+        return false;
+    }
+    float gameRadius = 0.0f;
+    if (rhySignalCoronaPatchCheck(pushBytes, &gameRadius) != kRhyPatchOk) {
+        // Either we already resized it (the imm32 is no longer 15.0) or this is
+        // a build where the radius is not a push immediate. Read the value that
+        // is actually there so the wanted radius is computed from the game's own
+        // number, and only touch it if it is one we recognises as ours.
+        if (!rhyGameRead(nullptr, kRhySignalCoronaRadiusImm,
+                         reinterpret_cast<uint8_t*>(&gameRadius),
+                         sizeof gameRadius)) {
+            return false;
+        }
+        if (!(gameRadius > 0.0f) || gameRadius > 15.0f) {
+            rhyLog("signalhook: 0x%08X is not the 'push 15.0f' the corona radius "
+                   "lives in (bytes %02X %02X %02X %02X %02X): leaving the game's "
+                   "corona size alone", kRhySignalCoronaPush, pushBytes[0],
+                   pushBytes[1], pushBytes[2], pushBytes[3], pushBytes[4]);
+            return false;
+        }
+    }
+    const float want = rhySignalCoronaRadius(15.0f, iniRadius);
+    if (want == gameRadius) {
+        return false;  // already what the ini asks for
+    }
+    DWORD old = 0;
+    const uintptr_t page = kRhySignalCoronaPush & ~0xFFFu;
+    if (!VirtualProtect(reinterpret_cast<void*>(page), 0x1000u,
+                        PAGE_EXECUTE_READWRITE, &old)) {
+        rhyLog("signalhook: VirtualProtect failed for the corona radius page");
+        return false;
+    }
+    uint32_t bits = 0;
+    std::memcpy(&bits, &want, sizeof bits);
+    uint8_t* slot = reinterpret_cast<uint8_t*>(
+        static_cast<uintptr_t>(kRhySignalCoronaRadiusImm));
+    std::memcpy(slot, &bits, sizeof bits);
+    FlushInstructionCache(GetCurrentProcess(),
+                          reinterpret_cast<void*>(page), 0x1000u);
+    DWORD back = 0;
+    VirtualProtect(reinterpret_cast<void*>(page), 0x1000u, old, &back);
+    rhyLog("signalhook: signal-head corona radius %.2f -> %.2f game units at "
+           "0x%08X (the game's own %.0f m green flare becomes a lens-sized bulb; "
+           "corona_radius=0 puts it back)", gameRadius, want,
+           kRhySignalCoronaRadiusImm, want * 2.0f);
+    return true;
+}
+
 bool rhySignalHookInstall(int* reason) {
     if (g_installed) {
         if (reason) {
@@ -280,14 +344,18 @@ bool rhySignalHookInstall(int* reason) {
     const RhyConfig* cfg = rhyConfigGet();
     // rhySignalPatchCheck() answers the source question before it looks at any
     // byte, so calling it with no byte windows at all is the source gate on its
-    // own: with source=list the exe is never read and never written.
+    // own: with source=list the exe is never read and never written. It answers
+    // kRhyPatchNoBytes when the source is right and the bytes have not been
+    // fetched yet - that is the signal to go and read them, and since s30 it is
+    // no longer mistaken for "the bytes are wrong" (which is how the hook ended
+    // up uninstallable on every build from s19 to here).
     int why = rhySignalPatchCheck(cfg->traffic_source == 1, nullptr, nullptr,
                                   nullptr, nullptr);
     uint8_t callSite[5] = {0};
     uint8_t callee[5] = {0};
     uint8_t cleanup[3] = {0};
     rhyPageCacheInit(&g_pages);
-    if (why == kRhyPatchOk) {
+    if (why == kRhyPatchNoBytes) {
         // Read the three windows through the same pointer checks the recorder
         // uses: an unmapped patch site would take the process down inside
         // memcmp, which is a strange way to discover that the exe is odd.
@@ -314,10 +382,6 @@ bool rhySignalHookInstall(int* reason) {
                    "%02X %02X %02X, target 0x%08X)", kRhySignalCallSite,
                    kRhySignalCoronaFn, callSite[0], callSite[1], callSite[2],
                    callSite[3], callSite[4], target);
-        } else if (why == kRhyPatchCallee) {
-            rhyLog("signalhook: 0x%08X is not the corona-type thunk (bytes %02X "
-                   "%02X %02X %02X %02X)", kRhySignalCoronaFn, callee[0],
-                   callee[1], callee[2], callee[3], callee[4]);
         }
     }
     if (why != kRhyPatchOk) {
@@ -339,9 +403,16 @@ bool rhySignalHookInstall(int* reason) {
         return false;
     }
     DWORD old = 0;
-    if (!VirtualProtect(reinterpret_cast<void*>(
-                            static_cast<uintptr_t>(kRhySignalCallSite)),
-                        5, PAGE_EXECUTE_READWRITE, &old)) {
+    // Both writes (the 5-byte jmp at 0x49DD4C and the 4-byte radius immediate at
+    // 0x49DCDA) sit in the same 4 KiB page, so open that page once. VirtualProtect
+    // works at page granularity anyway; naming the page here keeps "did we make
+    // the byte we write writable?" answerable from the code.
+    const uintptr_t patchPage = kRhySignalCallSite & ~0xFFFu;
+    static_assert((kRhySignalCallSite & ~0xFFFu) ==
+                      (kRhySignalCoronaPush & ~0xFFFu),
+                  "the two patch sites must share a code page");
+    if (!VirtualProtect(reinterpret_cast<void*>(patchPage), 0x1000u,
+                        PAGE_EXECUTE_READWRITE, &old)) {
         if (reason) {
             *reason = kSignalHookProtect;
         }
@@ -352,18 +423,24 @@ bool rhySignalHookInstall(int* reason) {
     const int32_t rel32 = static_cast<int32_t>(rel);
     slot[0] = 0xE9;  // jmp rel32
     std::memcpy(slot + 1, &rel32, sizeof rel32);
-    FlushInstructionCache(GetCurrentProcess(), slot, 5);
+    FlushInstructionCache(GetCurrentProcess(),
+                          reinterpret_cast<void*>(patchPage), 0x1000u);
     DWORD back = 0;
-    VirtualProtect(slot, 5, old, &back);
+    VirtualProtect(reinterpret_cast<void*>(patchPage), 0x1000u, old, &back);
+    // The corona radius is a separate write with its own protection, applied
+    // only once the hook itself is agreed to: with source=list or a mismatched
+    // exe nothing at all is written to the game's code.
+    const bool corona = rhySignalCoronaApply(cfg->traffic_corona_radius);
     g_installed = true;
     if (reason) {
         *reason = kSignalHookOk;
     }
     rhyLog("signalhook: patched 0x%08X (was 'call 0x%08X') -> stub at 0x%08X, "
-           "cap %d heads per frame", kRhySignalCallSite, kRhySignalCoronaFn,
+           "cap %d heads per frame, corona %s", kRhySignalCallSite,
+           kRhySignalCoronaFn,
            static_cast<unsigned>(
                reinterpret_cast<uintptr_t>(&rhySignalCoronaStub)),
-           kRhySignalHeadCap);
+           kRhySignalHeadCap, corona ? "resized to a bulb" : "left as the game drew it");
     return true;
 }
 

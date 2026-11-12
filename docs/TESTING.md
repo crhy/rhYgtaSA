@@ -115,10 +115,13 @@ streetlights: N active, N drawn this frame
 sky: sun elev=... rad=... | moon elev=... rad=... (hour=...)
 ```
 
-For the traffic signals (s01) two more lines decide everything:
+For the traffic signals (s01, s30) these lines decide everything:
 
 ```
-signalhook: patched 0x49DD4C (was 'call 0x6FC580') -> stub at 0x65d55000, cap 256 heads per frame
+config: traffic=1/1 source=game ... head_forward=0.15 | bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45 (resizes the game's 15.0 flare)
+signalhook: patched 0x0049DD4C (was 'call 0x6FC580') -> stub at 0x65d55000, cap 256 heads per frame, corona resized to a bulb
+signalhook: signal-head corona radius 15.00 -> 0.45 game units at 0x0049DCDA (the game's own 30 m green flare becomes a lens-sized bulb; corona_radius=0 puts it back)
+trafficlights: head light ok id=... phase=0 hash=... pos=-269.83,1088.12,26.30 radiance=2.16,1200.00,410.32 gain=1.00 radius=0.10 flux=67 (bulb: lens nits)
 trafficlights[source=game]: 7 heads lit, 7 drawn this frame (green=2 amber=1 red=4, 7 coronas registered this frame, colour_swaps=3 expired=2) | ... | hook: calls=412 records=412 dropped=0 bad=0 reentrant=0
 ```
 
@@ -129,6 +132,12 @@ pointer that failed the page check, and `reentrant` how many arrived while the
 recorder was already running (it must never be non-zero: it would mean the hook
 fires from two places at once).
 
+The `radius=` / `flux=` pair on a `head light ok` or `CreateLight ok` line is the
+s30 bulb: the emitting sphere's radius in game units and its total output. At the
+shipped defaults a signal is `radius=0.10 flux=67` where a mid street luminaire
+is `radius=0.15 flux=3473`; a signal whose flux comes out near a lamp's is what
+makes a street go green instead of showing heads.
+
 - **No `signalhook: patched` line**, and instead
   `trafficlights: source=game requested but the hook was not installed: ...` means
   the plugin is running the old pole-position mode (`source=list`). The reason is
@@ -138,7 +147,15 @@ fires from two places at once).
   0x6FC580 is still the corona-type thunk **and** the caller's `add esp,0x54` is
   where it must be; the reason names which one, and the extra log lines
   (`signalhook: 0x49DD4C does not call ...`, `... is not the corona-type thunk`,
-  `... does not hold 'add esp,0x54'`) quote the bytes it actually found.
+  `... does not hold 'add esp,0x54'`) quote the bytes it actually found. Since
+  s30 a `does not call 0x6FC580` line can only mean the bytes really are
+  different: before that the plugin refused to read them at all and logged that
+  reason about a correct exe, on every run from s19 to 2026-11-12 - which is why
+  no screenshot so far has ever shown a head light.
+- **`the corona hook is installed but has recorded no signal head in 20000 ms`**
+  (s30): the patch is in, the game never handed us a head, and the module is
+  lighting the list instead so the intersection is not dark. The line carries the
+  hook counters; `calls=0` means the patched instruction never ran at all.
 - **`0 heads lit`** with `calls=0` means the hook is in but the game never
   reached it - the player is not near a signalised intersection, or it is daytime
   with `night_only=1`. With `calls>0` but `records=0` the hook *is* firing and we
@@ -252,7 +269,8 @@ few seconds - no restart.
 | Cool lamps too blue | `lamp_cold=halide` (metal halide is much more neutral than mercury) |
 | Shopfronts blown out | `rtx.conf`: `rtx.emissiveIntensity = 0.5` |
 | Sky too bright at night | `rtx.conf`: `rtx.skyBrightness = 0.5` |
-| Signals too bright | `[trafficlights] radiance=0.8` |
+| Signals too bright, or the street around them goes green | `[trafficlights] bulb_radiance=600` (the lens luminance in nits; 0 turns the signal lights off), and `bulb_radius` if the sphere itself is too big |
+| The glow around a head is still a street-wide wash, or has vanished altogether | `[trafficlights] corona_radius` is the radius we leave the game's own signal corona, which ships at 15.0 = a 30 m flare: 0.45 default, 1.0 for a bigger halo, 0 to leave the game's code alone |
 | A head is lit in a colour the game is not showing, or the lights land on the pole | `[trafficlights] source=list` puts back the pre-s01 behaviour (one light per pole, colour from a local cycle) and the log line says why the hook is off |
 | Game dies a few seconds after entering the level, `rhyremix.log` stops mid-frame, `rtx-remix/logs/crash-upload.log` says `type=CPU` | the signal-head hook is the first thing to suspect (it patches game code). `[trafficlights] source=list` takes it out; the log line then says `source=list, no code hook`. Fixed 2026-11-11: the stub had to supply the return address the deleted `call` would have pushed - see docs/FINDINGS.md |
 | A Wine trace (`logs/steam-12120.log`) full of `c0000005` at `eip=0x6FAAE0` during the level load | **not a crash and not ours**: Open Limit Adjuster's `Coronas = unlimited` moves the corona store to a reserved heap block and commits it page by page from its own vectored handler, so `CCoronas::Init`'s clear loop faults once per page - 478 first-chance exceptions, ~10 ms, handled. `Coronas = 0` in `modloader/OLA/III.VC.SA.LimitAdjuster.ini` makes them go away. See docs/FINDINGS.md |

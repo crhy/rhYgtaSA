@@ -467,6 +467,47 @@ s28's) is a bounded monotone staircase, not a flicker, and tightening it costs a
 body per frame. And the in-game calendar stays unused unless it behaves like a date - with the
 shipped default it never does, which is the correct outcome for this build, not a fallback.
 
+## Two writes to one game function: the signal hook and the bulb (s30)
+
+`CTrafficLights::DisplayActualLight` (0x49DAB0) registers every lit signal head
+with `CCoronas::RegisterCorona`, and the plugin now writes to that one function
+twice, from one `VirtualProtect` on code page `0x49D000`:
+
+| address | what | gate |
+|---|---|---|
+| `0x49DD4C` | `E8 rel32` (`call 0x6FC580`) -> `E9` to the recorder stub | `[trafficlights] source=game` + the call decodes to `0x6FC580` + `0x6FC580` is the corona-type thunk + `add esp,0x54` at `0x49DD54` |
+| `0x49DCDA` | the `imm32` of `push 15.0` at `0x49DCD9` - the corona **radius** the game gives each head | `corona_radius > 0` + the five bytes at `0x49DCD9` are `68 00 00 70 41` |
+
+Both are decided by pure functions in `plugin/src/signalheads.cpp`
+(`rhySignalPatchCheck`, `rhySignalCoronaPatchCheck`, `rhySignalCoronaRadius`) so
+`tests/signals_check.cpp` can exercise every refusal, and `tests/test_signal_hook.py`
+asserts the same bytes against the real `gta-sa.exe` - a game update or a SilentPatch
+that moves that code turns the test red before it turns the game red.
+
+The install path is a two-step walk, and the reason it must be is a bug worth
+remembering: `rhySignalPatchCheck(source, NULL, NULL, NULL, NULL)` used to answer
+a null-window call with `kRhyPatchCallSite` ("the bytes are wrong"), the install
+path called it exactly that way to ask the source question, and so the exe was
+never read and the hook never installed - on any build. The null-window answer is
+now `kRhyPatchNoBytes` ("go and read them"), and the walk is asserted step by step.
+
+The other half of s30 is the size of the light we own. `rhySignalBulb()` is the
+only place that decides it, and both the head path and the list path call it, so
+the fallback cannot change the look:
+
+- `fixture_size=1` (default): radius = `rhySignalRadius(fixture_scale)` (0.10 m
+  for a 200 mm lens) or `bulb_radius`, radiance = `bulb_radiance` **nits at that
+  radius**, no `(radius_ref/radius)^2`.
+- `fixture_size=0`: the old flux-preserving blob (`rhyRadianceForFlux`), because
+  there the ini's radius is a brightness dial and shrinking it must not darken
+  the street.
+
+The multiplier is the trap: it is correct for a street luminaire and, applied to
+a 0.10 m lens, turned `radiance=1.5` into 5400 nits - the output of the old six
+metre ball in a marble, sixty times over. `tests/signals_check.cpp` now bounds a
+signal's flux under 5% of a mid street luminaire's, computed from the same
+`rhyStreetFixture()`/`rhyRadianceForFlux()` the plugin uses.
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen

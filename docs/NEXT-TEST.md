@@ -30,17 +30,22 @@ Report: `paired | 16 of 16 manifest entries`, and the 2026-11-11 numbers again: 
 *become* the baseline for steps 2-6.
 Rollback: nothing changed — this is the reference run.
 
-## 2. signal heads (s01, hardened by s19)
+## 2. signal heads: bulbs, not a green street (s01 + s19 + s30)
 ```bash
-grep -E 'signalhook|trafficlights\[source=game\]' $G/scripts/rhyremix.log | tail -3
+grep -E 'signalhook|trafficlights\[|config: traffic' $G/scripts/rhyremix.log | tail -6
 ```
-Look: each head lit *at the head*, not at the top of the pole; on a mast-arm signal the head over the road glows; red is
-red, green blue-green, amber between. Log: `signalhook: patched 0x0049DD4C` and
-`trafficlights[source=game]: N heads lit, N drawn ... hook: calls=N records=N dropped=0 bad=0 reentrant=0` — `reentrant`
-stays 0; `calls>0` with `records=0` is our bug, not a quiet street; a rising `bad` is a symptom, not a reason to stop.
-Report: stops 06/07 red/amber/green near 2026-11-11 — 2.241/23.045/5.711 % and 0.093/2.429/21.158 %. A blank signals
-column means the log line never landed, not that the heads were dark.
-Rollback: `sed -i '/^\[trafficlights\]/a source=list' $G/scripts/rhyremix.ini` (live, no restart; undo by deleting that line).
+Look: a **small bright bulb at each lens** - not a glow around the pole, not a green wash on road and walls. Red red,
+green blue-green, amber between. The sodium-lamp stops (0-5) must be unchanged: they are the control.
+Log: `| bulb radius=0.100 radiance=1200 nits (fixture_size=1) corona_radius=0.45`, `signalhook: patched 0x0049DD4C ...
+corona resized to a bulb`, `corona radius 15.00 -> 0.45 game units at 0x0049DCDA`, `head light ok ... radius=0.10
+flux=67 (bulb: lens nits)`, `N heads lit ... hook: calls=N records=N dropped=0 bad=0 reentrant=0`. `calls>0
+records=0` is our bug, not a quiet street (after 20 s the module says so and lights the list instead); `the bytes at
+0x49DD4C are not 'call 0x6FC580'` is a bug too - this exe's bytes there are `E8 2F E8 25 00`.
+Report: stops 06/07 green was 5.711 % / 21.158 % (2026-11-11, where we created **no** signal lights) and 33.4 % /
+3.9 % (2026-11-12, 60 list lights at 5400 nits) - both with **zero green pixels above luma 200**: wash, no bulb. s30
+inverts that shape: coverage down, one compact bright spot per head.
+Rollback: live ini edits under `[trafficlights]`. `corona_radius=0` puts the game's own 15 m flare back,
+`bulb_radiance=0` turns our signal lights off, `source=list` takes the hook out; undo by deleting the line.
 
 ## 3. water — realistic vs calm (s02)
 ```bash

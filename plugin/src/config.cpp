@@ -158,6 +158,9 @@ static const char* const kIniDefaults =
     "list=rhyremix_traffic.txt\r\n"
     "radius=6\r\n"
     "radiance=1.5\r\n"
+    "bulb_radius=0\r\n"
+    "bulb_radiance=1200\r\n"
+    "corona_radius=0.45\r\n"
     "period=60\r\n"
     "max_lights=60\r\n"
     "max_distance=250\r\n"
@@ -785,6 +788,28 @@ static void loadConfig() {
         c.traffic_radius_ref = 6.0f;
     }
     c.traffic_radiance = iniFloatSec("trafficlights", "radiance", 1.5f);
+    // s30 bulb model. bulb_radius=0 means "the real lens from lamps.h"
+    // (rhySignalRadius, 0.10 m for a 200 mm lens, times fixture_scale).
+    c.traffic_bulb_radius = iniFloatSec("trafficlights", "bulb_radius", 0.0f);
+    if (c.traffic_bulb_radius < 0.0f) {
+        c.traffic_bulb_radius = 0.0f;
+    }
+    if (c.traffic_bulb_radius > 5.0f) {
+        c.traffic_bulb_radius = 5.0f;  // not a lens any more
+    }
+    c.traffic_bulb_radiance = iniFloatSec("trafficlights", "bulb_radiance",
+                                          1200.0f);
+    if (!(c.traffic_bulb_radiance > 0.0f)) {
+        c.traffic_bulb_radiance = 0.0f;  // 0 = no signal lights at all
+    }
+    if (c.traffic_bulb_radiance > 100000.0f) {
+        c.traffic_bulb_radiance = 100000.0f;
+    }
+    c.traffic_corona_radius = iniFloatSec("trafficlights", "corona_radius",
+                                          0.45f);
+    if (c.traffic_corona_radius < 0.0f) {
+        c.traffic_corona_radius = 0.0f;  // 0 = leave the game's 15 m flare alone
+    }
     c.traffic_max_lights = iniIntSec("trafficlights", "max_lights", 60);
     c.traffic_max_distance = iniIntSec("trafficlights", "max_distance", 250);
     c.traffic_exit_distance = iniIntSec("trafficlights", "exit_distance", 300);
@@ -976,14 +1001,21 @@ static void loadConfig() {
     }
     rhyLog("config: traffic=%d/%d source=%s list=%s period=%d radiance=%.2f radius=%.2f "
            "max=%d dist=%d..%d phase_near=%d night_only=%d resync=%d "
-           "head_ttl=%dms head_normal=%d head_forward=%.2f",
+           "head_ttl=%dms head_normal=%d head_forward=%.2f | bulb radius=%.3f "
+           "radiance=%.0f nits (fixture_size=%d) corona_radius=%.2f (%s)",
            c.traffic_enabled, c.traffic_mode,
            c.traffic_source ? "game" : "list", c.trafficPath.c_str(),
            c.traffic_period, c.traffic_radiance, c.traffic_radius,
            c.traffic_max_lights, c.traffic_max_distance,
            c.traffic_exit_distance, c.traffic_phase_near, c.traffic_night_only,
            c.traffic_resync_frames, c.traffic_head_ttl_ms, c.traffic_head_normal,
-           c.traffic_head_forward);
+           c.traffic_head_forward,
+           c.traffic_bulb_radius > 0.0f
+               ? c.traffic_bulb_radius
+               : rhySignalRadius(c.fixture_scale),
+           c.traffic_bulb_radiance, c.fixture_size, c.traffic_corona_radius,
+           c.traffic_corona_radius > 0.0f ? "resizes the game's 15.0 flare"
+                                          : "the game's own 15.0 flare");
     rhyLog("config: sun=%d radiance=%.2f col=%.2f,%.2f,%.2f ang=%.2f spin=%.1f "
            "tilt=%.1f roll=%.1f fade=%.2f minel=%.2f step=%.2f vol=%.2f hash=%llu "
            "| moon=%d radiance=%.3f col=%.2f,%.2f,%.2f ang=%.2f fade=%.2f "

@@ -50,6 +50,8 @@ RESUME_AT = CALL_SITE + 5          # the instruction the patched call returns to
 CLEANUP_AT = RESUME_AT + 3         # the caller's add esp,0x54
 CORONA_FN = 0x6FC580               # the corona-type thunk the stub jumps to
 CORONA_REAL = 0x6FC180             # the function it tail-jumps to
+CORONA_PUSH = 0x49DCD9             # s30: push $0x41700000 -> the corona radius
+CORONA_RADIUS_IMM = CORONA_PUSH + 1  # the imm32 we resize
 MASK16 = 0xFFFFFFFF
 
 DEFAULT_EXE = "/media/rhy/data/Gamez/GTASA-RTX/gta-sa.exe"
@@ -398,6 +400,7 @@ class TestPatchSiteInRealExe(unittest.TestCase):
         if cls.exe:
             for start, stop in ((CALL_SITE, CLEANUP_AT + 3),
                                 (CORONA_FN, CORONA_FN + 0x16),
+                                (CORONA_PUSH, CORONA_PUSH + 5),
                                 (0x6FC44E, 0x6FC4C8)):
                 rows = disasm_range(cls.exe, start, stop)
                 if rows is None:
@@ -443,6 +446,27 @@ class TestPatchSiteInRealExe(unittest.TestCase):
         self.assertEqual(text, "movzx edx,BYTE PTR [esp+0x28]")
         jmp = self.rows[CORONA_FN + 0x10]
         self.assertEqual(jmp[1], "jmp 0x6fc180")
+
+    def test_the_corona_radius_is_a_push_immediate_we_can_resize(self):
+        """s30: the game registers every lit signal head with corona radius 15.0
+        game units - a 30 m additive green flare, which the Remix bridge renders
+        as emissive geometry and which is what floods the street (see
+        .strata/notes-s30-signal-bulbs.md). We resize it by rewriting the imm32
+        of this one push, so the push has to be exactly what we think it is, and
+        has to be in the same code page as the call site we patch."""
+        self.skip_if_missing()
+        raw, text = self.rows[CORONA_PUSH]
+        self.assertEqual(raw, b"\x68\x00\x00\x70\x41")
+        self.assertEqual(text, "push 0x41700000")   # struct.pack("<f", 15.0)
+        self.assertEqual(int.from_bytes(raw[1:5], "little"), 0x41700000)
+        import struct
+        self.assertEqual(struct.unpack("<f", raw[1:5])[0], 15.0)
+        self.assertEqual(CORONA_RADIUS_IMM & ~0xFFF, CALL_SITE & ~0xFFF,
+                         "both patches must fit one VirtualProtect")
+        # and it belongs to that call: it sits between the top of
+        # CTrafficLights::DisplayActualLight (0x49DAB0) and the call itself, so
+        # patching it changes traffic signal coronas and nothing else.
+        self.assertTrue(0x49DAB0 <= CORONA_PUSH < CALL_SITE)
 
     def test_thunk_reads_argument_9_and_the_real_callee_reads_21(self):
         """[esp+0x28] at the thunk is argument 9 (the corona type), and the
@@ -500,6 +524,55 @@ class TestKillSwitch(unittest.TestCase):
         self.assertIn("kRhyPatchSource", check)
         # the source check comes before anything reads the exe
         self.assertLess(check.index("kRhyPatchSource"), check.index("callSite[0]"))
+
+    def test_no_bytes_is_not_mistaken_for_bad_bytes(self):
+        """s30 REGRESSION. The install path asks the source question first, with
+        no byte windows at all. When that call answered kRhyPatchCallSite the
+        hook could never install on any exe: every run from s19 to rhY's
+        2026-11-12 test fell back to source=list, lit the pole instead of the
+        head, and logged a byte mismatch about an exe whose bytes are correct.
+        The null-window answer is now its own value, and the install path treats
+        it as 'go and read the bytes'."""
+        check = self.heads[self.heads.index("int rhySignalPatchCheck"):]
+        gate = check[check.index("if (!callSite || !callee || !cleanup)"):]
+        gate = "\n".join(line.split("//")[0] for line in gate.splitlines())
+        first_return = gate[gate.index("return"):gate.index("return") + 60]
+        self.assertIn("kRhyPatchNoBytes", first_return)
+        self.assertNotIn("kRhyPatchCallSite", first_return)
+        install = self.hook[self.hook.index("bool rhySignalHookInstall"):]
+        self.assertIn("kRhyPatchNoBytes", install)
+        # and the byte windows are still read through the pointer checks
+        self.assertIn("rhyGameRead", install)
+
+    def test_the_corona_resize_is_checked_and_gated(self):
+        """Resizing the game's own corona is a second code patch, so it goes
+        through the same two gates: source=game (it lives inside the install
+        path, after the kill switch) and its own byte check."""
+        install = self.hook[self.hook.index("bool rhySignalHookInstall"):]
+        self.assertIn("rhySignalCoronaApply", install)
+        self.assertLess(install.index("if (why != kRhyPatchOk)"),
+                        install.index("rhySignalCoronaApply("))
+        resize = self.hook[self.hook.index("bool rhySignalCoronaApply"):]
+        self.assertIn("rhySignalCoronaPatchCheck", resize)
+        self.assertIn("rhyGameRead", resize)
+        self.assertIn("kRhySignalCoronaRadiusImm", resize)
+        self.assertIn("VirtualProtect", resize)
+        # corona_radius is a live knob: the ini-edit path re-applies it, so the
+        # A/B does not need a restart (and 0 puts the game's flare back).
+        with open(os.path.join(REPO, "plugin", "src", "trafficlights.cpp"),
+                  encoding="utf-8") as fh:
+            traffic = fh.read()
+        edit = traffic[traffic.index("if (rev != g_cfgRev)"):]
+        self.assertIn("rhySignalCoronaApply(cfg->traffic_corona_radius)", edit)
+        check = self.heads[self.heads.index("int rhySignalCoronaPatchCheck"):]
+        self.assertIn("kRhyPatchCoronaBytes", check)
+        # the ini default and its off switch
+        with open(os.path.join(REPO, "plugin", "src", "config.cpp"),
+                  encoding="utf-8") as fh:
+            cfg = fh.read()
+        self.assertIn('"corona_radius=0.45', cfg)
+        self.assertIn('"bulb_radiance=1200', cfg)
+        self.assertIn('"bulb_radius=0', cfg)
 
     def test_the_patch_site_is_read_through_the_pointer_checks(self):
         install = self.hook[self.hook.index("bool rhySignalHookInstall"):]

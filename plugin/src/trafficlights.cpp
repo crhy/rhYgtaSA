@@ -99,6 +99,12 @@ static unsigned g_recN = 0;          // records in g_rec this frame
 static unsigned g_headSwaps = 0;     // recreations caused by a colour change
 static unsigned g_headExpired = 0;   // heads that stopped registering coronas
 static bool g_hookTried = false;     // install attempted at least once
+static DWORD g_hookTick = 0;         // when the hook went live
+static bool g_hookSilent = false;    // the "installed but records nothing" case
+
+// s30: how long the hook may live without producing a single head before the
+// module stops treating it as the source of heads. See rhyHeadsHealthy().
+static const DWORD kHeadSourceGraceMs = 20000;
 
 // A gain at or below this counts as dark: the handle is retired there.
 static const float kGainFloor = 0.02f;
@@ -196,6 +202,7 @@ static void tryHook() {
     int why = kSignalHookOk;
     if (rhySignalHookInstall(&why)) {
         g_hookTried = true;
+        g_hookTick = GetTickCount();
         rhyLog("trafficlights: source=game, hooking the corona the game registers "
                "for each signal head (position and colour come from the game)");
     } else {
@@ -335,26 +342,30 @@ static void reselect(const RhyConfig& c, const float* pp, double nowSeconds) {
 
 // ---------------------------------------------------------------- create / destroy
 
+// s30: the bulb, in one place so the list path and the head path cannot drift.
+// With fixture_size=1 the radius is the real lens (lamps.h: 0.10 m for a 200 mm
+// SA signal) unless bulb_radius overrides it, and the radiance is the ini's
+// bulb_radiance in nits AT that radius. With fixture_size=0 the old
+// flux-preserving blob is kept, because there the user is driving a blob on
+// purpose. See rhySignalBulb() in signalheads.h for why the (ref/r)^2 rule is
+// right for a street luminaire and wrong for a signal lens.
+static void bulbFor(int phase, const RhyConfig& c, RhySignalBulb* out) {
+    float lens = 0.0f;
+    if (c.fixture_size) {
+        lens = c.traffic_bulb_radius > 0.0f ? c.traffic_bulb_radius
+                                            : rhySignalRadius(c.fixture_scale);
+    } else {
+        lens = c.traffic_radius;
+    }
+    rhySignalBulb(phase, c.fixture_size, lens, c.traffic_bulb_radiance,
+                  c.traffic_radiance, c.traffic_radius_ref, c.radiance_scale,
+                  out);
+}
+
 // Radiance is baked at CreateLight time, so a phase change means a second handle
 // with a different hash - and s28 makes the swap a cross-fade between the two.
-//
-// The colours are the passbands of real signal lenses, integrated across the
-// visible spectrum (see lamps.h), not three hand-picked triples. That matters
-// more than it sounds: sampling a single "red" wavelength like 620 nm gives
-// orange, because the eye's response at 620 nm still carries a lot of green,
-// whereas a real red lens has cut the green out entirely. Integrating the band
-// is what produces the saturated red and the distinctly blue-green traffic green.
-static const float* phaseColor(int phase) {
-    static float rgb[3][3] = {{1, 1, 1}, {1, 1, 1}, {1, 1, 1}};
-    static bool done = false;
-    if (!done) {
-        done = true;
-        for (int p = 0; p < 3; ++p) {
-            rhySignalLensRgb(p, rgb[p]);
-        }
-    }
-    return rgb[phase >= 0 && phase <= 2 ? phase : 0];
-}
+// The colour of each handle comes from rhySignalBulb()/rhySignalLensRgb(): the
+// passbands of real signal lenses, not three hand-picked triples (see lamps.h).
 
 static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c,
                                         float gain) {
@@ -363,21 +374,19 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
         return nullptr;
     }
     const TrafficLight& L = g_lights[index];
-    const float* col = phaseColor(phase);
 
     static remixapi_LightInfo info;
     static remixapi_LightInfoSphereEXT sphere;
 
     // A signal module lens is 200 mm across, so the emitting sphere is 0.1 game
     // units in radius; the shipped value of 6 was a six metre ball, wider than
-    // the intersection it is supposed to be a point on. Radiance is scaled by
-    // (radius_ref/radius)^2 so the signal keeps its brightness at the new size.
-    RhyFixture fix;
-    rhySignalFixture(&fix);
-    const float radius = c.fixture_size ? fix.radius * c.fixture_scale
-                                        : c.traffic_radius;
-    const float rad = rhyRadianceForFlux(c.traffic_radiance, radius,
-                                         c.traffic_radius_ref) * c.radiance_scale;
+    // the intersection it is supposed to be a point on. s30: the radiance is the
+    // lens luminance at that radius (bulb_radiance nits), NOT the six-metre
+    // blob's output squeezed into it - that x3600 is what made sixty signals
+    // light a whole street green instead of showing sixty small bright heads.
+    RhySignalBulb bulb;
+    bulbFor(phase, c, &bulb);
+    const float radius = bulb.radius;
     if (gain < 0.0f) {
         gain = 0.0f;
     }
@@ -392,9 +401,9 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
     info.hash = c.light_hash_base +
                 (static_cast<uint64_t>(index) << 2) +
                 static_cast<uint64_t>(phase & 3);
-    info.radiance.x = col[0] * rad * gain;
-    info.radiance.y = col[1] * rad * gain;
-    info.radiance.z = col[2] * rad * gain;
+    info.radiance.x = bulb.radiance[0] * gain;
+    info.radiance.y = bulb.radiance[1] * gain;
+    info.radiance.z = bulb.radiance[2] * gain;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -442,10 +451,11 @@ static remixapi_LightHandle createLight(int index, int phase, const RhyConfig& c
     if (createdLogs < 3) {
         ++createdLogs;
         rhyLog("trafficlights: CreateLight ok #%d phase %d hash=%llu pos=%.1f,%.1f,%.1f "
-               "radiance=%.2f,%.2f,%.2f gain=%.2f radius=%.2f",
+               "radiance=%.2f,%.2f,%.2f gain=%.2f radius=%.2f flux=%.0f%s",
                index, phase, info.hash, sphere.position.x, sphere.position.y,
                sphere.position.z, info.radiance.x, info.radiance.y,
-               info.radiance.z, gain, sphere.radius);
+               info.radiance.z, gain, sphere.radius, bulb.flux,
+               bulb.legacy ? " (legacy blob: flux-preserving)" : " (bulb: lens nits)");
     }
     return handle;
 }
@@ -489,15 +499,11 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
     if (!api || !api->CreateLight) {
         return nullptr;
     }
-    float col[3];
-    rhySignalLensRgb(phase, col);
-
-    RhyFixture fix;
-    rhySignalFixture(&fix);
-    const float radius = c.fixture_size ? fix.radius * c.fixture_scale
-                                        : c.traffic_radius;
-    const float rad = rhyRadianceForFlux(c.traffic_radiance, radius,
-                                         c.traffic_radius_ref) * c.radiance_scale;
+    // Same bulb as the list path: the lens radius, and lens luminance rather
+    // than blob flux squeezed into it.
+    RhySignalBulb bulb;
+    bulbFor(phase, c, &bulb);
+    const float radius = bulb.radius;
     if (gain < 0.0f) {
         gain = 0.0f;
     }
@@ -511,9 +517,9 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     info.hash = rhyHeadLightHash(id, phase, c.light_hash_base);
-    info.radiance.x = col[0] * rad * gain;
-    info.radiance.y = col[1] * rad * gain;
-    info.radiance.z = col[2] * rad * gain;
+    info.radiance.x = bulb.radiance[0] * gain;
+    info.radiance.y = bulb.radiance[1] * gain;
+    info.radiance.z = bulb.radiance[2] * gain;
 
     std::memset(&sphere, 0, sizeof sphere);
     sphere.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO_SPHERE_EXT;
@@ -557,12 +563,12 @@ static remixapi_LightHandle createHeadLight(uint64_t id, int phase,
     if (headLogs < 3) {
         ++headLogs;
         rhyLog("trafficlights: head light ok id=%016llx phase=%d hash=%llu "
-               "pos=%.2f,%.2f,%.2f rgb_game=%d,%d,%d radiance=%.2f,%.2f,%.2f "
-               "gain=%.2f radius=%.2f",
+               "pos=%.2f,%.2f,%.2f radiance=%.2f,%.2f,%.2f "
+               "gain=%.2f radius=%.2f flux=%.0f%s",
                static_cast<unsigned long long>(id), phase, info.hash, pos[0], pos[1],
-               pos[2], col[0] > 0.5f ? 1 : 0, col[1] > 0.5f ? 1 : 0,
-               col[2] > 0.5f ? 1 : 0, info.radiance.x, info.radiance.y,
-               info.radiance.z, gain, sphere.radius);
+               pos[2], info.radiance.x, info.radiance.y, info.radiance.z, gain,
+               sphere.radius, bulb.flux,
+               bulb.legacy ? " (legacy blob: flux-preserving)" : " (bulb: lens nits)");
     }
     return handle;
 }
@@ -704,6 +710,13 @@ void rhyTrafficFrame() {
         g_cfgRev = rev;
         if (cfg->traffic_source == 1 && !rhySignalHookInstalled()) {
             tryHook();
+        } else if (rhySignalHookInstalled()) {
+            // s30: corona_radius is a live knob. The code patch is one imm32 and
+            // rhySignalCoronaApply() is idempotent, so editing the ini moves the
+            // game's own flare back and forth without restarting - which is how
+            // the A/B is meant to be run (0 = the game's 30 m flare, 0.45 = a
+            // bulb, 1.0 = a bigger halo).
+            rhySignalCoronaApply(cfg->traffic_corona_radius);
         }
         if (g_apiBroken) {
             g_apiBroken = false;
@@ -711,7 +724,28 @@ void rhyTrafficFrame() {
             rhyLog("trafficlights: rhyremix.ini edited, retrying the Remix API");
         }
     }
-    const bool gameMode = (cfg->traffic_source == 1) && rhySignalHookInstalled();
+    const bool hookLive = rhySignalHookInstalled();
+    // s30: installed is not the same as working. The 2026-11-11 13:03 run had
+    // the patch in place and read records=0, and since this build also resizes
+    // the game's own 15 m signal corona, "hook live, no heads" would mean dark
+    // signal heads - worse than the flood we came to fix. So the head source
+    // has to actually produce heads; otherwise the list lights carry the layer.
+    const bool hookProduces = hookLive &&
+        rhyHeadsHealthy(rhySignalHookRecords(), g_hookTick, now,
+                        kHeadSourceGraceMs);
+    if (hookLive && !hookProduces && !g_hookSilent) {
+        g_hookSilent = true;
+        rhyLog("trafficlights: the corona hook is installed but has recorded no "
+               "signal head in %lu ms - lighting the list instead. If the game's "
+               "own flare now looks too small, set [trafficlights] "
+               "corona_radius=0. hook: calls=%u records=%u dropped=%u bad=%u "
+               "reentrant=%u",
+               static_cast<unsigned long>(kHeadSourceGraceMs),
+               rhySignalHookCalls(), rhySignalHookRecords(),
+               rhySignalHookDropped(), rhySignalHookBad(),
+               rhySignalHookReentrant());
+    }
+    const bool gameMode = (cfg->traffic_source == 1) && hookLive && hookProduces;
 
     // Drain the hook every frame, even when this module is off or the user has
     // switched to source=list: a full array would otherwise count "dropped"
@@ -1088,8 +1122,10 @@ void rhyTrafficFrame() {
                    "phase_swaps=%u steps=%u retired=%u player_gone_frames=%u) | "
                    "remix: live=%u create_fail=%u draw_fail=%u budget_stop=%u "
                    "deferred=%u",
-                   gameMode ? "list" : "list, source=game requested but the hook "
-                                   "is not installed",
+                   gameMode ? "list" : (hookLive
+                       ? "list, hook live but no head recorded"
+                       : "list, source=game requested but the hook is not "
+                         "installed"),
                    static_cast<unsigned>(g_active.size()), tl_drawn, green, amber,
                    red, rhyDelayedPending(), static_cast<unsigned>(g_lights.size()),
                    rhyGameHour(), g_phaseSwap, g_fadeSteps, g_retired, g_playerGone,

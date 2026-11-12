@@ -840,3 +840,113 @@ unless it behaves like a calendar: with the shipped default it never does, so th
 comes from `rhyremix.ini`. If a future build has a real `CTheClock` date, the counters
 `cal: stable=... accepted=... rejected=...` in the 10 s log line are how that gets
 noticed.
+
+## Signal heads: a green wash, no bulbs, and a hook that could not install (2026-11-12, s30)
+
+rhY's report: *"the traffic lights are not small bright bulbs, they are ambient
+green over the whole street"*. Three things had to be measured before that could
+be answered, because the two candidate causes point at different files.
+
+### The hook had not installed since s19, so no run had ever lit a head
+
+`scripts/rhyremix.log`, 2026-11-12 00:48:44, twice:
+
+```
+trafficlights: source=game requested but the hook was not installed: the bytes at
+0x49DD4C are not 'call 0x6FC580'. Falling back to source=list; ...
+```
+
+against an ini that asks for the hook (`config: traffic=1/1 source=game ...`), and
+against an exe that is fine: `gta-sa.exe` md5 `85662cbb5aa3df8251ad7664f7a42929`,
+bytes at `0x49DD4C` = `E8 2F E8 25 00` = `call 0x6FC580` (PE section walk, and
+`tests/test_signal_hook.py` asserts the same bytes). There is no
+`signalhook: 0x0049DD4C does not call ...` detail line in the log, which is what
+gave it away: that branch never ran.
+
+The cause is in our code, and it is a two-part bug where each half looks fine:
+
+```c
+int why = rhySignalPatchCheck(cfg->traffic_source == 1, nullptr, nullptr,
+                              nullptr, nullptr);   // "the source gate on its own"
+...
+if (why == kRhyPatchOk) { /* read the exe, check the bytes */ }
+```
+
+and `rhySignalPatchCheck` answered a null-window call with `kRhyPatchCallSite`,
+"the call site bytes are wrong". So the source gate answered *bad bytes*, the
+byte-reading block was skipped on every build, and the fallback logged a byte
+mismatch that had never been checked. `kRhyPatchNoBytes` ("ask again with the
+bytes") is now a separate answer, and the install walk is asserted step by step
+in `tests/signals_check.cpp` — the old test suite had a check that *pinned* the
+wrong behaviour (`"a null byte window is refused rather than read"` expected
+`kRhyPatchCallSite`), which is why this survived s19's own review.
+
+Consequence for the whole s01..s19 line of work: `head light ok` appears **zero**
+times in that log, `N heads lit` appears zero times, and the hook counters never
+print. Every signal light in every screenshot so far has been a list-mode light
+at `pole x,y,z + headz`.
+
+### The wash is mostly the game's own corona, and it is huge
+
+Measuring the tour's two signal stops (`build/tmp/s30/{shotmetrics,greenmap,bulbs,pairs}.py`,
+1920×1080, green = `G-max(R,B) > 12` with saturation > 0.45):
+
+| shot | our signal lights | green pixels | brightest green pixel | green AND luma>=200 |
+|---|---|---|---|---|
+| 12 Nov 00-51-06, stop 06 | 60 live | 815,471 = 39.3% | luma 185, RGB (175,199,71) | **0** |
+| 11 Nov 09-07-50, stop 06 | none | 207,503 = 10.0% | luma 191 | **0** |
+| 11 Nov 09-08-07, stop 07 | none | 627,200 = 30.2% | luma 190 | **0** |
+| 12 Nov 00-51-23, stop 07 | 60 live | 155,359 = 7.5% | luma 198 | **0** |
+
+Two facts do the work. First: **no green pixel in any shot reaches luma 200**,
+while the frames' brightest clusters are near-white sodium pools — the green
+never concentrates, so there is no bulb to see. Second: the 2026-11-11 tour
+created **no traffic lights at all** (hook installed, `records=0`) and still
+shows 10-30% green at the same stops with the same framing (the baseline stop
+differs by mean |dluma| 1.4 between the two tours). So a large part of the flood
+is not ours.
+
+What it is, from the call site we already hook: the game registers every lit head
+with `CCoronas::RegisterCorona`, colour (0,255,0)/(255,128,0)/(255,0,0), alpha
+0xff, **radius 15.0 game units** and range 50.0. A 30 m additive pure-green
+sprite per head, drawn by the Remix bridge as emissive geometry, is ambient by
+construction: huge area, moderate radiance per unit area. The radius is an
+immediate in the caller:
+
+```
+0x49dcd9  68 00 00 70 41   push $0x41700000   ; 15.0f -> argument 18
+0x49dcf3  68 00 00 48 42   push $0x42480000   ; 50.0f -> argument 8 (range)
+```
+
+so the size of the game's own bulb is one `imm32` at `0x49DCDA`, in the same code
+page as the call site — one `VirtualProtect`, two patches.
+
+### Our lights were the second half: 5400 nits in a 0.1 m sphere
+
+```
+trafficlights: CreateLight ok #1098 phase 0 ... radiance=9.64,5400.00,1845.57 radius=0.10
+```
+
+`5400 = radiance 1.5 × (radius_ref 6.0 / 0.10)²` — the flux-preserving multiplier
+from `lamps.h`. That rule is right for a street luminaire, where the 15 m sphere
+was a brightness dial and shrinking it must keep the street lit. Applied to a
+signal it means "the output of a six-metre blob, squeezed into a marble": sixty
+of them near a player light the street, and a light is not visible geometry, so
+they still do not read as bulbs.
+
+The bulb model (`rhySignalBulb()`, used by both the head and the list path):
+radius = the real lens (0.10 m), `bulb_radiance` = the lens luminance **in nits at
+that radius**, no `(ref/r)²`. At the shipped 1200 nits one signal emits 67 flux
+units against a mid street luminaire's 3473 — under 5%, which is roughly the
+real ratio (a signal lens is ~10² lm, a street luminaire ~10⁴). The old bulb
+emitted 304, twice over the bound the test now enforces.
+
+### What is still open, and what the knobs are for
+
+Whether the corona's `radius` argument maps to the sprite's world size 1:1 is
+**not yet verified in game** — it is the obvious reading of the disassembly and
+the obvious knob, not a measured fact. `corona_radius` is therefore an A/B dial
+(clamped 0.05..1.2 m, `0` = leave the game's code alone) and `bulb_radiance`
+covers the rest. The safety net is `rhyHeadsHealthy()`: if the hook is live but
+has recorded no head within 20 s, the list lights carry the layer instead, so a
+shrunken flare can never be left alone in the dark.

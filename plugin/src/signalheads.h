@@ -52,6 +52,18 @@ int rhySignalPhaseFromGameRgb(int r, int g, int b);
 // wraparound-safe form.
 int rhyHeadStale(uint32_t lastSeenTick, uint32_t nowTick, uint32_t ttlMs);
 
+// s30: "the hook is installed" is not "the hook produces heads". The 2026-11-11
+// 13:03 run installed it and read records=0: the patched call site was never
+// reached in the seconds it logged. That matters more now than it did then,
+// because the same install also resizes the game's own signal corona (see
+// rhySignalCoronaRadius): if we shrink the game's flare and then light nothing,
+// the signals go dark, which is worse than the flood. So the module falls back
+// to source=list when the hook has been live for graceMs without a single
+// record, and says so in the log. Cumulative records, not per-frame: a drive
+// through a signal-free district must not flip the source back and forth.
+int rhyHeadsHealthy(unsigned records, uint32_t installedTick, uint32_t nowTick,
+                    uint32_t graceMs);
+
 // Where to put the Remix light for this head.
 //
 // The corona position IS the lens position, so the default is "unchanged": the
@@ -69,6 +81,44 @@ void rhyHeadLightPos(const RhySignalHead* h, const float* normal,
 // are 16-byte aligned and clustered in a couple of heap blocks, so id+k would
 // collide constantly.
 uint64_t rhyHeadLightHash(uint64_t id, int phase, uint64_t base);
+
+// ---------------------------------------------------------------------------
+// s30: the bulb - how big our signal light is, and how much light it puts out.
+//
+// This is the decision the two shipped paths got wrong in opposite ways, so it
+// lives here where a test can hold it down:
+//
+//   * fixture_size=1 (the default) used rhyRadianceForFlux(radiance, 0.10, 6.0):
+//     it preserved the output of the six-metre blob the first profile used, so a
+//     0.1 m lens got radiance x3600 = 5400 nits (log 2026-11-12 00:48:56:
+//     `radiance=9.64,5400.00,1845.57 radius=0.10`). Sixty of those near a player
+//     is a green street: a signal lens is a few thousand nits over 0.03 m^2, not
+//     the output of a street luminaire squeezed into a marble.
+//   * the flux-preserving rule is right for a STREET lamp (the 15 m sphere was a
+//     brightness dial, so shrinking it had to keep the street lit) and wrong for
+//     a signal, whose brightness is a lens luminance you look AT.
+//
+// So with fixture_size=1 the ini's `bulb_radiance` IS the lens luminance in
+// nits, applied at the lens radius, with no (ref/r)^2. The legacy
+// fixture_size=0 path keeps the old flux-preserving behaviour, because there the
+// user is deliberately driving a blob.
+// ---------------------------------------------------------------------------
+struct RhySignalBulb {
+    float radius;        // emitting sphere radius, game units (~metres)
+    float radiance[3];   // nits per channel, lens colour already applied
+    float flux;          // 4*pi*r^2 * mean radiance: what the street actually feels
+    int legacy;          // 1 = the fixture_size=0 flux-preserving path
+};
+
+// phase: 0 green, 1 amber, 2 red (rhySignalLensRgb's numbering).
+// fixtureSize: the ini's fixture_size. lensRadius: rhySignalRadius(scale) when
+// fixtureSize, otherwise the ini's trafficlights radius. bulbRadiance: the ini's
+// trafficlights bulb_radiance (nits at the lens). radianceAtRef/radiusRef: the
+// legacy pair (trafficlights radiance / radius_ref). radianceScale: the global
+// [streetlights] radiance_scale.
+void rhySignalBulb(int phase, int fixtureSize, float lensRadius,
+                   float bulbRadiance, float radianceAtRef, float radiusRef,
+                   float radianceScale, RhySignalBulb* out);
 
 // One head chosen to have a light this pass.
 struct RhyHeadWant {
@@ -115,7 +165,17 @@ enum : uint32_t {
     kRhySignalCallSite = 0x49DD4C,  // CTrafficLights::DisplayActualLight's
     kRhySignalResumeAt = 0x49DD51,  // `call 0x6FC580`; resume = the next
     kRhySignalCleanupAt = 0x49DD54, // instruction; cleanup = its add esp,0x54
-    kRhySignalCoronaFn = 0x6FC580   // CCoronas::RegisterCorona type thunk
+    kRhySignalCoronaFn = 0x6FC580,  // CCoronas::RegisterCorona type thunk
+    // s30: the corona RADIUS this call site pushes. The game registers every lit
+    // head with radius 15.0 game units - a 30 m wide additive pure-green sprite,
+    // which the Remix bridge renders as emissive geometry, which is what floods a
+    // whole street (measured in .strata/notes-s30-signal-bulbs.md: 10-39% of the
+    // signal-stop frames are saturated green, and not one green pixel is bright).
+    // It is pushed as an immediate 21 bytes of pushes before the call:
+    //   0x49dcd9  68 00 00 70 41   push $0x41700000   ; 15.0f -> argument 18
+    // so the size of the game's own bulb is one imm32 at 0x49DCDA.
+    kRhySignalCoronaPush = 0x49DCD9,
+    kRhySignalCoronaRadiusImm = 0x49DCDA
 };
 
 // The 21-dword argument block of that call, as the callee reads it (position at
@@ -146,12 +206,36 @@ enum RhySignalPatchReason {
     kRhyPatchSource = 1,    // [trafficlights] source is not "game"
     kRhyPatchCallSite = 2,  // 0x49DD4C is not `call 0x6FC580`
     kRhyPatchCallee = 3,    // 0x6FC580 is not the corona-type thunk
-    kRhyPatchCleanup = 4    // the caller's `add esp,0x54` is not there
+    kRhyPatchCleanup = 4,   // the caller's `add esp,0x54` is not there
+    // s30: the caller asked for the hook but no byte windows were handed over
+    // yet. This is a STEP, not a verdict: the install path asks the source
+    // question first with null windows, and must not read "no bytes" as "bad
+    // bytes". It used to: the null-window answer was kRhyPatchCallSite, so the
+    // exe was never read and the hook never installed - the reason rhY's
+    // 2026-11-12 run logged "the bytes at 0x49DD4C are not 'call 0x6FC580'"
+    // against an exe whose bytes are exactly that, and lit zero heads.
+    kRhyPatchNoBytes = 5,
+    kRhyPatchCorona = 6     // 0x49DCD9 is not the `push 15.0f` we resize
 };
 
 // The first five bytes of 0x6FC580: `movzx edx,BYTE PTR [esp+0x28]` - the
 // corona-type lookup the stub's hand-built stack is sized for.
 extern const uint8_t kRhyPatchCalleeBytes[5];
+
+// The five bytes at 0x49DCD9: `push $0x41700000` - the 15.0 game-unit radius the
+// game hands its own signal-head corona. Resizing that immediate is the whole of
+// the flood fix; if these bytes are not there, the corona is left alone.
+extern const uint8_t kRhyPatchCoronaBytes[5];
+
+// The radius the game pushes, read back out of those bytes (15.0f when they are
+// the expected push). Returns kRhyPatchOk or kRhyPatchCorona.
+int rhySignalCoronaPatchCheck(const uint8_t* pushBytes, float* gameRadius);
+
+// The radius to leave in that push: `iniRadius` when it is > 0, otherwise the
+// game's own value untouched. Clamped to something a signal lens can be: the
+// sprite is a soft radial gradient, so below ~0.05 m it disappears, and above a
+// metre we are back to the flood the patch exists to remove.
+float rhySignalCoronaRadius(float gameRadius, float iniRadius);
 
 // Decide whether the patch may go in. callSite/callee/cleanup point at the
 // three byte windows named above (the caller reads them out of game memory).
@@ -162,6 +246,11 @@ extern const uint8_t kRhyPatchCalleeBytes[5];
 // number of arguments: the stub pushes no stack of its own across the tail
 // jump, so a different cleanup would unbalance the game's frame.
 // calleeTarget (optional) gets the address the call site really calls.
+//
+// With source=game and null byte windows the answer is kRhyPatchNoBytes: "ask
+// again with the bytes", not "do not patch". With source=list the answer is
+// kRhyPatchSource before a single byte is looked at, which is what makes
+// "set source=list and the hook is gone" a fact rather than an intention.
 int rhySignalPatchCheck(int sourceIsGame, const uint8_t* callSite,
                         const uint8_t* callee, const uint8_t* cleanup,
                         uint32_t* calleeTarget);
