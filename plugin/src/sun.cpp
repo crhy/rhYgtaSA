@@ -33,7 +33,8 @@ struct DistantLight {
     remixapi_LightHandle handle;
     float dir[3];         // direction baked into the live handle
     float radiance[3];    // radiance baked into the live handle
-    float lum;            // luminance of that radiance, for the rebuild test
+    float lum;            // luminance of that radiance, for the "did anything at
+                          // all change" test (n01: no longer a rebuild trigger)
     int rebuilds;
     bool apiBroken;
     int tag;  // delayed.h tag namespace: see kTagSun / kTagMoon
@@ -44,16 +45,30 @@ struct DistantLight {
     RhyRate rate[3];
     bool seeded;  // first target is published as-is, so connecting to the bridge
                   // does not fade the world up from black
+    // n01 (s29 note T7): the rebuild schedule, and what the limiters published
+    // last frame - which is the only honest input to a cadence.
+    float pubDirPrev[3];
+    float pubLumPrev;
+    RhyCadence cad;
+    float maxStepDegSeen;  // largest direction step one rebuild actually carried
 };
 
 static DistantLight g_sun = {nullptr, {0.0f, 0.0f, -1.0f}, {0, 0, 0}, -1.0f, 0, false,
                              kTagSun, {0, 0, -1}, {0, 0, 0}, {0, 0, -1},
                              {{0, 3.0f, 0.25f, 0.001f}, {0, 3.0f, 0.25f, 0.001f},
-                              {0, 3.0f, 0.25f, 0.001f}}, false};
+                              {0, 3.0f, 0.25f, 0.001f}}, false,
+                             {0, 0, -1}, 0.0f,
+                             {0.5f, 0.05f, 150, 2000, 0, 2000, 0.0f, 0.0f, 0.0f, 0.0f,
+                              0, 0},
+                             0.0f};
 static DistantLight g_moon = {nullptr, {0.0f, 0.0f, -1.0f}, {0, 0, 0}, -1.0f, 0, false,
                               kTagMoon, {0, 0, -1}, {0, 0, 0}, {0, 0, -1},
                               {{0, 3.0f, 0.25f, 0.001f}, {0, 3.0f, 0.25f, 0.001f},
-                               {0, 3.0f, 0.25f, 0.001f}}, false};
+                               {0, 3.0f, 0.25f, 0.001f}}, false,
+                              {0, 0, -1}, 0.0f,
+                              {0.5f, 0.05f, 150, 2000, 0, 2000, 0.0f, 0.0f, 0.0f,
+                               0.0f, 0, 0},
+                              0.0f};
 
 // The last sky state, for the periodic log line and for the lamp modules, which
 // need "is it night?" and must not disagree with what the sun is doing.
@@ -265,8 +280,7 @@ static remixapi_LightHandle createDistant(DistantLight& which,
 
 // Retire the handle if it no longer matches what we want, create it if it is
 // missing, then draw it. dir/radiance are the values the live handle was built
-// with, so a rebuild only happens when the body actually moved or brightened by
-// more than the configured step.
+// with, so a rebuild only happens when the body actually moved or brightened.
 //
 // s28: what is compared is no longer the raw geometry but the rate-limited
 // published values (w.pubDir, w.rate[]). The target may jump - the game clock did,
@@ -275,9 +289,22 @@ static remixapi_LightHandle createDistant(DistantLight& which,
 // sun_rel_per_sec x of radiance per second. A sun that goes below the horizon is
 // ramped to zero and only retired once it is dark, so "the whole world went dark,
 // then came back" cannot happen from this path any more.
+//
+// n01 (s29 note T7): WHEN the handle is replaced is a clock now, not a threshold.
+// The old rule - rebuild once the handle is more than [sun] step_deg (1.0 deg) or
+// 5% out of date - is bounded, but it fires at the worst possible moment (the
+// difference has grown to the whole threshold, and the sun's disc is 0.53 deg) and
+// its period follows the body's rate: ~8 s while the clock runs normally, ~80 ms
+// while the direction limiter is slewing at its 12 deg/s cap. The cadence rebuilds
+// every [fade] handle_cadence_ms, shortened only as far as the s28 limiters demand
+// so that no rebuild carries more than handle_step_deg of direction or
+// handle_rel_lum of luminance, and never below handle_cadence_min_ms.
+// `stepBudgetDeg` is that direction budget (handle_step_deg, or the body's own
+// step_deg when handle_step_deg=0), so [sun]/[moon] step_deg still means
+// something - as a budget, not as a trigger.
 static void updateDistant(DistantLight& which, float angular,
                           unsigned long long hash, float volumetric,
-                          float stepDeg, const char* name, const RhyConfig& c,
+                          float stepBudgetDeg, const char* name, const RhyConfig& c,
                           float dt) {
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->DrawLightInstance) {
@@ -313,50 +340,119 @@ static void updateDistant(DistantLight& which, float angular,
             which.handle = nullptr;
             which.lum = -1.0f;
         }
+        which.pubDirPrev[0] = which.pubDir[0];
+        which.pubDirPrev[1] = which.pubDir[1];
+        which.pubDirPrev[2] = which.pubDir[2];
+        which.pubLumPrev = pubLum;
         return;
     }
 
-    if (!rhyCanCreateLight()) {
-        // No handle-change credit this frame: keep drawing the handle we have. The
-        // fade is one frame late, which is invisible; a jump would not be. Checked
-        // before the destroy rather than after it, because the sun's hash is fixed:
-        // destroying first and then being refused leaves no sun at all.
-        if (which.handle) {
-            rhyDrawLight(which.handle);
-        }
-        return;
+    // --- what this frame's limiters actually published (n01) ---
+    // The configured limits are NOT the input. At rest the sun moves 0.25 deg per
+    // game minute (~0.002 deg/frame) while the limiter ALLOWS 12 deg/s: cadencing
+    // off the configured limit would rebuild every body at the churn floor
+    // forever, and cadencing off what was published rebuilds when the world is
+    // actually moving.
+    float degMoved = 0.0f;
+    {
+        degMoved = rhyAngleDeg(which.pubDirPrev, which.pubDir);
     }
-
-    const float dot = which.dir[0] * which.pubDir[0] +
-                      which.dir[1] * which.pubDir[1] +
-                      which.dir[2] * which.pubDir[2];
-    const float clampd = dot < -1.0f ? -1.0f : (dot > 1.0f ? 1.0f : dot);
-    const float movedDeg = acosf(clampd) / kDeg;
-    const bool dimChanged =
-        fabsf(pubLum - which.lum) > 0.05f * (pubLum + which.lum);
-
-    if (!which.handle || movedDeg > stepDeg || dimChanged) {
-        if (which.handle) {
-            rhyDelayDestroy(which.handle, which.tag);
+    float relMoved = 0.0f;
+    {
+        const float mean = 0.5f * (pubLum + which.pubLumPrev);
+        if (mean > 1e-6f) {
+            relMoved = fabsf(pubLum - which.pubLumPrev) / mean;
         }
-        // The hash is fixed per body, so the retired handle must be destroyed
-        // before the replacement with the same hash is created.
-        rhyFlushDelayedTag(which.tag);
-        remixapi_LightHandle h = createDistant(which, which.pubDir, pub, angular,
-                                               hash, volumetric, name);
-        if (!h) {
-            which.handle = nullptr;
-            return;  // createDistant already flagged apiBroken (or the cap did)
+    }
+    which.pubDirPrev[0] = which.pubDir[0];
+    which.pubDirPrev[1] = which.pubDir[1];
+    which.pubDirPrev[2] = which.pubDir[2];
+    which.pubLumPrev = pubLum;
+
+    // Re-time the cadence when an ini edit changed it under us. The counters and
+    // the observed rates survive: editing rhyremix.ini must not restart the period.
+    if (which.cad.maxMs != c.handle_cadence_ms ||
+        which.cad.minMs != c.handle_cadence_min_ms ||
+        which.cad.maxStepDeg != stepBudgetDeg ||
+        which.cad.maxRelLum != c.handle_rel_lum) {
+        const int rebuilds = which.cad.rebuilds;
+        const int skips = which.cad.skips;
+        const float degPerSec = which.cad.degPerSec;
+        const float relPerSec = which.cad.relPerSec;
+        const int elapsed = which.cad.elapsedMs;
+        rhyCadenceInit(which.cad, stepBudgetDeg, c.handle_rel_lum,
+                       c.handle_cadence_min_ms, c.handle_cadence_ms);
+        which.cad.rebuilds = rebuilds;
+        which.cad.skips = skips;
+        which.cad.degPerSec = degPerSec;
+        which.cad.relPerSec = relPerSec;
+        which.cad.elapsedMs = elapsed;
+    }
+    rhyCadenceObserve(which.cad, degMoved, relMoved, dt);
+    rhyCadenceAdvance(which.cad, dt);
+
+    // How far the live handle is from what we would publish now. n01 uses that to
+    // measure what one rebuild actually carried, and to skip a rebuild that would
+    // change nothing (a pinned clock, a body that has not moved since the last
+    // period): a bridge call that changes no light is churn for nothing.
+    float handleDeg = 1e9f;
+    float handleRel = 1e9f;
+    if (which.handle) {
+        handleDeg = rhyAngleDeg(which.dir, which.pubDir);
+        const float hmean = 0.5f * (which.lum + pubLum);
+        handleRel = hmean > 1e-6f ? fabsf(pubLum - which.lum) / hmean : 0.0f;
+    }
+    rhyCadenceSetGap(which.cad, handleDeg, handleRel);
+    const bool sameLum =
+        which.handle &&
+        fabsf(pubLum - which.lum) <= 1e-6f * (pubLum + which.lum + 1.0f);
+
+    // A missing handle is not a cadence question: the body is lit, so it needs
+    // one - and the radiance it is created with has been ramping up from 0, so the
+    // first create is not a step either.
+    const bool due = !which.handle || rhyCadenceDue(which.cad);
+    if (due) {
+        if (handleDeg < 1e-4f && sameLum) {
+            ++which.cad.skips;
+            rhyCadenceRebuilt(which.cad);
+        } else if (!rhyCanCreateLight()) {
+            // No handle-change credit this frame: keep drawing the handle we have
+            // and stay due. The period is NOT consumed, so the rebuild lands as
+            // soon as there is credit; dropping it here would be a threshold rule
+            // wearing a clock. Destroying first and being refused would leave no
+            // sun at all, which is why the credit is checked before the destroy.
+            if (which.handle) {
+                rhyDrawLight(which.handle);
+            }
+            return;
+        } else {
+            if (which.handle) {
+                rhyDelayDestroy(which.handle, which.tag);
+            }
+            // The hash is fixed per body, so the retired handle must be destroyed
+            // before the replacement with the same hash is created.
+            rhyFlushDelayedTag(which.tag);
+            remixapi_LightHandle h = createDistant(which, which.pubDir, pub, angular,
+                                                   hash, volumetric, name);
+            if (!h) {
+                which.handle = nullptr;
+                return;  // createDistant already flagged apiBroken (or the cap did)
+            }
+            which.handle = h;
+            which.dir[0] = which.pubDir[0];
+            which.dir[1] = which.pubDir[1];
+            which.dir[2] = which.pubDir[2];
+            which.radiance[0] = pub[0];
+            which.radiance[1] = pub[1];
+            which.radiance[2] = pub[2];
+            which.lum = pubLum;
+            ++which.rebuilds;
+            ++which.cad.rebuilds;
+            if (handleDeg < 1e8f && handleDeg > which.maxStepDegSeen) {
+                which.maxStepDegSeen = handleDeg;
+            }
+            rhyCadenceRebuilt(which.cad);
         }
-        which.handle = h;
-        which.dir[0] = which.pubDir[0];
-        which.dir[1] = which.pubDir[1];
-        which.dir[2] = which.pubDir[2];
-        which.radiance[0] = pub[0];
-        which.radiance[1] = pub[1];
-        which.radiance[2] = pub[2];
-        which.lum = pubLum;
-        ++which.rebuilds;
     }
 
     if (!rhyDrawLight(which.handle)) {
@@ -631,10 +727,17 @@ void rhySunFrame() {
     }
 
     // --- publish: every frame, rate-limited ---
+    // n01: what is passed is the DIRECTION BUDGET for one rebuild, not a rebuild
+    // trigger. handle_step_deg=0 keeps the old per-body numbers as the budget, so
+    // an existing rhyremix.ini loads unchanged.
+    const float sunBudget = cfg->handle_step_deg > 0.0f ? cfg->handle_step_deg
+                                                        : cfg->sun_step_deg;
+    const float moonBudget = cfg->handle_step_deg > 0.0f ? cfg->handle_step_deg
+                                                         : cfg->moon_step_deg;
     updateDistant(g_sun, cfg->sun_angular, cfg->sun_hash, cfg->sun_volumetric,
-                  cfg->sun_step_deg, "sun", *cfg, dt);
+                  sunBudget, "sun", *cfg, dt);
     updateDistant(g_moon, cfg->moon_angular, cfg->moon_hash, 0.0f,
-                  cfg->moon_step_deg, "moon", *cfg, dt);
+                  moonBudget, "moon", *cfg, dt);
     applySkySettings(*cfg, dt, now);
 
     static DWORD s_logTick = 0;
@@ -646,6 +749,7 @@ void rhySunFrame() {
                "tod: ticks=%u torn=%u jitter=%u reanchor=%u wraps=%u bad=%u | "
                "cal: stable=%d accepted=%u rejected=%u | cloud=%.2f | "
                "published: sun %.2f,%.2f,%.2f sky=%.3f emissive=%.3f rebuilds=%d/%d "
+               "cad=%d/%dms step<=%.2f/%.2f skip=%d/%d "
                "| rtx: set=%u unknown=%u badval=%u",
                g_sunElev, sun.azimuthDeg, sun.airMass, sun.transmit[0],
                sun.transmit[1], sun.transmit[2], g_daylight, g_moonElev,
@@ -657,6 +761,9 @@ void rhySunFrame() {
                g_cal.stable, g_cal.accepted, g_cal.rejected, g_weather.cloud,
                g_sun.rate[0].cur, g_sun.rate[1].cur, g_sun.rate[2].cur,
                g_skyRate.cur, g_emissiveRate.cur, g_sun.rebuilds, g_moon.rebuilds,
+               g_sun.cad.intervalMs, g_moon.cad.intervalMs,
+               g_sun.maxStepDegSeen, g_moon.maxStepDegSeen,
+               g_sun.cad.skips, g_moon.cad.skips,
                rhyRtxSets(), rhyRtxUnknown(), rhyRtxBadValue());
     }
 }

@@ -67,6 +67,15 @@ If something in the update looks wrong, everything is reversible
 - The moon has a **phase** (it was permanently full) and is placed by lunar position, so a midsummer
   full moon sits at a believable height instead of near the zenith.
 - **Summer time**: a July sunset now lands near 20:05 game time instead of 19:05.
+- **Shadow edges creep instead of jumping.** A sun that moves has to be re-made in the renderer,
+  and until now that happened once the shadow was already a whole degree out of date — twice the
+  width of the sun's own disc — every eight seconds or so. It now happens on a schedule, four times
+  finer, and never faster than a fixed ceiling no matter what the game clock does. With the clock
+  pinned, the sun is not re-made at all.
+- The renderer has settings of its own that decide **when** a lighting change lands rather than what
+  it looks like. There is now a switch for exactly those, and it changes nothing else — not the
+  grade, not the exposure, not one texture of the asset pack:
+  `tools/rtxprofile.sh nopops "<game>"`, back with `restore`.
 - The sky's brightness now follows the sun at runtime, so night is actually dark and lamps can
   compete with it. Two `rtx.conf` values were changed and nothing else: `rtx.emissiveIntensity`
   10 → 1.0 (shopfront windows were being rendered at 30000) and `rtx.skyBrightness` 3 → 1.0.
@@ -175,6 +184,12 @@ What each shot should prove, and the knobs to A/B if it does not, are in
    mirror frames an empty curb, that stop's coordinates are the ones to nudge — parked cars are placed
    by the compiled script, so their position is not readable from the game's data files.
 6. **Water**: try `tools/water.sh realistic` first, then `calm`, then `pack`.
+7. **Transitions, not still shots.** The tour photographs a standstill, so it cannot see a lighting
+   change. For that, run `bash scripts/lighting-test.sh` — a drive through lit streets at dusk — once
+   with the shipped profile and once with `tools/rtxprofile.sh nopops "<game>"`, and say whether the
+   world still arrives all at once. In the log, the line to look at is
+   `published: … rebuilds=… cad=…ms step<=… skip=…`: if `step<=` is near 0.25 while the world still
+   pops, the step is the renderer's, and that is the answer the A/B is after.
 
 ---
 

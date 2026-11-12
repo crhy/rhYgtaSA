@@ -113,11 +113,91 @@ float rhyDistanceGain(float dist, float fullRadius, float zeroRadius);
 
 // ------------------------------------------------------------- direction
 
+// Angle between two directions, in degrees, measured as atan2(|a x b|, a.b).
+// NOT acos(a.b): the sun at rest moves 0.002 deg per frame, and a float dot
+// product that close to 1 makes acos return noise (it reported 0.02 deg for a
+// real 0.002 deg step in tests/handle_check.cpp, 10x over). A cadence or a slew
+// driven by that noise rebuilds every body at its churn floor forever.
+float rhyAngleDeg(const float* a, const float* b);
+
 // Rotate the unit vector cur toward the unit vector target by at most maxDeg
 // degrees. Used for the sun and moon: the game clock can jump 100 degrees
 // between two samples (measured: 104.5 deg), and a distant light's direction is
 // baked at create time, so the handle follows a slew-limited direction instead.
 void rhyDirLimit(float* cur, const float* target, float maxDeg);
+
+// ------------------------------------------------------- handle cadence (n01)
+
+// A Remix distant light's direction and radiance are baked at CreateLight time,
+// so "move the sun" means destroy the handle and create a new one. s28/s29 chose
+// that moment from the VALUE: rebuild when the body has moved more than
+// [sun] step_deg (1.0 deg) or brightened by 5%; s29 left that as its open note
+// T7. It is bounded and monotone, so it is a staircase and not a flicker, but it
+// has two properties a clock does not: the step that triggers the rebuild is as
+// big as the whole threshold (the handle is replaced exactly when the difference
+// has grown to 1.0 deg, twice the sun's 0.53 deg disc), and the interval between
+// rebuilds follows the body's rate, so it is ~8 s while the clock runs normally
+// and every ~80 ms while the direction limiter is slewing at its 12 deg/s cap.
+//
+// n01 takes the decision from the clock instead. The period is fixed
+// (`maxMs`), and the s28 limiters only ever *shorten* it: observe how fast the
+// published direction and luminance are actually moving and rebuild often enough
+// that no rebuild carries more than `maxStepDeg` of direction or `maxRelLum` of
+// luminance. `minMs` is the floor that keeps bridge churn bounded, and the
+// per-frame create budget in remix.cpp bounds it again on top of that.
+struct RhyCadence {
+    float maxStepDeg;   // direction budget for one rebuild, degrees
+    float maxRelLum;    // luminance budget for one rebuild, fraction of itself
+    int   minMs;        // churn floor: never rebuild a body faster than this
+    int   maxMs;        // the fixed cadence: a still body is rebuilt this often
+    int   elapsedMs;    // ms since the last rebuild
+    int   intervalMs;   // period in effect right now
+    float gapDeg;       // how far the live handle is from what we would publish
+    float gapRel;       // ... in luminance, as a fraction of itself
+    float degPerSec;    // smoothed rate of the published direction, deg/s
+    float relPerSec;    // ... and of the published luminance, fraction/s
+    int   rebuilds;     // rebuilds decided, for the log line
+    int   skips;        // periods that needed no bridge call at all
+};
+
+// Clamp the budgets and the bounds. maxMs < minMs is a typo and would make the
+// floor unreachable, so the floor wins.
+void rhyCadenceInit(RhyCadence& c, float maxStepDeg, float maxRelLum,
+                    int minMs, int maxMs);
+
+// Feed one frame of what the limiters actually published: `degMoved` degrees of
+// direction and `relLumMoved` of fractional luminance, over `dtSec` seconds.
+// Smoothed over ~0.25 s, because one frame of a clock jump must not set the
+// cadence for the next minute - and a rate that stopped moving must clear it.
+void rhyCadenceObserve(RhyCadence& c, float degMoved, float relLumMoved,
+                       float dtSec);
+
+// One frame elapsed. Advances the clock and re-derives the period.
+void rhyCadenceAdvance(RhyCadence& c, float dtSec);
+
+// Report how far the LIVE handle is from what would be published now (degrees of
+// direction, and luminance as a fraction of itself). The period is derived from a
+// rate, and a rate that collapses - a radiance ramp reaching its target, a slew
+// that lands - would otherwise leave a handle that is already off by more than the
+// budget sitting there for a whole period. Measured in tests/handle_check.cpp:
+// without this, the last swap of a 6.0 -> 0.02 twilight ramp carried 0.84 of its
+// own luminance.
+void rhyCadenceSetGap(RhyCadence& c, float degGap, float relGap);
+
+// The period in effect: what the two budgets allow, clamped to [minMs, maxMs].
+int rhyCadenceIntervalMs(const RhyCadence& c);
+
+// True when the handle is due. Two triggers, one clock and one safety net: the
+// period, or a gap already past the budget once the churn floor has passed (the
+// floor still wins, so the step bound is max(budget, rate x minMs) either way).
+// Neither consumes the due state: a rebuild the frame's create budget refuses has
+// to be retried next frame, and a rule that forgot a refused rebuild would be a
+// threshold rule by another name.
+bool rhyCadenceDue(const RhyCadence& c);
+
+// The caller rebuilt (or established that the handle already matches): start the
+// next period.
+void rhyCadenceRebuilt(RhyCadence& c);
 
 // ------------------------------------------------------------- selection
 

@@ -3,6 +3,7 @@
 # without ever losing the file the renderer last wrote.
 #
 #   tools/rtxprofile.sh perf     [GAME_DIR]   install config/rtx.conf.perf   (the 60 fps profile)
+#   tools/rtxprofile.sh nopops   [GAME_DIR]   install config/rtx.conf.nopops (the temporal A/B, n01)
 #   tools/rtxprofile.sh current  [GAME_DIR]   install config/rtx.conf        (this repo's shipped file)
 #   tools/rtxprofile.sh orig     [GAME_DIR]   install <game>/rtx.conf.orig   (the runtime's first-launch file)
 #   tools/rtxprofile.sh status   [GAME_DIR]   which profile is live, and what it says
@@ -33,8 +34,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GAME_DEFAULT="/media/rhy/data/Gamez/GTASA-RTX"
 STATE_DIR=".rhys-rtxprofile"
 
-usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
-die()   { echo "rtxprofile.sh: $*" >&2; echo "usage: tools/rtxprofile.sh {perf|current|orig|status|restore|check} [GAME_DIR]" >&2; exit 1; }
+usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die()   { echo "rtxprofile.sh: $*" >&2; echo "usage: tools/rtxprofile.sh {perf|nopops|current|orig|status|restore|check} [GAME_DIR]" >&2; exit 1; }
 
 sha() { sha256sum "$1" | awk '{print $1}'; }
 
@@ -46,6 +47,7 @@ kv() {
 profile_src() { # $1 = profile, $2 = game dir; prints source file or nothing
   case "$1" in
     perf)    echo "$REPO/config/rtx.conf.perf" ;;
+    nopops)  echo "$REPO/config/rtx.conf.nopops" ;;
     current) echo "$REPO/config/rtx.conf" ;;
     orig)
       if [ -f "$2/rtx.conf.orig" ]; then echo "$2/rtx.conf.orig"
@@ -64,6 +66,19 @@ if [ "$action" = check ]; then
   # .trex/d3d9.dll returns 0), which is exactly what the audit is for.
   python3 "$REPO/tools/rtxkeycheck.py" --keys "$REPO/config/rtx-runtime-keys.txt" \
     "$REPO/config/rtx.conf.perf" || die "config/rtx.conf.perf has keys this runtime does not know"
+  # n01: the A/B profile is audited too. It is generated from the shipped file by
+  # tools/rtx-nopops.py, so it inherits that file's two legacy spellings; the rule is therefore
+  # "no MORE unknown keys than the file it was generated from", which still catches a temporal
+  # key spelled from memory (the failure mode s22 built this audit for).
+  unk() {
+    { python3 "$REPO/tools/rtxkeycheck.py" --keys "$REPO/config/rtx-runtime-keys.txt" "$1" 2>/dev/null || true; } |
+      sed -n 's/.*, \([0-9][0-9]*\) unknown.*/\1/p' | head -1
+  }
+  n_ship=$(unk "$REPO/config/rtx.conf")
+  n_nop=$(unk "$REPO/config/rtx.conf.nopops")
+  [ "$n_nop" = "$n_ship" ] \
+    || die "config/rtx.conf.nopops has $n_nop unknown keys, config/rtx.conf has $n_ship"
+  echo "ok   config/rtx.conf.nopops: $n_nop unknown keys, the same as the shipped config/rtx.conf"
   echo "-- shipped config/rtx.conf, for comparison (unknown keys there are dead settings):"
   python3 "$REPO/tools/rtxkeycheck.py" --keys "$REPO/config/rtx-runtime-keys.txt" \
     "$REPO/config/rtx.conf" || echo "   ^ expected: the two legacy keys, see s22 notes"
@@ -84,7 +99,7 @@ case "$action" in
   status)
     cur=$(sha "$live")
     active="unknown"
-    for p in perf current orig; do
+    for p in perf nopops current orig; do
       src=$(profile_src "$p" "$game")
       [ -n "$src" ] && [ "$(sha "$src")" = "$cur" ] && active="$p"
     done
@@ -94,7 +109,13 @@ case "$action" in
     [ -f "$state/state" ] && { echo "last write: $(cat "$state/state")"; }
     [ -f "$state/rtx.conf.pristine" ] && echo "pristine : $(sha "$state/rtx.conf.pristine")"
     echo "-- the knobs the profiles differ on --"
-    for k in rtx.graphicsPreset rtx.pathMaxBounces rtx.pathMinBounces \
+    for k in rtx.temporalAA.newFrameWeight rtx.di.enableTemporalReuse \
+             rtx.di.enableTemporalBiasCorrection \
+             rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate \
+             rtx.volumetrics.maxAccumulationFrames rtx.autoExposure.autoExposureSpeed \
+             rtx.restirGI.historyDiscardStrength rtx.restirGI.useAdaptiveTemporalHistory \
+             rtx.restirGI.validateVisibilityChange \
+             rtx.graphicsPreset rtx.pathMaxBounces rtx.pathMinBounces \
              rtx.spatiallyHashedRadianceCache.qualityPreset rtx.neuralRadianceCache.qualityPreset \
              rtx.volumetrics.enable rtx.volumetrics.froxelGridResolutionScale \
              rtx.texturemanager.budgetPercentageOfAvailableVram \
@@ -110,7 +131,7 @@ case "$action" in
     echo "== restored the file that was live before the last switch: $(sha "$live")"
     exit 0
     ;;
-  perf|current|orig) ;;
+  perf|nopops|current|orig) ;;
   *) die "unknown action '$action'" ;;
 esac
 

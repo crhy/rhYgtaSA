@@ -304,16 +304,17 @@ the whole model runs natively in `tests/smooth_check.cpp`:
 
 The knobs are the `[fade]` section of `rhyremix.ini` (`in_ms`, `out_ms`, `step`,
 `creates_per_frame`, `player_grace_ms`, `sky_rel_per_sec`, `sky_abs_per_sec`,
-`sun_rel_per_sec`, `sun_deg_per_sec`, `phase_fade_ms`), and the floors are enforced
+`sun_rel_per_sec`, `sun_deg_per_sec`, `phase_fade_ms`, and since n01 `handle_cadence_ms`,
+`handle_cadence_min_ms`, `handle_step_deg`, `handle_rel_lum`), and the floors are enforced
 in code: a fade under 500 ms, a step over 0.5, or a rate limit under 1.05x/s is
 corrected and logged, so a typo cannot bring the instant switch back.
 
-What is deliberately **not** changed: the renderer-side amplifiers of a lighting step
+What s28 deliberately did **not** change: the renderer-side amplifiers of a lighting step
 (`rtx.restirGI.historyDiscardStrength = 10`, `rtx.localtonemap.shadows = 2.5` in
-`config/rtx.conf`). They are real levers, but retuning them without an in-game A/B
-trades a lighting pop for a denoiser artifact, and the plugin no longer sends a step
-big enough to trigger the history discard. `scripts/lighting-test.sh` is the harness
-if that A/B is ever run.
+`config/rtx.conf`). Retuning them without an in-game A/B trades a lighting pop for a
+denoiser artifact. n01 did the measurement s28 skipped and found that the two
+`rtx.restirGI.*` keys s28 named belong to an integrator this install does not even run;
+see "When the sun's handle is replaced" below.
 
 The lamp list itself was wasting slots: 7371 lines for 7002 lamps, because the
 same physical lamp is instanced by more than one model id (a pole and its LOD) and
@@ -462,10 +463,83 @@ The knobs are `[clock] ms_per_game_minute`, `jitter_tolerance_min`, `reanchor_ms
 `cloud_per_sec`. The log line carries the proof: `tod=… ms/min=… ticks=… torn=… jitter=…
 reanchor=… wraps=… bad=…` and `cal: stable=… accepted=… rejected=…`.
 
-What is deliberately **not** changed: the distant-light rebuild threshold (`[sun] step_deg = 1.0`,
-s28's) is a bounded monotone staircase, not a flicker, and tightening it costs a `CreateLight` per
-body per frame. And the in-game calendar stays unused unless it behaves like a date - with the
-shipped default it never does, which is the correct outcome for this build, not a fallback.
+What is deliberately **not** changed: the in-game calendar stays unused unless it behaves
+like a date - with the shipped default it never does, which is the correct outcome for
+this build, not a fallback. The other thing s29 left alone, the distant-light rebuild
+threshold (`[sun] step_deg = 1.0`, its note T7), is closed by n01 in the next section.
+
+## When the sun's handle is replaced: the cadence, and the renderer's temporal keys (n01)
+
+s28 stopped the plugin from *sending* a step, and rhY's 2026-11-12 report still said the
+world changes at once. Two things were left: s29's own open note T7 (the sun and moon
+handles were still replaced on a **threshold**) and the renderer's own temporal settings,
+which s28 had named and not measured.
+
+A distant light's direction and radiance are baked at `CreateLight`, so a moving sun is a
+sequence of destroy+create pairs and each pair is a hard step in shadow direction. The old
+rule in `plugin/src/sun.cpp` was `movedDeg > [sun] step_deg || 5% luminance`:
+
+* the step is as big as the threshold: the handle is replaced exactly when it is a whole
+  degree out of date, and the sun's disc is 0.53 deg - every rebuild moved the penumbra by
+  twice the sun's width;
+* the period follows the body's rate: ~8 s while the clock runs normally (1 deg at
+  0.125 deg/s), ~85 ms while the direction limiter is slewing, ~17 ms at the steepest point
+  of a radiance ramp. The tour's `setTimeOfDay()` pins walk through all three in one stop.
+
+`rhyCadence*` in `plugin/src/smooth.{h,cpp}` replaces the trigger with a **clock**:
+
+* `rhyCadenceInit(c, maxStepDeg, maxRelLum, minMs, maxMs)` - the budgets and the bounds.
+  Out-of-range values are corrected rather than honoured, because a budget of 0 means
+  "rebuild every frame" and the floor is what protects the bridge.
+* `rhyCadenceObserve(c, degMoved, relLumMoved, dt)` - feed what the s28 limiters
+  **published** this frame, not what they allow. At rest the sun moves 0.002 deg per frame
+  while the limiter allows 12 deg/s; cadencing off the configured limit would rebuild every
+  body at the churn floor forever. Smoothed over ~0.25 s, so one frame of a clock jump does
+  not set the period for the next minute and a body that stopped moving drifts back to it.
+* `rhyCadenceIntervalMs()` - the period: `maxStepDeg / degPerSec` and `maxRelLum /
+  relPerSec`, floored at `handle_cadence_min_ms` and capped at `handle_cadence_ms`, which is
+  the fixed cadence a still body keeps.
+* `rhyCadenceSetGap()` + `rhyCadenceDue()` - the period is derived from a *rate*, and a rate
+  that collapses (a ramp reaching its target) would otherwise leave a handle already off by
+  more than the budget sitting there for a whole period; measured at 0.84 of its own
+  luminance in `tests/handle_check.cpp`. The gap trigger cannot fire before the floor, so
+  the step bound is `max(budget, rate x minMs)` either way.
+* `rhyCadenceDue()` does not consume the due state: a rebuild the frame's create budget
+  refuses is retried next frame. A rule that forgot a refused rebuild would be a threshold
+  rule wearing a clock.
+* A period whose handle already carries the published values costs no bridge call
+  (`cad.skips`): with `[sun] force_hour` pinned, the sun creates nothing at all.
+
+`rhyAngleDeg()` is in the same file for the same reason: `acos(dot)` on a float dot product
+0.002 deg from 1 returns noise (it reported 0.02 deg for a real 0.002 deg step, 10x over),
+and a cadence driven by that noise sits at its churn floor forever.
+
+The knobs are `[fade] handle_cadence_ms` (2000), `handle_cadence_min_ms` (150),
+`handle_step_deg` (0.5, about the sun's disc; 0 falls back to the body's own `step_deg`),
+`handle_rel_lum` (0.05). The measured trade, from `tests/handle_check.cpp`, which runs the
+same simulated sky through both rules:
+
+| sky | old threshold rule | the cadence |
+|---|---|---|
+| a normal morning | 0.12 creates/s, one step 1.00 deg, every 8.2 s | 0.51 creates/s, one step 0.25 deg, every 2.0 s |
+| the 104.5 deg clock jump, slew window | 8.1 creates/s, 1.20 deg | 5.2 creates/s, 1.80 deg (the floor binds) |
+| the tour's clock pin | 0.46 creates/s, spacing 85 ms .. 8.2 s | 1.12 creates/s, spacing 153 ms .. 2.0 s |
+| twilight's 300x radiance ramp | ~10 creates/s while it lasts, spacing down to 17 ms | bounded at 6.7 creates/s |
+| a pinned clock | one rebuild per threshold crossing | 0 creates, 30 periods skipped |
+
+Four times finer direction steps in the normal case, bounded churn in every case, and one
+honest regression: during a steep radiance ramp the luminance step is what the churn floor
+allows - up to 0.84 of itself near the 0.02 night floor, where `[fade] sky_abs_per_sec`
+makes small values fall fastest in **relative** terms. In absolute terms that step is
+0.08 -> 0.03, a sun that has already set.
+
+The renderer half is a file, not code: `config/rtx.conf.nopops`, generated by
+`tools/rtx-nopops.py` from `config/rtx.conf` and switchable with
+`tools/rtxprofile.sh nopops` (undo with `restore`). It changes nine temporal keys and
+nothing else - `tests/test_rtx_nopops.py` asserts exactly that, and
+`scripts/rtxprofile-selftest.sh` hashes the eight texture-hash lists and the look keys to
+prove it. Why those nine, and why `rtx.demodulate.enableDirectLightBoilingFilter` is not
+one of them, is the table in FINDINGS ("the renderer's own time knobs").
 
 ## Two writes to one game function: the signal hook and the bulb (s30)
 

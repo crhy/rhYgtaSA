@@ -5,7 +5,7 @@
 #
 # scripts/check.sh <phase> is the per-phase gate and stays the thing CI-style work goes
 # through; this file is the "am I done with everything" sweep: the cross-compiled plugin
-# build, the three native test binaries, every python test file, the installer self-test,
+# build, the native test binaries, every python test file, the installer self-test,
 # the vegetation switch self-test (s16: an on/off/status round-trip against the same fake
 # tree, every file in it sha256'd before and after), the character-pack switch self-test (s17:
 # the six "characters" packs of deps/manifest.json staged synthetically, installed in the
@@ -108,6 +108,17 @@ run nat-tod-cc "compile tod_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/tod_check.cpp plugin/src/tod.cpp plugin/src/solar.cpp plugin/src/smooth.cpp -o build/tmp/todc
 warncheck nat-tod-cc "compile tod_check"
 run nat-tod "tests/tod_check.cpp (tod.cpp clock/calendar/weather + solar.cpp + smooth.cpp)" 300 build/tmp/todc
+# n01 (closes s29 note T7): WHEN the sun/moon distant-light handle is replaced. The
+# same simulated sky runs through the old threshold rule and through the cadence in
+# smooth.cpp, and the two are compared on creates/s, the size of one step and the
+# evenness of the spacing - the three numbers that decide whether a player sees a
+# shadow direction jump. The sky sequences are the ones the 2026-11-12 log recorded:
+# a normal morning, the 104.5 degree clock jump, the tour's clock pin, twilight's
+# 300x radiance ramp, and a pinned clock.
+run nat-handle-cc "compile handle_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/handle_check.cpp plugin/src/smooth.cpp -o build/tmp/handlec
+warncheck nat-handle-cc "compile handle_check"
+run nat-handle "tests/handle_check.cpp (n01 handle cadence: old threshold rule vs clock)" 120 build/tmp/handlec
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),

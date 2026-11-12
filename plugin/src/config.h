@@ -248,6 +248,18 @@ struct RhyConfig {
                               // 0.02 night floor can still move
     float sun_rel_per_sec;    // max multiplicative rate for the sun/moon radiance
     float sun_deg_per_sec;    // max angular rate for the sun/moon direction
+    // n01 (s29 note T7): the sun/moon distant-light handle used to be rebuilt when
+    // the body had moved more than [sun]/[moon] step_deg or brightened by 5% - a
+    // threshold, so the step that triggers the rebuild is as big as the threshold
+    // and the interval between rebuilds follows the body's rate. These knobs put a
+    // clock in its place: rebuild every handle_cadence_ms, shortened only as far as
+    // needed that no rebuild carries more than handle_step_deg of direction or
+    // handle_rel_lum of luminance, and never below handle_cadence_min_ms (the
+    // bridge-churn floor). See rhyCadence* in plugin/src/smooth.h.
+    int   handle_cadence_ms;  // fixed rebuild period for a distant-light handle
+    int   handle_cadence_min_ms;  // ... and the floor it may be shortened to
+    float handle_step_deg;    // direction budget per rebuild; 0 = the body's step_deg
+    float handle_rel_lum;     // luminance budget per rebuild (0.05 = 5%)
     int   phase_fade_ms;      // signal colour cross-fade; 0 = instant, as a real
                               // signal is. The light's appearance and disappearance
                               // always use fade_in_ms/fade_out_ms.

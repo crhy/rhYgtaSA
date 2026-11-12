@@ -950,3 +950,93 @@ the obvious knob, not a measured fact. `corona_radius` is therefore an A/B dial
 covers the rest. The safety net is `rhyHeadsHealthy()`: if the hook is live but
 has recorded no head within 20 s, the list lights carry the layer instead, so a
 shrunken flare can never be left alone in the dark.
+
+## The renderer's own time knobs, measured: which rtx.conf keys decide *when* a change lands (2026-11-12, n01)
+
+s28 named two renderer-side amplifiers and deliberately did not touch them
+(`rtx.restirGI.historyDiscardStrength = 10`, `rtx.localtonemap.shadows = 2.5`). n01 did the
+measurement, offline and read-only, and the first result is that s28 aimed at a block this
+install does not run.
+
+How the columns below were produced: **current** is `config/rtx.conf` (the profile
+`tools/rtxprofile.sh current` installs) and `config/rtx.conf.perf`; **runtime default** is
+`<game>/rtx.conf.orig`, the runtime's own first-launch file (59 keys; `deploy.sh` copies
+whatever `rtx.conf` holds before it ever installs one of ours, and this copy carries none of
+the keys we added later - no `hairCardTextures`, no opacity-micromap caps, no water line - so
+it is the runtime's own writing). Where a key is absent there, the compiled default is **not**
+recoverable offline: this build's `strings` dump states a default for only a handful of
+options, and `remix-dxvk.log`'s "Effective RtxOption values" block prints only the keys the
+config layers actually set. **known** is the verdict of `tools/rtxkeycheck.py` against
+`config/rtx-runtime-keys.txt` (the option-name vocabulary generated from `strings` on
+`.trex/d3d9.dll` by `tools/rtx-runtime-keys.py`): `dotted` (the whole path is in the binary),
+`leaf+category` (the leaf name and the parent path both are), `leaf` (only the bare name), or
+unknown - and an unknown key is silently ignored, which is the failure mode this audit exists
+to catch.
+
+Which temporal path is live, from `<game>/rtx-remix/logs/remix-dxvk.log` of the 2026-11-12 run:
+
+```
+  87: [RTX Neural Radiance Cache] Selected Ultra preset mode.
+3720: RenderPass Integrate Indirect Raytrace Mode: Trace Ray (RGS)
+3721: [RTX] Integrate Indirect Mode: Spatially Hashed Radiance Cache - activated
+ 327: NVIDIA DLSS-NR support query failed (0xbad00010)      -> no Ray Reconstruction
+ 328: Reflex low-latency device: Not implemented
+```
+
+So the integrator is **SHaRC**, not ReSTIR GI, and the whole `rtx.restirGI.*` block the
+shipped file carries - including `historyDiscardStrength`, the key s28 called the amplifier -
+belongs to an integrator that is not running. `config/rtx.conf.perf` already said so in its
+own footer ("the `rtx.restirGI.*` block is carried unchanged but is inert while the indirect
+mode is SHaRC"); s28's notes did not carry that forward.
+
+### temporal - keys that change *when* a lighting change lands
+
+| key | ship | runtime default | known | live? | what the runtime's own tooltip says |
+|---|---|---|---|---|---|
+| `rtx.restirGI.historyDiscardStrength` | 10 | 10 | leaf+category | **inert** | "The sensitivity of discarding history. Higher values discard more history." 10 is the maximum: on a lighting change the whole temporal history is thrown away, so the change lands at full strength the next frame |
+| `rtx.restirGI.useAdaptiveTemporalHistory` | False | False | leaf+category | inert | "Adjust temporal history length based on frame rate." |
+| `rtx.restirGI.validateVisibilityChange` | True | True | leaf+category | inert | "Remove samples when visibility has changed." |
+| `rtx.restirGI.boilingFilterMinThreshold` / `...RemoveReservoirThreshold` | 15 / 30 | 15 / 30 | leaf+category | inert | direct/indirect sample removal thresholds, not time |
+| `rtx.di.permutationSamplingNthFrame` | 1 | 1 | leaf+category | **live** | "Apply permutation sampling when (frameIdx % this == 0), 0 means off." 1 = every frame: the direct-light sample set is re-permuted every frame |
+| `rtx.di.enableTemporalReuse` / `enableTemporalBiasCorrection` | **absent** | not written | leaf+category | **live** | "Whether to apply temporal reuse." / "Corrects bias caused by temporal reprojection." The RTXDI direct-light resampler is the layer every light this plugin publishes goes through, and neither key was ever written |
+| `rtx.demodulate.enableDirectLightBoilingFilter` | False | False | leaf+category | **live** | "Boiling filter removing direct light sample when its luminance is too high." Left False on purpose: every light the plugin publishes is direct light, and tour shots 02-04 are sodium lamps at night - the filter would remove the brightest samples of exactly the good shots |
+| `rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate` | **absent** | not written (the preset layer sets it) | leaf+category | **live** (SHaRC) | "Maximum number of frames accumulated in each SHaRC entry. Higher values reduce noise but respond more slowly to lighting changes." |
+| `rtx.spatiallyHashedRadianceCache.combineUpdateAndQuery` | absent | Medium = on | leaf+category | live | "queries then read the cache resolved in the previous frame, which delays lighting changes by a frame. Medium enables this option. High and Ultra disable it." |
+| `rtx.volumetrics.maxAccumulationFrames` | absent | not written | leaf+category | live (`enableVolumetricLighting = True`) | "The number of frames to accumulate volume lighting samples over, maximum of 254. Large values result in greater image stability at the cost of potentially more temporal lag." |
+| `rtx.temporalAA.newFrameWeight` | absent | not written | **dotted** | live | "The maximum amount of the current frame to use as part of the temporal anti-aliasing process ... closer to 0 will result in better image stability ... closer to 1 will result in more responsive results (less ghosting)." |
+| `rtx.autoExposure.enabled` / `evMinValue` / `autoExposureSpeed` | False / 0 / **absent** | False / 0 / not written | leaf+category | live (disabled) | exposure never adapts, so nothing in the renderer smooths a radiance step for the player's eye; `autoExposureSpeed` ("Average exposure changing speed (in units per second) when the image changes") is nowhere in any profile we ship |
+| `rtx.graphicsPreset` | 1 | 1 | leaf+category | **live, and it sits above rtx.conf** | "Overall rendering preset, higher presets result in higher image quality". The preset layer sets the SHaRC/NRC/denoiser temporal keys; a key we write is overridden if the preset owns it, which is why the Remix UI has to be on Custom for some of these to bite |
+| `rtx.useDenoiser` | absent (perf: True) | not written | leaf | live | "Denoising is important for filtering the raw noisy ray traced signal ... at the cost of some potential spatial/temporal artifacts (ghosting, boiling, blurring)" |
+| `rtx.neeCache.enableModeAfterFirstBounce` | 2 | 2 | leaf+category | live | "NEE Cache enable mode on a second and higher bounces." A cache of direct-light evaluation for indirect rays: how fast a change reaches indirect light. Not changed |
+| `rtx.usePostFilter` / `postFilterThreshold` | False / 10 | False / 10 | leaf / leaf | live | "Clamps a pixel when its luminance exceeds x times of the average." Noise control, not a time control |
+
+Names that **look** like keys and are not: `rtx.restirGI.temporalHistoryLength` and
+`rtx.autoExposure.evRange`. Both appear in the binary as shader/permutation argument names
+(`ToneMappingAutoExposureArgs_natural`, the `reSTIRGI*` permutation list) and
+`tools/rtxkeycheck.py` reports them unknown - so writing them into `rtx.conf` is how a
+"tuned" setting does nothing for a week. `rtx.accumulation.maxAccumulationFrames` also passes
+the audit, but the tooltip sits in the volumetrics/froxel block, so `rtx.volumetrics.` is the
+spelling to use.
+
+### look - measured, written down, not shipped changed
+
+`rtx.localtonemap.shadows = 2.5` is a local-contrast boost, so it *amplifies* a step in
+direct light; lowering it would visibly flatten the shadow edges of the shots rhY called good
+(02-04 sodium lamps, mean 75.4 / 37.0 / 26.3 with 6.5 / 7.9 / 6.6 % black, and 09/10 sunset at
+107.6 / 78.2 with 0 % black - `tools/tour-report.py` over that run, `build/tmp/n01/`). It
+stays 2.5 in every profile we ship, `nopops` included. Same for `skyBrightness`,
+`emissiveIntensity`, `tonemap.finalizeWithACES`, `translucentMaterial.normalIntensity`,
+`sceneScale`, `zUp`, `ignoreGameDirectionalLights` and the eight texture-hash lists:
+`scripts/rtxprofile-selftest.sh` hashes the lists and asserts the look keys come through
+unchanged by the temporal profile.
+
+### what the A/B file changes
+
+`config/rtx.conf.nopops` (from `tools/rtx-nopops.py`, `tools/rtxprofile.sh nopops`) changes
+exactly nine keys: the two RTXDI temporal-reuse pair, the SHaRC accumulation window (16), the
+volumetric accumulation window (16), the TAA new-frame weight (0.35), the exposure ramp speed
+(0.5, inert while exposure is off), and the three inert ReSTIR GI history keys aligned
+(10 -> 2, False -> True, True -> False). `tests/test_rtx_nopops.py` pins that set, and
+`scripts/rtxprofile-selftest.sh` proves the byte-for-byte round-trip. The A/B is
+`scripts/lighting-test.sh`, not the tour: the tour takes every shot at a standstill, so it can
+see the look and cannot see a transition.

@@ -215,7 +215,35 @@ sky: sun elev=+41.3 az=187.9 airMass=1.53 T=0.712/0.584/0.431 daylight=1.00 | mo
 | `doy=` / `month=` / `day=` | the season in use, and the raw calendar bytes. `month=0 day=0` with `doy=186` is the **expected** state: the game's date bytes are a counter, not a date, so `[sun] day_of_year` is used. `cal: accepted=` should stay 0 |
 | `cal: rejected=` | how often the calendar bytes were refused. It climbing while `accepted=` stays 0 is the alternating-calendar bug being held down - that alternation was the 20-40 degree sun swing in the 2026-11-12 log |
 | `cloud=` | the smoothed overcast (0..1). 0.00 is clear sky and the shipped default; it only moves if you edit `[sky] cloud`, and it ramps rather than stepping |
-| `rebuilds=` | how many times each body's handle was re-created (the `[sun] step_deg` threshold). A few per minute is normal |
+| `rebuilds=` | how many times each body's handle was re-created (sun/moon). Since n01 this is a **clock**, not a threshold: at the shipped `[fade] handle_cadence_ms=2000` expect about one per body every two seconds while the sun is up, and 0 with `[sun] force_hour` pinned |
+
+### The handle cadence (n01): proof that the shadow direction moves in small steps
+
+A Remix distant light's direction is baked at `CreateLight`, so a moving sun is a sequence of
+handle rebuilds and each rebuild is a hard step in shadow direction. The startup line now
+states the schedule:
+
+```
+config: fade in=700ms out=900ms step=0.25 creates/frame=24 player_grace=8000ms sky=3.00x+0.25 per s sun=3.00x 12.0 deg/s phase_fade=250ms handle=2000ms(min 150ms, <0.50 deg, <5.0% lum)
+```
+
+and the `published:` part of the `sky:` line carries what the schedule actually did:
+
+```
+published: sun 4.28,3.51,2.59 sky=1.000 emissive=1.000 rebuilds=6/6 cad=2000/2000ms step<=0.25/0.25 skip=0/0
+```
+
+| field | what "correct" looks like |
+|---|---|
+| `cad=` | the period in effect for each body, in ms. `2000/2000` is the fixed cadence at rest. It shortens when the published direction or radiance is actually moving (a clock jump drives it to the 150 ms floor) and must come back within a second or two of the motion stopping. If it sits at 150 while nothing is moving, the rate estimator is being fed noise - that was the `acos()` bug and `rhyAngleDeg()` is the fix |
+| `step<=` | the largest direction step one rebuild has actually carried this session, in degrees. At rest it must stay near 0.25 (0.125 deg/s x 2 s) and never exceed `[fade] handle_step_deg` (0.5) unless the body is slewing; the old threshold rule sat at 1.00-1.20 permanently, which is twice the sun's 0.53 deg disc |
+| `skip=` | periods where the live handle already carried the published values, so no bridge call was made. With `[sun] force_hour` pinned this climbs and `rebuilds=` stays 0 - that is the proof the cadence is a clock and not a queue |
+
+To check it by eye: at noon, with a long shadow falling across a wall, watch the shadow edge
+for a minute. Before n01 it stayed still and then jumped about a degree, every eight seconds.
+It should now creep. Then pin the clock (`[sun] force_hour=20`, save): the shadow should walk
+to its new place over several seconds, and `cad=` should drop to 150 while it walks and back
+to 2000 when it arrives.
 
 To check it by eye: stand still and watch the sun's `elev=` across consecutive
 `sky:` lines. It should move by ~0.2 degrees per game minute in the same direction
@@ -254,6 +282,39 @@ without restarting the game.
 | 8 | Sunset, facing east | the solar model + Beer-Lambert | horizon glow strongly red/orange, zenith still blue. The red comes from path length, it is not tuned |
 | 9 | Any street at ~05:30 with lamps still on | the twilight switching | lamps on before the sun clears the horizon, off shortly after |
 
+### The renderer's temporal A/B (n01): is the step ours or the renderer's?
+
+If the plugin's own numbers above look right and the world still changes at once, the step is
+being made by the renderer's temporal filters, not by us. `config/rtx.conf.nopops` is
+`config/rtx.conf` with nine temporal keys changed and **nothing** else - no look key, no
+texture list (`tests/test_rtx_nopops.py` and `scripts/rtxprofile-selftest.sh` enforce that).
+
+```bash
+tools/rtxprofile.sh nopops  "/path/to/GTASA-RTX"      # the temporal A/B
+tools/rtxprofile.sh current "/path/to/GTASA-RTX"      # the shipped profile
+tools/rtxprofile.sh status  "/path/to/GTASA-RTX"      # which is live, and what it says
+tools/rtxprofile.sh restore "/path/to/GTASA-RTX"      # the exact bytes that were there before
+```
+
+Run the **same** drive twice, `scripts/lighting-test.sh`, one profile each way, and compare at
+the moments the transition happens: dusk with `[clock]` untouched, driving under the lamps.
+The tour cannot answer this question - it takes every shot standing still, so it measures the
+look and never a transition.
+
+Two things to keep in mind while reading the A/B:
+
+* `rtx.graphicsPreset = 1` is not Custom, and the preset layer sits **above** `rtx.conf` for
+  the keys it sets. If a key does not read as changed in the Remix UI, the preset owns it.
+* The live indirect integrator on this install is SHaRC (`remix-dxvk.log`: "Integrate Indirect
+  Mode: Spatially Hashed Radiance Cache - activated"), so the whole `rtx.restirGI.*` block -
+  including `historyDiscardStrength`, the key s28 named - is inert here. It is aligned in the
+  A/B file anyway, but do not read a change in behaviour as coming from it.
+
+If a change now lags (a lamp taking a quarter second to reach full brightness), lower
+`rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate` and
+`rtx.volumetrics.maxAccumulationFrames` first, and `rtx.temporalAA.newFrameWeight` last: the
+last one is the whole-image blend and is also the one that can ghost when the camera moves.
+
 ## Step 4 - if something is wrong, these are the knobs
 
 All in `scripts/rhyremix.ini`. Edit, save, and the plugin re-reads it within a
@@ -282,6 +343,8 @@ few seconds - no restart.
 | The sun jumps, or the sky changes season by itself | look at `doy=` and `cal:` on the `sky:` line. If `doy=` ever differs from `[sun] day_of_year`, the game's date bytes passed the stability test - raise `[clock] calendar_stable_reads` (30 = 30 s of a still date) or set `calendar_stable_reads=0` to ignore them entirely |
 | Time of day still steps instead of sliding | `tod=` must show decimals and change every line. If it does not, `[clock] ms_per_game_minute` is far from the real tick length - `ms/min=` in the log is what this machine actually measures |
 | The tour makes the sky jump backwards | `jitter=` should absorb it; if `reanchor=` climbs every sample instead, `[clock] jitter_tolerance_min` (8) is smaller than the tour's pin - raise it, or `[clock] reanchor_ms` (2000) so a real jump takes longer to be believed |
+| The sun's shadow edge still jumps instead of creeping | `cad=` and `step<=` on the `sky:` line decide whether this is ours. `step<=` near 1.0 means the cadence is not running (check the `config: fade ... handle=` startup line); `step<=` near 0.25 and the jump is the renderer's - try `tools/rtxprofile.sh nopops` |
+| Lighting changes now arrive late (a lamp takes a quarter second to reach full brightness) | `[fade] handle_cadence_ms=1000` and `handle_cadence_min_ms=100` on our side; on the renderer side `tools/rtxprofile.sh current` (the A/B's accumulation windows are what add the lag) |
 | Head light sits just inside the lens instead of on it | `[trafficlights] head_normal=1 head_forward=0.15` - the 2DFX entry has no direction, so this uses the model's own "at" axis and may point the wrong way; it is a knob to A/B, not a fix |
 
 ## Step 5 - send back

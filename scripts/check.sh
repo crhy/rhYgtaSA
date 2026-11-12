@@ -176,5 +176,22 @@ if [ "$P" = p09 ] || [[ "$P" > p09 ]]; then
   grep -q "\[fade\]" plugin/src/config.cpp && ok "the fade knobs live in rhyremix.ini" || bad "no [fade] section in the ini defaults"
   grep -qi "fade" README.md && ok "README documents the fades" || bad "README does not mention them"
   grep -qi "instantly" docs/FINDINGS.md && ok "findings record the instant-change diagnosis" || bad "findings do not record it"
+  # n01 (closes s29 note T7): the sun/moon handle is replaced on a clock, not when a
+  # threshold is crossed. Shape assertions here; tests/handle_check.cpp measures the
+  # behaviour (creates/s, one step's size, the evenness of the spacing) against the
+  # old rule on the same sky.
+  grep -q "rhyCadenceDue" plugin/src/sun.cpp && grep -q "rhyCadenceIntervalMs" plugin/src/smooth.cpp && ok "the distant-light handle follows a cadence" || bad "the sun/moon handle still has no schedule"
+  ! grep -q "movedDeg > stepDeg" plugin/src/sun.cpp && ok "the threshold rebuild trigger (s29 T7) is gone" || bad "the handle is still rebuilt when a threshold is crossed"
+  grep -q "handle_cadence_ms" plugin/src/config.cpp && ok "the cadence is an ini knob with clamped bounds" || bad "the cadence is not tunable"
+  [ -f tests/handle_check.cpp ] && ok "the cadence has a native test" || bad "tests/handle_check.cpp missing"
+  grep -q "nat-handle" scripts/check-all.sh && ok "the cadence test runs in the all-gates sweep" || bad "the cadence test is not wired into check-all.sh"
+  # n01 step 4: the renderer half. A second rtx.conf profile that changes ONLY the
+  # temporal keys, switchable with the same backup/restore machinery as perf, and
+  # audited against the runtime's own option vocabulary before it is ever offered.
+  [ -f config/rtx.conf.nopops ] && ok "config/rtx.conf.nopops exists" || bad "config/rtx.conf.nopops missing"
+  grep -q "nopops" tools/rtxprofile.sh && grep -q "nopops" scripts/rtxprofile-selftest.sh && ok "the nopops profile is switchable and self-tested" || bad "the nopops profile is not wired into tools/rtxprofile.sh"
+  # n01 step 5: the ini's documented knobs and the code's knobs cannot drift apart.
+  grep -q "handle_cadence_ms" config/rhyremix-production.ini && ok "the shipped ini documents the cadence" || bad "the shipped ini does not document the cadence"
+  [ -f tests/test_ini_keys.py ] && ok "ini keys vs config.cpp defaults has a python test" || bad "tests/test_ini_keys.py missing"
 fi
 done_

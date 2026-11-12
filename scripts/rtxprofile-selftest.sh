@@ -13,6 +13,9 @@
 #   4  the switcher refuses a directory with no rtx.conf, and refuses anything inside the repo.
 #   5  the perf profile really changes the keys it claims to, and keeps every texture-hash
 #      list the asset pack needs.
+#   6  n01: the nopops A/B profile installs byte-for-byte and restores byte-for-byte, changes
+#      exactly the nine temporal keys it documents, and leaves every look key and texture list
+#      of config/rtx.conf alone. Its provenance (tools/rtx-nopops.py) is re-checked too.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
@@ -31,6 +34,7 @@ cp config/rtx.conf "$G/rtx.conf"
 sed 's/rtx.emissiveIntensity = .*/rtx.emissiveIntensity = 10/' config/rtx.conf > "$G/rtx.conf.orig"
 ORIG=$(sha "$G/rtx.conf")
 PERF=$(sha config/rtx.conf.perf)
+NOP=$(sha config/rtx.conf.nopops)
 TOOL="tools/rtxprofile.sh"
 
 # --- 1 key audit --------------------------------------------------------------------------
@@ -95,6 +99,73 @@ done
 for k in sceneScale zUp skyBrightness emissiveIntensity localtonemap.shadows translucentMaterial.normalIntensity; do
   a=$(get "$G/rtx.conf" "rtx.$k"); b=$(get config/rtx.conf "rtx.$k")
   [ "$a" = "$b" ] && ok "look-critical rtx.$k unchanged ($a)" || bad "look-critical rtx.$k changed ($b -> $a)"
+done
+
+# --- 6 the n01 temporal A/B profile -------------------------------------------------------
+if python3 tools/rtx-nopops.py --check > "$T/nopops-gen.log" 2>&1; then
+  ok "config/rtx.conf.nopops is what tools/rtx-nopops.py generates from config/rtx.conf"
+else
+  bad "config/rtx.conf.nopops drifted from tools/rtx-nopops.py" "see $T/nopops-gen.log"
+fi
+
+$TOOL current "$G" > /dev/null 2>&1        # so prev holds the shipped bytes again
+$TOOL nopops "$G" > "$T/nopops.log" 2>&1 || bad "nopops switch exited nonzero"
+[ "$(sha "$G/rtx.conf")" = "$NOP" ] && ok "nopops installed the A/B profile byte for byte" || bad "nopops did not install the A/B profile"
+$TOOL status "$G" > "$T/status-nopops.log" 2>&1
+if grep -q "^profile  : nopops" "$T/status-nopops.log"; then ok "status identifies the live file as 'nopops'"; else bad "status did not identify 'nopops'"; fi
+$TOOL restore "$G" > /dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "nopops -> restore is byte-identical" || bad "nopops -> restore changed the file"
+$TOOL current "$G" > /dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "nopops -> current round-trip is byte-identical" || bad "nopops -> current changed the file"
+
+# exactly the nine documented keys differ, and they differ in the documented direction
+diffcount=$(python3 - <<'PY'
+import re
+KEY = re.compile(r"^\s*(rtx\.[A-Za-z0-9_.]+)\s*=\s*(.*)$")
+def load(p):
+    d = {}
+    for line in open(p, encoding="utf-8", errors="replace"):
+        m = KEY.match(line)
+        if m:
+            d[m.group(1)] = m.group(2).strip()
+    return d
+a, b = load("config/rtx.conf"), load("config/rtx.conf.nopops")
+diff = {k for k in set(a) | set(b) if a.get(k) != b.get(k)}
+want = {
+    "rtx.di.enableTemporalReuse", "rtx.di.enableTemporalBiasCorrection",
+    "rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate",
+    "rtx.volumetrics.maxAccumulationFrames", "rtx.temporalAA.newFrameWeight",
+    "rtx.autoExposure.autoExposureSpeed", "rtx.restirGI.historyDiscardStrength",
+    "rtx.restirGI.useAdaptiveTemporalHistory", "rtx.restirGI.validateVisibilityChange",
+}
+print("%d %s" % (len(diff), "OK" if diff == want else "WRONG:" + ",".join(sorted(diff - want | want - diff))))
+PY
+)
+[ "$diffcount" = "9 OK" ] && ok "nopops changes exactly the 9 documented temporal keys" || bad "nopops key diff is wrong ($diffcount)"
+for kv in "rtx.restirGI.historyDiscardStrength 2" "rtx.restirGI.useAdaptiveTemporalHistory True" \
+          "rtx.restirGI.validateVisibilityChange False" "rtx.di.enableTemporalReuse True" \
+          "rtx.di.enableTemporalBiasCorrection True" \
+          "rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate 16" \
+          "rtx.volumetrics.maxAccumulationFrames 16" "rtx.temporalAA.newFrameWeight 0.35" \
+          "rtx.autoExposure.autoExposureSpeed 0.5"; do
+  set -- $kv
+  $TOOL nopops "$G" > /dev/null 2>&1
+  v=$(get "$G/rtx.conf" "$1")
+  [ "$v" = "$2" ] && ok "nopops sets $1 = $2" || bad "$1 is '$v', expected $2"
+done
+$TOOL current "$G" > /dev/null 2>&1
+# the look keys and the texture lists must be untouched by a temporal profile
+for k in sceneScale zUp skyBrightness emissiveIntensity localtonemap.shadows \
+         translucentMaterial.normalIntensity graphicsPreset pathMaxBounces \
+         demodulate.enableDirectLightBoilingFilter di.permutationSamplingNthFrame \
+         usePostFilter postFilterThreshold autoExposure.enabled; do
+  a=$(get config/rtx.conf.nopops "rtx.$k"); b=$(get config/rtx.conf "rtx.$k")
+  [ "$a" = "$b" ] && ok "nopops leaves the look/sampling key rtx.$k alone ($a)" || bad "nopops changed rtx.$k ($b -> $a)"
+done
+for k in decalTextures ignoreTextures uiTextures skyBoxTextures particleTextures animatedWaterTextures lightmapTextures hairCardTextures; do
+  a=$(grep -m1 "rtx.$k = " config/rtx.conf.nopops | tr -d '\r' | sha256sum)
+  c=$(grep -m1 "rtx.$k = " config/rtx.conf | tr -d '\r' | sha256sum)
+  [ "$a" = "$c" ] && ok "nopops carries the texture list rtx.$k byte for byte" || bad "nopops altered the texture list rtx.$k"
 done
 
 echo

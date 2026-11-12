@@ -183,6 +183,10 @@ static const char* const kIniDefaults =
     "sky_abs_per_sec=0.25\r\n"
     "sun_rel_per_sec=3.0\r\n"
     "sun_deg_per_sec=12.0\r\n"
+    "handle_cadence_ms=2000\r\n"
+    "handle_cadence_min_ms=150\r\n"
+    "handle_step_deg=0.5\r\n"
+    "handle_rel_lum=0.05\r\n"
     "phase_fade_ms=250\r\n";
 
 static std::string iniStringSec(const char* section, const char* key,
@@ -888,7 +892,7 @@ static void loadConfig() {
     if (c.fade_step > 0.5f) {
         c.fade_step = 0.5f;   // above this one step is a visible jump
     }
-    c.creates_per_frame = iniIntSec("fade", "creates_per_frame", 40);
+    c.creates_per_frame = iniIntSec("fade", "creates_per_frame", 24);
     if (c.creates_per_frame < 0) {
         c.creates_per_frame = 0;  // 0 = no per-frame limit (not recommended)
     }
@@ -933,6 +937,39 @@ static void loadConfig() {
     }
     if (c.phase_fade_ms > 5000) {
         c.phase_fade_ms = 5000;
+    }
+    // n01 (s29 T7): the distant-light handle cadence. handle_cadence_ms is the
+    // fixed period; the limiter-driven shortening can go no lower than
+    // handle_cadence_min_ms, which is the bridge-churn floor (two bodies at the
+    // floor is 13.3 creates/s, against the 2.43/s of lamp traffic the 2026-11-12
+    // log measured - and the per-frame create budget bounds it again on top).
+    c.handle_cadence_ms = iniIntSec("fade", "handle_cadence_ms", 2000);
+    if (c.handle_cadence_ms < 100) {
+        c.handle_cadence_ms = 100;
+    }
+    if (c.handle_cadence_ms > 30000) {
+        c.handle_cadence_ms = 30000;
+    }
+    c.handle_cadence_min_ms = iniIntSec("fade", "handle_cadence_min_ms", 150);
+    if (c.handle_cadence_min_ms < 50) {
+        c.handle_cadence_min_ms = 50;
+    }
+    if (c.handle_cadence_min_ms > c.handle_cadence_ms) {
+        c.handle_cadence_min_ms = c.handle_cadence_ms;  // a floor above the period is a typo
+    }
+    c.handle_step_deg = iniFloatSec("fade", "handle_step_deg", 0.5f);
+    if (c.handle_step_deg < 0.0f) {
+        c.handle_step_deg = 0.0f;  // 0 = use the body's own [sun]/[moon] step_deg
+    }
+    if (c.handle_step_deg > 30.0f) {
+        c.handle_step_deg = 30.0f;
+    }
+    c.handle_rel_lum = iniFloatSec("fade", "handle_rel_lum", 0.05f);
+    if (!(c.handle_rel_lum >= 0.005f)) {
+        c.handle_rel_lum = 0.005f;
+    }
+    if (c.handle_rel_lum > 1.0f) {
+        c.handle_rel_lum = 1.0f;
     }
 
     std::string list = iniString("list", "rhyremix_lights.txt");
@@ -1057,10 +1094,12 @@ static void loadConfig() {
     // second to come on?" and "why did it still pop?" are both answered here.
     rhyLog("config: fade in=%dms out=%dms step=%.2f creates/frame=%d "
            "player_grace=%dms sky=%.2fx+%.2f per s sun=%.2fx %.1f deg/s "
-           "phase_fade=%dms",
+           "phase_fade=%dms handle=%dms(min %dms, <%.2f deg, <%.1f%% lum)",
            c.fade_in_ms, c.fade_out_ms, c.fade_step, c.creates_per_frame,
            c.player_grace_ms, c.sky_rel_per_sec, c.sky_abs_per_sec,
-           c.sun_rel_per_sec, c.sun_deg_per_sec, c.phase_fade_ms);
+           c.sun_rel_per_sec, c.sun_deg_per_sec, c.phase_fade_ms,
+           c.handle_cadence_ms, c.handle_cadence_min_ms, c.handle_step_deg,
+           100.0f * c.handle_rel_lum);
 }
 
 // Timestamp of the ini the loaded values came from.  A FILETIME is two 32-bit

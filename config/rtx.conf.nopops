@@ -1,0 +1,184 @@
+# rhyremix "no pops" A/B profile - n01. Install with:
+#   tools/rtxprofile.sh nopops [GAME_DIR]        undo: tools/rtxprofile.sh restore [GAME_DIR]
+#
+# This is config/rtx.conf with ONLY the temporal keys changed: the keys that decide WHEN a
+# lighting change lands, not what the light looks like. It exists to be A/B'd against
+# `current` with scripts/lighting-test.sh (the drive-through of the 2026-11-12 test session),
+# because the tour takes every shot at a standstill and therefore cannot see a transition.
+#
+# Evidence for everything below: .strata/notes-n01-lighting-no-pops-renderer.md step 2, which
+# lists the keys of config/rtx.conf with their values in <game>/rtx.conf.orig (the runtime's own
+# first-launch file), the verdict of tools/rtxkeycheck.py against config/rtx-runtime-keys.txt,
+# and the tooltip each key carries in the runtime's strings.
+#
+# Which temporal path is live here, from <game>/rtx-remix/logs/remix-dxvk.log:
+#   "Integrate Indirect Mode: Spatially Hashed Radiance Cache - activated"  (SHaRC)
+#   "NVIDIA DLSS-NR support query failed (0xbad00010)"                      (no Ray Reconstruction)
+#   "[RTX Neural Radiance Cache] Selected Ultra preset mode."               (trained, not queried)
+# So the live time path is SHaRC + the RTXDI (rtx.di.*) direct-light resampler + the volumetric
+# accumulator + the final temporal AA. The rtx.restirGI.* block the shipped file carries belongs
+# to an integrator this install does not run.
+#
+# CHANGED - nine keys, all of them temporal:
+#   rtx.di.enableTemporalReuse = True              "Whether to apply temporal reuse."
+#   rtx.di.enableTemporalBiasCorrection = True     "Corrects bias caused by temporal reprojection."
+#       Direct light is what this plugin publishes (one distant light per body, the lamps, the
+#       signal heads). Reusing samples across frames is what makes a change converge over frames
+#       instead of arriving at full strength in one.
+#   rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate = 16
+#       "Maximum number of frames accumulated in each SHaRC entry. Higher values reduce noise but
+#        respond more slowly to lighting changes."
+#   rtx.volumetrics.maxAccumulationFrames = 16
+#       "The number of frames to accumulate volume lighting samples over, maximum of 254. Large
+#        values result in greater image stability at the cost of potentially more temporal lag."
+#       (rtx.enableVolumetricLighting = True is in this file, so light shafts are on the table.)
+#   rtx.temporalAA.newFrameWeight = 0.35
+#       "The maximum amount of the current frame to use as part of the temporal anti-aliasing
+#        process ... closer to 0 will result in better image stability ... closer to 1 will
+#        result in more responsive results (less ghosting)." The one whole-image lever here.
+#   rtx.autoExposure.autoExposureSpeed = 0.5
+#       "Average exposure changing speed (in units per second) when the image changes." Inert
+#       while rtx.autoExposure.enabled stays False; set so that if exposure is ever switched on
+#       it ramps instead of snapping.
+#   rtx.restirGI.historyDiscardStrength             10 -> 2
+#   rtx.restirGI.useAdaptiveTemporalHistory     False -> True
+#   rtx.restirGI.validateVisibilityChange         True -> False
+#       "The sensitivity of discarding history. Higher values discard more history." / "Adjust
+#        temporal history length based on frame rate." / "Remove samples when visibility has
+#        changed." These are the amplifiers s28 named plus their sibling: at 10 with adaptive
+#        history off, a lighting change throws the temporal history away and lands at full
+#        strength the next frame. They are INERT while SHaRC is the integration mode, and are
+#        aligned anyway so the A/B covers them and the file is right if the integrator changes.
+#
+# DELIBERATELY NOT CHANGED:
+#   rtx.demodulate.enableDirectLightBoilingFilter stays False. Its tooltip is "Boiling filter
+#       removing direct light sample when its luminance is too high" - every light this plugin
+#       publishes is direct light, and tour shots 02-04 of 2026-11-12 are sodium lamps at night:
+#       the filter would remove the brightest samples of exactly the shots rhY called good.
+#   rtx.di.permutationSamplingNthFrame stays 1: "Apply permutation sampling when
+#       (frameIdx % this == 0), 0 means off" - a per-frame sample-set re-randomisation, a noise
+#       knob, not a lighting-step knob.
+#   rtx.usePostFilter / rtx.postFilterThreshold stay False / 10 (an NRC training-clamp pair).
+#   Every look key is byte-identical to config/rtx.conf: localtonemap.shadows 2.5 (it amplifies a
+#       step in direct light, and lowering it would flatten the shadow edges of shots 02-04 and
+#       09/10 - measured and written down in the notes, not shipped), skyBrightness,
+#       emissiveIntensity, tonemap.finalizeWithACES, translucentMaterial.normalIntensity 0.35,
+#       sceneScale, zUp, ignoreGameDirectionalLights, graphicsPreset, and all eight texture-hash
+#       lists. scripts/rtxprofile-selftest.sh hashes the lists and asserts the look keys and
+#       graphicsPreset come through unchanged.
+#
+# HOW TO READ THE A/B: scripts/lighting-test.sh, driving under the lamps at dusk with
+# [clock] apply=1. Two things the plugin cannot fix from its own side: the shadow-direction jump
+# when a distant-light handle is replaced, and the ambient step when rtx.skyBrightness moves. If
+# a change now lags visibly (a lamp taking a quarter second to reach full brightness), lower
+# maxNumFramesToAccumulate and maxAccumulationFrames first and newFrameWeight last: the last one
+# is the whole-image blend and is also the one that can ghost when the camera moves.
+#
+# Read the runtime's own log after the first launch of any profile:
+#   grep -A80 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log
+# The graphics-preset layer (rtx.graphicsPreset = 1, not Custom) sits ABOVE rtx.conf for the keys
+# it sets: if a key here does not read as changed in the Remix UI, the preset owns it.
+#
+rtx.enableVolumetricLighting = True
+rtx.minReplacementTextureMipMapLevel = 1
+rtx.restirGI.boilingFilterRemoveReservoirThreshold = 30
+rtx.decalTextures = 0x0270E41E9BF89516, 0x11C6FD244CAED049, 0x1A1B9A4E6CAF5E9E, 0x1A2F5F13EC1D6CDD, 0x1B91964934D3E1B1, 0x20D2BD9A8F8CB7F1, 0x26626F3D0B9542FD, 0x2E80B8878F003D7A, 0x35BF4E34E77A0B7C, 0x38FA6E19237E82FE, 0x39E5406DC4D3006D, 0x3F3E25323C1E0220, 0x432E891037A5F4CE, 0x45ABC0B544E897FF, 0x470163CEBDD9080F, 0x4B0B6CE7E032DD29, 0x56190D6EE7379FE5, 0x5B1F839051230514, 0x5F3832E42403337A, 0x62DC87C416A654CD, 0x64DC83584D2F7779, 0x66EFA5FE769C8102, 0x6BD6FA2D62E32EDA, 0x73AC780C8EDE6485, 0x76CF04376B04B8B4, 0x78F9BBFB79156E88, 0x791CFC283E2D00E1, 0x86E7F5D9BDCB6871, 0x960E9DA1FBC8D55C, 0x98F1B88719A0D2C8, 0xA244C9C2D5956E1A, 0xA29AEC4A3D81DFDC, 0xA6D7045F8740A5DF, 0xB97DAA02F39D2524, 0xBBB8BF8C92DEC94F, 0xBE686B6B6B8AE7ED, 0xC1DEE32B1A6EDBE3, 0xC7593BF9215112DD, 0xC8EDDFB620CA8A5F, 0xCA4EAF478D3E998C, 0xD0A66A65C7528968, 0xDB4F6AFB517CAA97, 0xDD0B477219193EA2, 0xE099A3A212027ADE, 0xE857B38281B72432, 0xFC343E2104C444F9, 0xFDFC58D603A94554
+rtx.restirGI.validateVisibilityChange = False
+rtx.enableFogMaxDistanceRemap = False
+rtx.dlfg.enable = False
+rtx.fallbackLightRadius = 3
+rtx.ignoreTextures = 0x04931B9EC8F68722, 0x0748B4991EA9E481, 0x0801DDFEFD4AD85F, 0x12327A08E725DEE0, 0x188BFFED5020950B, 0x4DBD066761A29F5B, 0x63F56BAD1D42704D, 0x650AB0CEFBAFD10F, 0x6D2446E17BAC3050, 0x6F0AB36E2C7DB1A6, 0x72F44E5A77F84F90, 0x8CA564E68A98C4A7, 0x8F34BF39FA23F39D, 0x9D6A9F7B9355F09F, 0xB1B3C04B07B5ACEA, 0xB5C86BEE8E84357E, 0xBC9E2A1A5E437634, 0xBCCFDFAAE0F4E2AF, 0xE2D32425EB3234C0
+rtx.enableFirstBounceLobeProbabilityDithering = False
+rtx.restirGI.boilingFilterMinThreshold = 15
+rtx.fallbackLightType = 1
+rtx.allowFSE = True
+rtx.usePostFilter = False
+rtx.minOpaqueSpecularLobeSamplingProbability = 0.05
+rtx.restirGI.sampleStealingJitter = 3
+rtx.di.stealBoundaryPixelSamplesWhenOutsideOfScreen = False
+rtx.postfx.enableVignette = False
+rtx.opacityMicromap.showAdvancedOptions = True
+
+# s32: carried from the live <game>/rtx.conf - it had these three, this shipped profile did
+# not, so `tools/rtxprofile.sh current` used to drop them. The hair-card cutouts below are
+# exactly what opacity micromaps are for, so every profile we ship should carry them.
+rtx.opacityMicromap.enable = True
+rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate = 1536
+rtx.opacityMicromap.cache.maxBudgetSizeMB = 1024
+rtx.restirGI.virtualSampleMaxDistanceRatio = 0.5
+rtx.uiTextures = 0x02FB7ADBE915018A, 0x1D3D385E969C83FA, 0x3259CE3885F90642, 0x3781F525BBBD9FBD, 0x3FC78C823061BDB0, 0x5825FA46CF812787, 0x5970DA3808FA8128, 0x9D36811F7D6CB321, 0xC412E7D486FF9E5C, 0xEDAA7402F2B0E4BB
+rtx.restirGI.historyDiscardStrength = 2
+rtx.pathMaxBounces = 2
+rtx.enableTransmissionApproximationInIndirectRays = True
+rtx.freeCameraSpeed = 50
+rtx.stochasticAlphaBlendOpacityThreshold = 0.2
+rtx.lightmapTextures = 0xB6E06CE024FE9111
+rtx.localtonemap.shadows = 2.5
+rtx.dlfg.enablePresentMetering = False
+rtx.instanceOverrideInstanceIdx = 2147483647
+rtx.useNewGuiInputMethod = False
+rtx.autoExposure.evMinValue = 0
+rtx.restirGI.useVirtualSample = False
+rtx.restirGI.useAdaptiveTemporalHistory = True
+rtx.emissiveIntensity = 1.0
+rtx.di.enableDenoiserConfidence = False
+rtx.skyBoxTextures = 0x294AFA03D0A0EC8F, 0x56F9D8C7499BC624, 0x79452E6A6F0D6C0E, 0x7A4F053D4D0C4437, 0x9B80DC0B3042D274, 0xA3DB5B6EB9628265, 0xBBC7C2A811DC27AF, 0xD4B43B810BECAFE8, 0xD90E0FB3CC373950, 0xDB44893153AB9DFB, 0xEB05F3829A0BA3B0, 0xEBABE67E3BB17A9D
+rtx.di.permutationSamplingNthFrame = 1
+rtx.ignoreGameDirectionalLights = True
+rtx.restirGI.useSampleStealing = 1
+rtx.particleTextures = 0x05D81D806AE2DE92, 0x166C27331EA67091, 0x2F580E4763FAB662, 0x448152B6FE9F348C, 0x44AF0EF987753198, 0x4EEAC3D05034C372, 0x76BD5D19A139B6BC, 0x7A8BAF2D1E21CC24, 0x9A8E8191471533D5, 0xB51546930E6B5738, 0xB573F6EEBBA1EC5D, 0xBE5F9FBE5DF344A8, 0xC97B2D2D38F5CF97, 0xCE919FA9A67900C4, 0xD4220861A515C770, 0xEA35A9BFBDAE3C3B, 0xEF687DB43CD24DE3
+
+# s32: the hillside vegetation (grass/bush/fern/leaf cards) comes out as soft scribbled lines.
+# These are the alpha-cutout card textures of the game's procedural-vegetation objects: every
+# texture in the dictionaries those objects reference, kept only where the texture really has
+# cutout content (>=5 % fully transparent or >=5 % mid-alpha texels; the opaque bark/dirt in the
+# same dictionaries is left alone). Regenerate with:
+#   python3 tools/vegetation_hashes.py models/gta3.img --emit rtx.hairCardTextures
+# (the dictionary allow-list is the tool's default; --verbose prints the per-texture alpha table).
+# Measured on the mip-0 alpha: gta_proc_rushes gras03Si 76.5 % alpha 0 / 20.8 % mid / 2.7 %
+# opaque; gta_proc_grassland oak2b 89.8 / 10.2 / 0; gta_proc_bush newtreeleaves128 30.2 / 20.6 /
+# 49.2. The cards are painted with soft gradients and not one of them is in any rtx.conf category
+# list today, so the runtime blends them instead of alpha-testing them - which is what the
+# hair-card tooltip is for ("Textures in this category will preserve fine texture detail, render
+# as cutouts instead of alpha blends, and disable backface culling"), and it is also what makes
+# the opacity micromaps apply to them ("a ground densely covered with grass blades ... multiple
+# trees with a lot of foliage").
+# If the vegetation looks unchanged in game, this line may be too long for the parser: retry with
+# the procobj-only subset (45 hashes, 922 chars) - .strata/notes-s32-water-vegetation.md.
+rtx.hairCardTextures = 0x0504F3815DC61AA1, 0x08E10D793AD4E2AA, 0x0B1832275CFCB7C9, 0x0D9C21ADF10ADDE7, 0x0E03AA6D740C7A91, 0x0ECD773BC6EABD04, 0x107EEC5B4E018765, 0x1606014E1D0CA857, 0x1860952EB12C1012, 0x187275A5E2C6C9D1, 0x192EDED43163A36B, 0x19A9E6323C3D65D6, 0x1ABD08BDE3184A6A, 0x1D17FC39CBBAFBA0, 0x1D4FCD7A1998F57C, 0x1E41E0E8E5A5F9A4, 0x2248220BFCFA63C1, 0x22614A2DEDEBA2A5, 0x287CE07C692737AD, 0x29686669C64AA3FC, 0x29D8D740AD006BCF, 0x2C08084131222891, 0x2C9C995996103E27, 0x2E1B3B8C149F4E99, 0x2FDF80B499595FB4, 0x3151EA6E45845C17, 0x321DBA0CE6203EB7, 0x3413BBC2B13512CD, 0x38DB281EB8824EF5, 0x3B707642F71E687A, 0x3D719CD78ECABA71, 0x3E2544BE257E9554, 0x3F2C07157A990E6A, 0x423FE28B06E6650F, 0x469CCDAFB47946D7, 0x47F55D5FAE08C379, 0x4963A56F7F16FC89, 0x4B719C27ED8C8836, 0x4BD59785193B3FEA, 0x4F460C663667E09F, 0x4FA612073739FEFF, 0x510C705713853845, 0x56DDB2B8AD2A2DDA, 0x570BD70B9046B029, 0x58927C54CAADD295, 0x5A56C1B9FEEDBAB9, 0x5FE4D31FBE4EEAC6, 0x63145CA4E3F292C8, 0x635F3F989E80F1C7, 0x6497C0EF21A78B78, 0x65FBBEF39CEFAC90, 0x6A42FEBBCB8F029E, 0x6DBCFD70FE455DC5, 0x7595A7450C46CAEB, 0x76266E5CD4DC9500, 0x76D8A0DB60C19639, 0x76F57DDFF86D0779, 0x77081216EC352583, 0x7DC36B000E4FED76, 0x7FAE254C2096AD57, 0x805989154B38E599, 0x80CC572629B0188E, 0x86524E16BDF6E88C, 0x865CD43443A18E6A, 0x898447444F91E3B5, 0x89C0F60CBAABBDAD, 0x8AFFAE2946E92ABE, 0x922928507FECE299, 0x947A4D782DB1FCCD, 0x990161BE04651B62, 0x9C8ACB804A7C77FC, 0x9CC908221052AB72, 0x9D57CFBF4DC5C6C8, 0x9E124DD250F748E7, 0x9EE2BA6525CC97C5, 0x9EE9CA1E2022ECF9, 0x9F83826776AAC0DF, 0xA1075B471E2068D3, 0xA5054FBA0D8C1527, 0xA697D6AAA35DF2FF, 0xA7B9605620133102, 0xA99DAA70B90EE5BD, 0xAA6A767CD75FB268, 0xAB9BD5DC7B72F88A, 0xAC51BF60BF3865CD, 0xAE2E8A7685B242D8, 0xB3EC1CF75134B94C, 0xB48687BBCB9F7448, 0xB50FA269D9BCE0D7, 0xB530EC1CADC74E3D, 0xB53B57E78B7D329A, 0xB5D1BC076C8FE0C7, 0xB6093296B6A1B04B, 0xBAD068D6DD5B10B3, 0xBF04D252D688E8C8, 0xC1278B21D7B39CF1, 0xC3E69221BE9DF2DD, 0xC3F81A23C145E731, 0xC5CD0D4F434AEA31, 0xC6ECDA6547C665F9, 0xC8835200DF303C5C, 0xC8EEFC3B47219C97, 0xC99DBC4B82253C50, 0xCE043A54EBBA15F9, 0xD6D0726F33098B7B, 0xD79327181A4A8DE0, 0xD8FDE69FE1FA3032, 0xD9A4C29EB4CF0C8E, 0xDAFDE2A978A4380E, 0xDBC6603A5C5A1713, 0xDD8318C52803E0BB, 0xDDE8E851C606AB69, 0xDEE802C5F8BA3B46, 0xE9467F583312AA0A, 0xE9DA42F6E7483E74, 0xEB832349DE93EB27, 0xF20884563EA70C55, 0xF4A9329FF093BED7, 0xF5B6C02742843D30
+rtx.skyDrawcallIdThreshold = 6000
+rtx.zUp = True
+rtx.autoExposure.enabled = False
+rtx.restirGI.useDLSSRRCompatibilityMode = True
+rtx.enableCulling = False
+rtx.demodulate.enableDirectLightBoilingFilter = False
+rtx.graphicsPreset = 1
+rtx.animatedWaterTextures = 0x00FAD6ECF37BFBDB, 0x02502A4AFB4CADBB, 0x071C53CBDEFFBA77, 0x0C746F1683798424, 0x0DC55F6D9DEBCADB, 0x0DFE4F77C157CEA2, 0x120BED9788C58EDD, 0x1225B4DFF6506137, 0x1A1A35CA8382015E, 0x1D024B67914A61A9, 0x1DE1B1AA2398A7DC, 0x278367335989356B, 0x2FAC7A403DB8EF89, 0x334EFD7D0C9A0557, 0x3DFD2B96C1930F78, 0x3EF016691656F970, 0x418DEBB0F4A2A197, 0x434FC43F7BF7EC1F, 0x47F0D076364FE100, 0x48519E8FE2DC6D8B, 0x4E8D2FCE735ACA80, 0x4FFDCE29E1793968, 0x51DB758F888C8A7C, 0x529A2C691C741B21, 0x566FF5AF1575B4F6, 0x59296793798A7318, 0x5D20FD88C0A70C13, 0x5D69653013D1FE27, 0x5FAE7571446D5A1F, 0x6363571649761AFC, 0x66ABA8DF426979B7, 0x6E419569F50C57A3, 0x6E8F5B279EFEC93C, 0x71D279975B0F4808, 0x7492C2957CEB1377, 0x75007E056037B9BF, 0x7EAA20F654D73E23, 0x80A5DB2A47161FDF, 0x8398EA381E2D5BAB, 0x91548A1865B639AC, 0x91E3C33F56C7C402, 0x923E2560A8DB36F4, 0x9A6022AB4E9D706A, 0x9B7E84B205AABCF3, 0x9BD20D5EED3F151F, 0xA006DCDD5668F14C, 0xA4EED0463F70FD79, 0xC120BA4E84CE7AE8, 0xC75EC8EE882E2237, 0xCD648C3913D2AAE4, 0xCE2FA1C23180ECA3, 0xD04D48CB7D9648C0, 0xD48CB1BB322048DA, 0xD9EDCDEC1D0221F2, 0xDB5C2DFA92C01020, 0xDB6D83AA39677D42, 0xDD8A0AE1E5EB9369, 0xDE8822B32A6BC670, 0xE692218518A4111F, 0xEFA8FB7D8D3AA6C3, 0xF40C8156FAB61149
+rtx.neeCache.enableModeAfterFirstBounce = 2
+rtx.postFilterThreshold = 10
+rtx.russianRouletteMode = 1
+rtx.minOpaqueDiffuseLobeSamplingProbability = 0.05
+rtx.pathMinBounces = 0
+rtx.skyBrightness = 1.0
+rtx.enableStochasticAlphaBlend = False
+rtx.tonemap.finalizeWithACES = True
+rtx.sceneScale = 0.01
+rtx.postfx.enableChromaticAberration = False
+
+
+
+
+# s02 water: the pack water_normal.dds (10240x512 BC5, 20 frames) decodes to a median facet tilt of
+# 46 deg, which is why the sea reads as binary black/white under path tracing. 0.35 brings the
+# effective tilt to ~12 deg (measured decode, see .strata/notes-s02-water.md). Pair it with
+# config/water/realistic.usda via tools/water.sh realistic.
+rtx.translucentMaterial.normalIntensity = 0.35
+
+
+# n01: the live temporal keys the shipped profile never wrote (see the header).
+rtx.di.enableTemporalReuse = True
+rtx.di.enableTemporalBiasCorrection = True
+rtx.spatiallyHashedRadianceCache.maxNumFramesToAccumulate = 16
+rtx.volumetrics.maxAccumulationFrames = 16
+rtx.temporalAA.newFrameWeight = 0.35
+rtx.autoExposure.autoExposureSpeed = 0.5

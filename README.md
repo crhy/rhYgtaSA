@@ -146,12 +146,19 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   ```
   tools/rtxprofile.sh check                      # audit: does every key exist in this runtime?
   tools/rtxprofile.sh perf    "/path/to/GTASA-RTX"   # the 60 fps profile (config/rtx.conf.perf)
+  tools/rtxprofile.sh nopops  "/path/to/GTASA-RTX"   # the temporal A/B (config/rtx.conf.nopops)
+  tools/rtxprofile.sh current "/path/to/GTASA-RTX"   # this repo's shipped profile
   tools/rtxprofile.sh status  "/path/to/GTASA-RTX"
   tools/rtxprofile.sh restore "/path/to/GTASA-RTX"  # the exact bytes that were there before
   ```
   Every switch keeps `<game>/.rhys-rtxprofile/rtx.conf.prev` and one never-overwritten
   `rtx.conf.pristine`; `orig` puts back the runtime's own first-launch file. Evidence and the
   per-key reasoning: `.strata/notes-s22-60fps-budget.md`.
+- `nopops` is the other kind of switch: the same shipped profile with **only** the keys that
+  decide *when* a lighting change lands (temporal reuse, accumulation windows, the TAA blend
+  weight), and not one look key or texture list changed. Use it when the lighting still changes
+  all at once while the plugin's own log says it faded: run `scripts/lighting-test.sh` once each
+  way and compare the transitions, not the still shots.
 
 ## Troubleshooting
 

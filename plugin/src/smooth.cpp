@@ -247,6 +247,15 @@ float rhyDistanceGain(float dist, float fullRadius, float zeroRadius) {
 
 // ------------------------------------------------------------- direction
 
+float rhyAngleDeg(const float* a, const float* b) {
+    const float cx = a[1] * b[2] - a[2] * b[1];
+    const float cy = a[2] * b[0] - a[0] * b[2];
+    const float cz = a[0] * b[1] - a[1] * b[0];
+    const float cross = std::sqrt(cx * cx + cy * cy + cz * cz);
+    const float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    return std::atan2(cross, dot) * 57.29577951308232f;
+}
+
 void rhyDirLimit(float* cur, const float* target, float maxDeg) {
     if (maxDeg <= 0.0f) {
         return;
@@ -305,6 +314,122 @@ void rhyDirLimit(float* cur, const float* target, float maxDeg) {
     cur[0] = x / nn;
     cur[1] = y / nn;
     cur[2] = z / nn;
+}
+
+// ------------------------------------------------------- handle cadence (n01)
+
+void rhyCadenceInit(RhyCadence& c, float maxStepDeg, float maxRelLum,
+                    int minMs, int maxMs) {
+    // A budget of 0 would mean "rebuild every frame": the churn floor is what
+    // protects the bridge, so an out-of-range budget is corrected rather than
+    // honoured. Same reasoning as the [fade] floors in config.cpp.
+    if (!(maxStepDeg >= 0.05f)) {
+        maxStepDeg = 0.05f;
+    }
+    if (maxStepDeg > 30.0f) {
+        maxStepDeg = 30.0f;
+    }
+    if (!(maxRelLum >= 0.005f)) {
+        maxRelLum = 0.005f;
+    }
+    if (maxRelLum > 1.0f) {
+        maxRelLum = 1.0f;
+    }
+    if (minMs < 20) {
+        minMs = 20;  // 50 rebuilds per second per body is not a cadence
+    }
+    if (minMs > 10000) {
+        minMs = 10000;
+    }
+    if (maxMs < minMs) {
+        maxMs = minMs;
+    }
+    if (maxMs > 120000) {
+        maxMs = 120000;  // 2 min: a body never rebuilt is a bug, not a cadence
+    }
+    c.maxStepDeg = maxStepDeg;
+    c.maxRelLum = maxRelLum;
+    c.minMs = minMs;
+    c.maxMs = maxMs;
+    c.elapsedMs = 0;
+    c.intervalMs = maxMs;
+    c.gapDeg = 0.0f;
+    c.gapRel = 0.0f;
+    c.degPerSec = 0.0f;
+    c.relPerSec = 0.0f;
+    c.rebuilds = 0;
+    c.skips = 0;
+}
+
+void rhyCadenceObserve(RhyCadence& c, float degMoved, float relLumMoved,
+                       float dtSec) {
+    if (!(dtSec > 0.0f)) {
+        return;
+    }
+    if (degMoved < 0.0f) {
+        degMoved = 0.0f;
+    }
+    if (relLumMoved < 0.0f) {
+        relLumMoved = 0.0f;
+    }
+    // EMA with a ~0.25 s time constant. One frame of a clock jump (the limiter
+    // can publish 0.2 deg of direction in a frame) must not set the cadence for
+    // the next minute, and a body that stopped moving must drift back to the
+    // fixed period rather than stay pinned at the fast one.
+    const float a = dtSec / (dtSec + 0.25f);
+    c.degPerSec += a * (degMoved / dtSec - c.degPerSec);
+    c.relPerSec += a * (relLumMoved / dtSec - c.relPerSec);
+}
+
+int rhyCadenceIntervalMs(const RhyCadence& c) {
+    // How many ms of motion fit in each budget. A rate of zero means "no
+    // constraint": the fixed cadence applies.
+    float byDeg = c.degPerSec > 1e-4f ? c.maxStepDeg / c.degPerSec * 1000.0f
+                                      : static_cast<float>(c.maxMs);
+    float byLum = c.relPerSec > 1e-4f ? c.maxRelLum / c.relPerSec * 1000.0f
+                                      : static_cast<float>(c.maxMs);
+    float ms = byDeg < byLum ? byDeg : byLum;
+    if (!(ms > 0.0f)) {
+        ms = static_cast<float>(c.minMs);
+    }
+    int iv = static_cast<int>(ms);  // floor: never round up past what the budget allows
+    if (iv > c.maxMs) {
+        iv = c.maxMs;
+    }
+    if (iv < c.minMs) {
+        iv = c.minMs;
+    }
+    return iv;
+}
+
+void rhyCadenceAdvance(RhyCadence& c, float dtSec) {
+    if (!(dtSec > 0.0f)) {
+        dtSec = 0.0f;
+    }
+    c.elapsedMs += static_cast<int>(dtSec * 1000.0f + 0.5f);
+    c.intervalMs = rhyCadenceIntervalMs(c);
+}
+
+void rhyCadenceSetGap(RhyCadence& c, float degGap, float relGap) {
+    c.gapDeg = degGap < 0.0f ? 0.0f : degGap;
+    c.gapRel = relGap < 0.0f ? 0.0f : relGap;
+}
+
+bool rhyCadenceDue(const RhyCadence& c) {
+    if (c.elapsedMs >= c.intervalMs) {
+        return true;
+    }
+    // The safety net: the handle is already off by more than the budget. The churn
+    // floor still applies, so this can never rebuild faster than minMs - which is
+    // also why the step bound is max(budget, rate x minMs) either way.
+    if (c.elapsedMs < c.minMs) {
+        return false;
+    }
+    return c.gapDeg > c.maxStepDeg || c.gapRel > c.maxRelLum;
+}
+
+void rhyCadenceRebuilt(RhyCadence& c) {
+    c.elapsedMs = 0;
 }
 
 // ------------------------------------------------------------- selection
