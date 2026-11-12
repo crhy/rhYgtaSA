@@ -3,7 +3,7 @@
 // has no Windows dependency at all; that is deliberate, it means the physical
 // part of the lighting can be tested without a game, a GPU or Wine.
 //
-//   g++ -std=c++17 -O2 -o solar_check tests/solar_check.cpp && ./solar_check
+//   g++ -std=c++17 -O2 -Wall -Wextra -o solar_check tests/solar_check.cpp && ./solar_check
 //
 // Exit code 0 = every check passed.
 
@@ -216,8 +216,12 @@ int main() {
     check("daylight factor at noon", skyDaylightFactor(70.0f, -6.0f, -4.0f), 1.0f, 0.001f);
     check("daylight factor at night", skyDaylightFactor(-20.0f, -6.0f, -4.0f), 0.0f, 0.001f);
     check("daylight factor mid-twilight", skyDaylightFactor(-5.0f, -6.0f, -4.0f), 0.5f, 0.02f);
-    checkTrue("lamps on when the sun is below -6", lampsShouldBeOn(-8.0f, -6.0f, -4.0f));
-    checkTrue("lamps off when the sun is above -4", !lampsShouldBeOn(-2.0f, -6.0f, -4.0f));
+    checkTrue("lamps on when the sun is below -6", lampsShouldBeOn(-8.0f, -6.0f));
+    checkTrue("lamps off when the sun is above -6", !lampsShouldBeOn(-2.0f, -6.0f));
+    // The rule is strict and stateless: at the threshold the lamps are off, and
+    // the answer depends on the elevation only, never on whether the sun is
+    // rising or setting (that is what [streetlights] dawn_deg would need).
+    checkTrue("lamps off exactly at the dusk threshold", !lampsShouldBeOn(-6.0f, -6.0f));
 
     // ---- colour temperature ----
     float rgb[3];

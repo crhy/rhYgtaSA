@@ -148,7 +148,11 @@ struct RhyConfig {
     // real photocell does and is the reason "on_hour=19" is wrong in summer.
     int   lamp_mode;
     float lamp_dusk_deg;      // lamps come on when the sun drops below this
-    float lamp_dawn_deg;      // and go off when it climbs above this
+    float lamp_dawn_deg;      // parsed, sanity-checked and logged, but no rule
+                              // reads it: the higher rising threshold needs the
+                              // previous lamps-on state, and lampsShouldBeOn()
+                              // in solar.h is stateless (s13 removed the dead
+                              // argument that used to be passed to it)
 
     // The moon is the anti-sun body (the Lua mod's model id 15891).
     int moon_enabled;         // 1 = drive the moon with a Remix distant light

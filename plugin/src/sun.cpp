@@ -376,7 +376,7 @@ void rhySunFrame() {
     g_moonElev = moon.elevationDeg;
 
     g_daylight = skyDaylightFactor(g_sunElev, cfg->sky_dusk_deg, cfg->sky_dawn_deg);
-    g_lampsOn = lampsShouldBeOn(g_sunElev, cfg->lamp_dusk_deg, cfg->lamp_dawn_deg);
+    g_lampsOn = lampsShouldBeOn(g_sunElev, cfg->lamp_dusk_deg);
 
     // --- sun ---
     if (cfg->sun_enabled && !g_sun.apiBroken) {

@@ -304,6 +304,35 @@ The design above is now a file and a script, so "we host everything" is a checkl
 * Tests: `tests/test_fetch_deps.py` (36) against a local `http.server` — sha mismatch, resume after a cut
   connection, a server that refuses ranges, missing/broken aria2c, `TBD` urls and hashes, and manifest validation.
 
+### Implemented (s14): the bundle we host ourselves (`tools/make-release.sh`)
+
+"We host what users cannot fetch themselves" needs a bundle, a hash list and a torrent. They exist:
+
+* `tools/make-release.sh OUTDIR` reads the manifest through the same reader `fetch-deps.sh` uses
+  (`--dump`), collects every entry whose file is staged in `vendor/` (or `--stage DIR`, matched by `name`
+  or `upstream_name`), and writes `OUTDIR/rhygtasa-deps-<version>/` with the archives, `SHA256SUMS`, a copy
+  of the manifest and a README; next to it the `.torrent`, the `.magnet.txt` and `bundle.json`. The magnet
+  is never inside the folder: a file cannot contain the hash that covers it.
+* One torrent for the whole folder, trackers from `deps/trackers.txt` (one announce URL per line, no
+  comments; the three listed answered a UDP connect on 2026-11-11). `mktorrent` is used when installed,
+  `transmission-create` or `tools/torrent.py` otherwise, and the result is **verified**: `tools/torrent.py
+  check` re-derives the info hash from the bytes on disk (piece by piece) before a magnet is printed.
+* Licences still decide: only `redistribute: "yes"` is collected; `--include-ask` / `--include-no` widen it
+  and require `--permission-note "who said yes, when, for what"`, which is written into the bundle README
+  and `bundle.json` so the permission travels with the files. A staged file whose hash contradicts the
+  manifest stops the release (exit 1) instead of publishing the wrong bytes.
+* `--update-manifest` writes `sha256`, `size` and the `magnet` of every collected entry back into
+  `deps/manifest.json` (`tools/manifest-update.py` edits the text, so the diff stays reviewable); the https
+  `mirror` slots stay `TBD` until there is a web host. The five §7 packs keep no magnet slot at all.
+* Nothing is bundled today because nothing is staged: `vendor/` does not exist, and the
+  `GTAmods/x/characters/stage` folder named in the task does not exist either (what is on disk is
+  `x/characters/raw/part1..7/` and `dl/characters/*.7z`, none of them the §7 archives). GTASA-Remix alone is
+  ~10 GB (GitHub reports 10329625 KB), which is why the transport is a torrent at all.
+* Tests: `tests/test_make_release.py` (24) on a fake set in `build/tmp` — the info hash is recomputed by an
+  independent bencode/piece verifier in the test, `sha256sum -c` verifies, `fetch-deps.sh` installs the
+  bundle over `file://` and a local `http.server`, a tampered file breaks the check, and the licence rules
+  are pinned.
+
 ---
 
 ## 10. Rollback

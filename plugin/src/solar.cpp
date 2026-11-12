@@ -307,12 +307,16 @@ float skyDaylightFactor(float sunElevationDeg, float duskElevationDeg,
     return t * t * (3.0f - 2.0f * t);
 }
 
-bool lampsShouldBeOn(float sunElevationDeg, float duskElevationDeg,
-                     float dawnElevationDeg) {
-    // Hysteresis in elevation, not in hours: the sun crosses -6 degrees twice a
-    // day, once on the way down (lamps on) and once on the way up (lamps off),
-    // and the two thresholds differ because a photocell sees the brightening sky
-    // before the sun clears the horizon.
+bool lampsShouldBeOn(float sunElevationDeg, float duskElevationDeg) {
+    // Only the falling threshold is an argument, and only the falling threshold
+    // decides: this test is stateless, and the sun crosses any elevation twice a
+    // day, so "below dusk_deg" is already true on the way down and stays true
+    // until the sun climbs back past it. A real photocell also uses a higher
+    // rising threshold so the set does not flicker exactly at the crossing; that
+    // needs the previous lamps-on state, which this function does not have. It
+    // used to take dawn_deg as a third argument and ignore it - s13's
+    // -Wunused-parameter found the dead parameter, and the honest fix is to drop
+    // it rather than to silence the warning around a knob that did nothing.
     return sunElevationDeg < duskElevationDeg;
 }
 

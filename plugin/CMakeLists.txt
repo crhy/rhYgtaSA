@@ -27,7 +27,9 @@ target_include_directories(rhyremix PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../thir
 # identical, so silence its x64-only guard and skip its built-in library loader.
 target_compile_definitions(rhyremix PRIVATE REMIX_ALLOW_X86 REMIX_WINAPI_NO_LIBRARY_LOADER)
 
-target_compile_options(rhyremix PRIVATE -Wall)
+# -Wall -Wextra permanently: the plugin must stay warning-clean (s13). Do not add
+# -Werror: a new compiler version must not turn the build red on a false positive.
+target_compile_options(rhyremix PRIVATE -Wall -Wextra)
 
 # Static MinGW runtime: the .asi must not need libgcc/libstdc++/libwinpthread DLLs.
 target_link_options(rhyremix PRIVATE -static -static-libgcc -static-libstdc++)

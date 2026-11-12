@@ -15,12 +15,20 @@
     "Peds Vary packs answer No to re-upload and 'under no circumstances' to using the assets. Hosting them",
     "needs written permission from the authors first; that is tracked here, not in a chat log.",
     "name is OUR hosted file name (stable, ascii). upstream_name is the author's own file name and is TBD",
-    "until someone writes down what the download button actually served."
+    "until someone writes down what the download button actually served.",
+    "The bundle: tools/make-release.sh OUTDIR collects every entry whose file is staged in vendor/ (or",
+    "--stage DIR), writes SHA256SUMS, makes ONE torrent for the whole folder with the trackers in",
+    "deps/trackers.txt, re-derives the info hash from the bytes on disk before printing the magnet, and",
+    "--update-manifest writes sha256/size/magnet back into this file. Only redistribute: yes entries are",
+    "collected by default; ask/no need --include-ask/--include-no plus --permission-note (docs/CHARACTERS.md",
+    "section 9). A magnet slot that is still TBD means the file is not staged yet, not that we may not host it."
   ],
   "hosts": {
     "mirror_base": "TBD",
-    "torrent_tracker": "TBD",
-    "note": "when rhY's host exists, mirror url = mirror_base + '/' + name, and fetch-deps.sh --seed can build the torrents"
+    "torrent_tracker": "deps/trackers.txt (public announce URLs, one per line, no comments; the three listed answered a UDP connect on 2026-11-11)",
+    "bundle": "rhygtasa-deps-<version>/ - one folder of archives + SHA256SUMS + manifest.json + README.txt, one torrent for the whole folder, built by tools/make-release.sh (build/release is the intended OUTDIR)",
+    "magnet": "TBD: no archive is staged yet (vendor/ does not exist), so no torrent exists yet to point at. tools/make-release.sh --update-manifest fills the magnet slot of every entry it collects.",
+    "note": "when rhY's https host exists, mirror url = mirror_base + '/' + name. Until then the magnet is the only thing that exists, and only for entries the licence allows: redistribute yes by default, ask/no only with a written permission note. GTASA-Remix is ~10 GB (GitHub reports 10329625 KB for the repo), which is exactly why the transport is a torrent and not a download button."
   },
   "files": [
     {
@@ -42,6 +50,7 @@
       "requires": [],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://github.com/Hemry81/GTASA-Remix" }
       ],
@@ -66,6 +75,7 @@
       "requires": [],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "torrent", "url": "TBD" },
         { "kind": "direct", "url": "https://github.com/NVIDIAGameWorks/rtx-remix/releases/download/remix-1.6.1/rtx-remix-for-x86-games-release-remix-1.6.1.zip" }
       ],
@@ -90,6 +100,7 @@
       "requires": [],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://downgraders.rockstarvision.com/" }
       ],
@@ -275,6 +286,7 @@
       "requires": [],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2020/10/moonloader/" }
       ],
       "notes": "0.27 is what README install step 1 pins. moonloader/lib/sa_ped_safe.lua (ours) needs it, and the 0.27 opcode-output crash in docs/FINDINGS.md 2026-11-09 17:25 was a bad PLAYER_PED handle, not MoonLoader."
@@ -298,6 +310,7 @@
       "requires": [ "moonloader" ],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2019/08/imgui-interface-grafica-para-moonloader/" }
       ],
       "notes": "SARemix_VTK / HBAO windows. docs/MODS-REPLACED.md: mad/imgui calls hit a stub under dxvk-remix, so this is for the pack's scripts, not for us."
@@ -321,6 +334,7 @@
       "requires": [ "moonloader" ],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2017/08/moonadditions/" }
       ],
       "notes": "its private D3D9Texture2D GUID (794950f2-... in remix-dxvk.log) is not implemented by dxvk-remix: mad.* overlays are stubs under Remix."
@@ -367,6 +381,7 @@
       "requires": [],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "source", "url": "https://www.mixmods.com.br/2022/08/iii-vc-sa-framerate-vigilante/" }
       ],
       "notes": "modloader/FramerateVigilante in the RTX copy (measured)."
@@ -389,7 +404,8 @@
       "unpack": "auto",
       "requires": [],
       "urls": [
-        { "kind": "mirror", "url": "TBD" }
+        { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" }
       ],
       "notes": "present in the RTX copy (modloader/Proper Ragdoll, measured) but the repo never recorded where it came from; the mixmods slug guesses all 404'd on 2026-11-11. Fill in the page, then the hash."
     },
@@ -560,6 +576,7 @@
       "requires": [ "essentials-pack", "proper-fixes" ],
       "urls": [
         { "kind": "mirror", "url": "TBD" },
+        { "kind": "magnet", "url": "TBD" },
         { "kind": "torrent", "url": "TBD" }
       ],
       "notes": "docs/VEGETATION.md: 192 MB, 335 files, 317 of them replacing gta3.img entries; it froze the RTX copy. If we host it, host it the way the known-working install has it - WITHOUT data/maps/generic/procobj.ide and vegepart.ide (cause 1: those IDEs point at lod_veg_firs.txd, which nothing provides), and with the pack's own requirement (Essentials Pack + Proper Fixes) installed. Source page is not recorded anywhere in the repo; no mixmods slug guess answered on 2026-11-11."

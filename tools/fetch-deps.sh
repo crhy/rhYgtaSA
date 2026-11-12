@@ -23,6 +23,9 @@
 #   --plan              print "name\x1ftarget\x1funpack" for every entry whose
 #                       file is present and verified - this is what apply.sh unpacks
 #   --list              print the manifest (id, group, name, hash state, target)
+#   --dump              print the validated reader rows (\x1f separated) and exit -
+#                       this is how tools/make-release.sh reads the manifest without
+#                       becoming a second reader
 #   --quiet             no progress lines, only warnings/errors
 #
 # environment (used by the tests, harmless otherwise)
@@ -56,7 +59,7 @@ usage() {
 }
 
 MANIFEST="" DEST="" ONLY="" GROUPSEL="" VERIFY_ONLY=0 FORCE=0 NO_TORRENT=0 INSECURE=0
-PLAN=0 LIST=0 QUIET=0
+PLAN=0 LIST=0 DUMP=0 QUIET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --only)        [ $# -ge 2 ] || { echo "fetch-deps: --only needs a value" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
@@ -67,6 +70,7 @@ while [ $# -gt 0 ]; do
     --insecure)    INSECURE=1; shift ;;
     --plan)        PLAN=1; shift ;;
     --list)        LIST=1; shift ;;
+    --dump)        DUMP=1; shift ;;
     --quiet|-q)    QUIET=1; shift ;;
     --help|-h)     usage; exit 0 ;;
     --*)           echo "fetch-deps: unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -74,11 +78,13 @@ while [ $# -gt 0 ]; do
                      else echo "fetch-deps: too many arguments (last was $1)" >&2; exit 2; fi; shift ;;
   esac
 done
-if [ -z "$MANIFEST" ] || [ -z "$DEST" ]; then usage >&2; exit 2; fi
+if [ -z "$MANIFEST" ] || { [ -z "$DEST" ] && [ "$DUMP" = 0 ]; }; then usage >&2; exit 2; fi
 [ -f "$MANIFEST" ] || { echo "fetch-deps: no such manifest: $MANIFEST" >&2; exit 2; }
-if [ -e "$DEST" ] && [ ! -d "$DEST" ]; then echo "fetch-deps: DEST is not a directory: $DEST" >&2; exit 2; fi
-mkdir -p "$DEST" || { echo "fetch-deps: cannot create DEST: $DEST" >&2; exit 2; }
-DEST="$(cd "$DEST" && pwd)"
+if [ "$DUMP" = 0 ]; then
+  if [ -e "$DEST" ] && [ ! -d "$DEST" ]; then echo "fetch-deps: DEST is not a directory: $DEST" >&2; exit 2; fi
+  mkdir -p "$DEST" || { echo "fetch-deps: cannot create DEST: $DEST" >&2; exit 2; }
+  DEST="$(cd "$DEST" && pwd)"
+fi
 
 say() { [ "$QUIET" = 1 ] || echo "$@"; }
 warn() { echo "$@" >&2; }
@@ -175,9 +181,18 @@ for i, e in enumerate(files):
     req = e.get("requires", [])
     if not isinstance(req, list) or any(not isinstance(r, str) for r in req):
         die("%s: requires must be a list of ids" % where)
+    # two fields the release bundle needs (tools/make-release.sh): the file name the
+    # author used, so a staged download can be matched to the entry, and an explicit
+    # local path for a file we host. "TBD" upstream_name = nobody wrote it down.
+    up = e.get("upstream_name", "")
+    if not isinstance(up, str) or up == "TBD":
+        up = ""
+    loc = e.get("local_file", "")
+    if not isinstance(loc, str):
+        die("%s: local_file must be a string (path of the file we host)" % where)
     rows.append((eid, str(e.get("group") or ""), str(e.get("priority") or ""), name,
                  str(e["size"]) if e["size"] is not None else "", sha, unpack,
-                 e["redistribute"], page, target, " ".join(spec), ",".join(req)))
+                 e["redistribute"], page, target, " ".join(spec), ",".join(req), up, loc))
 
 for r in rows:
     for dep in r[11].split(",") if r[11] else []:
@@ -198,6 +213,7 @@ for r in rows:
 ROWS_OUT="$(python3 -c "$READER_PY" "$MANIFEST")" || exit 2
 if [ -z "$ROWS_OUT" ]; then echo "fetch-deps: manifest has no entries: $MANIFEST" >&2; exit 2; fi
 mapfile -t ROWS <<< "$ROWS_OUT"
+if [ "$DUMP" = 1 ]; then printf '%s\n' "${ROWS[@]}"; exit 0; fi
 
 selected() {   # $1 id  $2 group
   local w
@@ -376,7 +392,7 @@ entry() {   # id group prio name size sha unpack redist page target urls require
 }
 
 for row in "${ROWS[@]}"; do
-  IFS=$'\x1f' read -r _id _group _prio _name _size _sha _unpack _redist _page _target _urls _req <<< "$row"
+  IFS=$'\x1f' read -r _id _group _prio _name _size _sha _unpack _redist _page _target _urls _req _up _loc <<< "$row"
   entry "$_id" "$_group" "$_prio" "$_name" "$_size" "$_sha" "$_unpack" "$_redist" "$_page" "$_target" "$_urls" "$_req"
 done
 

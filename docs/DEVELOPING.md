@@ -51,6 +51,30 @@ The installer's own end-to-end test (fake install, no game, no GPU, no writes ou
 `build/tmp/`) is `bash scripts/installer-selftest.sh`.
 The README gate for this file's sibling user guide is `bash scripts/check-readme.sh`.
 
+Before calling anything done, run the whole sweep in one command:
+
+```
+bash scripts/check-all.sh          # ends "ALL GATES PASSED", or lists the failures
+```
+
+It runs `plugin/build.sh`, the three native test binaries (`tests/lamps_check.cpp` with
+`lamps.cpp`+`solar.cpp`, `tests/solar_check.cpp` alone because it `#include`s `solar.cpp`,
+`tests/signals_check.cpp` with `signalheads.cpp`+`lamps.cpp`+`solar.cpp`, all host `g++ -std=c++17
+-Wall -Wextra -Iplugin/src` into `build/tmp/`), every `tests/test_*.py`, `scripts/installer-selftest.sh` and
+`bash -n` on every `*.sh` in the tree except `build/`. One PASS/FAIL line per check, logs under
+`build/tmp/check-all/`. It is not a replacement for `check.sh <phase>`, which asserts the
+per-phase invariants (imports, ini keys, which files are compiled in); check-all.sh is the
+"nothing regressed anywhere" pass, and it never touches the game folder, wine or the GPU.
+
+The C++ is warning-clean and stays that way (s13): `plugin/CMakeLists.txt` carries
+`-Wall -Wextra` permanently, the three native test compiles pass the same flags, and
+`check-all.sh`'s `warncheck()` turns a `warning:` line in a compile log into a FAIL even when
+the compiler exited 0. No `-Werror` (a new compiler release must not turn the build red on a
+false positive) and no blanket `#pragma`/cast silencers: the two warnings that were there -
+a `FARPROC` to Remix prototype cast in `remix.cpp`, and a third `lampsShouldBeOn()` argument
+that was never read - were fixed at the source. `i686-w64-mingw32-g++ -fanalyzer` over all 15
+plugin sources is clean too; it is the stand-in for cppcheck, which is not installed here.
+
 ## What it fixes
 | Problem on Linux / Remix 1.6.1 | Cause | Fix |
 |---|---|---|

@@ -98,6 +98,11 @@ MixSets' real-time ped shadow (a gray square under CJ under Remix).
   (the character packs in [deps/manifest.json](deps/manifest.json), each with its sha256, author and
   licence). Our own hosts are not up yet, so today it prints the author's page for each pack instead
   of downloading it; nothing unverified ever reaches the game folder.
+- What we host ourselves is built by `tools/make-release.sh build/release`: one folder of archives,
+  `SHA256SUMS`, one torrent for the whole folder and its magnet link — the info hash is re-derived from
+  the bytes on disk before the magnet is printed, and only packs whose licence allows re-upload are ever
+  collected. Nothing is staged yet, so it currently reports every pack as not staged
+  ([docs/CHARACTERS.md](docs/CHARACTERS.md) section 9).
 
 ## Play
 

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# One command that runs every gate in this repo.
+#
+#   bash scripts/check-all.sh
+#
+# scripts/check.sh <phase> is the per-phase gate and stays the thing CI-style work goes
+# through; this file is the "am I done with everything" sweep: the cross-compiled plugin
+# build, the three native test binaries, every python test file, the installer self-test
+# and a syntax check of every shell script we ship. One PASS/FAIL line per check, then
+# either the list of failures or "ALL GATES PASSED".
+#
+# Since s13 the C++ also has to compile without a single warning: the plugin carries
+# -Wall -Wextra in plugin/CMakeLists.txt and the native test compiles below pass them on
+# the command line, and warncheck() turns a "warning:" line in a compile log into a FAIL
+# even when the compiler exited 0.
+#
+# Nothing here touches the game folder, wine or the GPU: the native tests are host-side
+# g++ binaries, the python tests use fake paths, and installer-selftest.sh installs into
+# a fake tree under build/tmp/. All output goes to build/tmp/check-all/.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+LOGDIR=build/tmp/check-all
+rm -rf "$LOGDIR"
+mkdir -p "$LOGDIR" build/tmp
+
+pass=0
+fails=()
+
+# run <slug> <label> <timeout-seconds> <command...>
+run() {
+  local slug=$1 label=$2 tmo=$3 log rc
+  shift 3
+  log="$LOGDIR/$slug.log"
+  timeout "$tmo" "$@" >"$log" 2>&1
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    pass=$((pass + 1))
+    echo "PASS $label"
+  else
+    fails+=("$label [$slug] (exit $rc, log: $log)")
+    echo "FAIL $label  (exit $rc, log: $log)"
+    tail -n 5 "$log" | sed 's/^/       /'
+  fi
+}
+
+# warncheck <slug> <label>: run() only looks at the exit code, but a compile that
+# succeeds while printing warnings is not good enough any more (s13). Must be called
+# right after the run of the same slug; it turns that PASS into a FAIL.
+warncheck() {
+  local slug=$1 label=$2 log n
+  log="$LOGDIR/$slug.log"
+  [ -f "$log" ] || return 0
+  if ! grep -q "warning:" "$log"; then
+    return 0
+  fi
+  n=$(grep -c "warning:" "$log")
+  pass=$((pass - 1))
+  fails+=("$label compiled with $n warning(s) [$slug] (log: $log)")
+  echo "FAIL $label compiled with $n warning(s)  (log: $log)"
+  grep "warning:" "$log" | head -n 8 | sed 's/^/       /'
+}
+
+echo "== plugin (cross-compiled 32-bit asi) =="
+run build "plugin/build.sh -> build/rhyremix.asi" 600 bash plugin/build.sh
+warncheck build "plugin/build.sh"
+
+echo "== native tests (host g++, no game) =="
+# lamps.cpp + solar.cpp are the physics under test; solar_check.cpp #includes solar.cpp
+# itself, so it must be compiled alone or the symbols would be defined twice.
+# -Wall -Wextra matches the plugin's own flags so a warning cannot hide in the test build.
+run nat-lamps-cc "compile lamps_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/lamps_check.cpp plugin/src/lamps.cpp plugin/src/solar.cpp -o build/tmp/lc
+warncheck nat-lamps-cc "compile lamps_check"
+run nat-lamps "tests/lamps_check.cpp (lamps.cpp + solar.cpp)" 120 build/tmp/lc
+run nat-solar-cc "compile solar_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/solar_check.cpp -o build/tmp/sc
+warncheck nat-solar-cc "compile solar_check"
+run nat-solar "tests/solar_check.cpp (includes solar.cpp)" 120 build/tmp/sc
+run nat-signals-cc "compile signals_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/signals_check.cpp plugin/src/signalheads.cpp plugin/src/lamps.cpp plugin/src/solar.cpp -o build/tmp/sigc
+warncheck nat-signals-cc "compile signals_check"
+run nat-signals "tests/signals_check.cpp (signalheads.cpp + lamps.cpp + solar.cpp)" 120 build/tmp/sigc
+
+echo "== python tests =="
+# Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),
+# so cwd must be the repo root and a crash in one file must not hide the others.
+if command -v pytest >/dev/null 2>&1 && python3 -c 'import pytest' >/dev/null 2>&1; then
+  pypkg=pytest
+else
+  pypkg=unittest
+fi
+for f in tests/test_*.py; do
+  [ -e "$f" ] || { fails+=("no tests/test_*.py found") ; echo "FAIL no python tests found"; continue; }
+  slug="py-$(basename "$f" .py)"
+  case "$pypkg" in
+    pytest)   run "$slug" "pytest $f" 120 python3 -m pytest -q "$f" ;;
+    unittest) run "$slug" "unittest $f" 120 python3 -m unittest discover -s tests -p "$(basename "$f")" ;;
+  esac
+done
+
+echo "== installer =="
+run installer "scripts/installer-selftest.sh" 600 bash scripts/installer-selftest.sh
+
+echo "== shell syntax (bash -n) =="
+# Every .sh in the tree except generated output (build/, rule 2) and git internals. A
+# script added this session is checked, including this one; git ls-files would miss the
+# locally-excluded helpers under .git/info/exclude, so this is a plain find.
+shfiles=$(find . -path ./.git -prune -o -path ./build -prune -o -type f -name '*.sh' -print \
+          | sed 's|^\./||' | sort)
+if [ -z "$shfiles" ]; then
+  fails+=("no *.sh files found for bash -n")
+  echo "FAIL no shell scripts found"
+fi
+while IFS= read -r s; do
+  [ -n "$s" ] || continue
+  run "syntax-$(echo "$s" | tr '/.' '__')" "bash -n $s" 30 bash -n "$s"
+done <<< "$shfiles"
+
+echo
+echo "$pass checks passed, ${#fails[@]} failed"
+if [ "${#fails[@]}" -ne 0 ]; then
+  echo "FAILURES:"
+  for f in "${fails[@]}"; do echo "  - $f"; done
+  exit 1
+fi
+echo "ALL GATES PASSED"

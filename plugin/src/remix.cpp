@@ -27,8 +27,18 @@ void rhyRemixInitOnce() {
         return;
     }
 
+    // GetProcAddress can only ever hand back a FARPROC - "int (__stdcall*)()",
+    // which is not the real prototype of anything - so casting it straight to the
+    // Remix prototype trips -Wcast-function-type. Nothing is being papered over:
+    // PFN_remixapi_InitializeLibrary is the exact prototype remix_c.h declares for
+    // that export, and on this
+    // ABI an entry point is just one 32-bit code address, so convert through the
+    // address value and assert that the conversion cannot lose anything.
+    static_assert(sizeof(FARPROC) == sizeof(PFN_remixapi_InitializeLibrary),
+                  "FARPROC and the Remix entry point must be the same size");
+    const uintptr_t initLibAddr = reinterpret_cast<uintptr_t>(func);
     PFN_remixapi_InitializeLibrary initLib =
-        reinterpret_cast<PFN_remixapi_InitializeLibrary>(func);
+        reinterpret_cast<PFN_remixapi_InitializeLibrary>(initLibAddr);
 
     remixapi_InitializeLibraryInfo info;
     std::memset(&info, 0, sizeof info);

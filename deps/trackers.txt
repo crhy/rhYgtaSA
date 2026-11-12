@@ -1,0 +1,3 @@
+udp://tracker.opentrackr.org:1337/announce
+udp://open.stealth.si:80/announce
+udp://tracker.dler.org:6969/announce

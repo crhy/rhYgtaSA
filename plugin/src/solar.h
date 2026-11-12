@@ -75,8 +75,11 @@ float skyDaylightFactor(float sunElevationDeg, float duskElevationDeg,
 // Real photocells switch around civil twilight (sun about -4 to -6 degrees),
 // not at a wall-clock hour, which is why "on_hour=19" is wrong in both
 // directions across a year.
-bool lampsShouldBeOn(float sunElevationDeg, float duskElevationDeg,
-                     float dawnElevationDeg);
+// One threshold on purpose: the test is stateless, so it cannot honour the
+// higher *rising* threshold that `[streetlights] dawn_deg` describes (that needs
+// the previous lamps-on state). The ini key is still parsed, sanity-checked and
+// logged, but no switching rule reads it - see the note in config.h.
+bool lampsShouldBeOn(float sunElevationDeg, float duskElevationDeg);
 
 // Planckian locus -> linear RGB, normalised to max 1. Used for the sun's own
 // disc colour when it is high (5772 K) and for the sky ambient. Kim et al. 2002
