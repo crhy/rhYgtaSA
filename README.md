@@ -34,6 +34,7 @@ install and test it. What is in the box today:
 | **Water** | five variants, `remix-ref` by default, installed by the installer and re-ensured on every start, with the `rtx.conf` keys each variant needs | `tools/water.sh`, `tools/rtx_water_keys.py`, `config/water/*.usda` |
 | **Vegetation** | 119 foliage card textures tagged as cutouts (`rtx.hairCardTextures`) instead of being blended into scribbled lines | `tools/vegetation_hashes.py`, `tools/vegetation.sh` for the pack itself |
 | **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf` | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops` |
+| **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with a fixed exposure anchor, so the sun, chrome and wet patches can be bright instead of grey | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16; **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
 | **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
 | **Safety** | every install step reversible, the plugin stops touching a dead Remix bridge, and the launcher ends the Wine tree if the game hangs on Quit | `apply.sh` backups, `plugin/src/shutdown.cpp`, `launcher/launch-rtx.sh` |
 
@@ -198,6 +199,16 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   Every switch keeps `<game>/.rhys-rtxprofile/rtx.conf.prev` and one never-overwritten
   `rtx.conf.pristine`; `orig` puts back the runtime's own first-launch file. Evidence and the
   per-key reasoning: `.strata/notes-s22-60fps-budget.md`.
+- If a setting you put in `rtx.conf` does nothing, that is a normal failure mode: the runtime keeps
+  a key it does not recognise and ignores it. `tools/rtxkeycheck.py` only checks that the words
+  appear in the renderer; `tools/rtx-option-audit.py` checks the **exact** name and prints the
+  runtime's own default for it, against `config/rtx-options-1.6.1.tsv` (the option table the runtime
+  generates for itself, fetched from the matching upstream tag). It found four names in our own files
+  that were never options - see [docs/FINDINGS.md](docs/FINDINGS.md), "Dead keys":
+  ```
+  python3 tools/rtx-option-audit.py config/rtx.conf.perf        # audit a profile
+  python3 tools/rtx-option-audit.py --show rtx.tonemappingMode  # type + default of one key
+  ```
 - `nopops` is the other kind of switch: the same shipped profile with **only** the keys that
   decide *when* a lighting change lands (temporal reuse, accumulation windows, the TAA blend
   weight), and not one look key or texture list changed. Use it when the lighting still changes

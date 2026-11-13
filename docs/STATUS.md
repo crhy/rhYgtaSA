@@ -67,7 +67,7 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 
 | gap | what the measurement says | status | owner |
 |---|---|---|---|
-| **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **open** | n16 (`tonemappingMode = 0` + an exposure anchor); the mechanism is already measured in FINDINGS (n05/n10) |
+| **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **config shipped by n16, after-numbers owed** — the change has never been rendered (rule 1 forbids running the game here) | n16 shipped `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` + `localtonemap.shadows 1.0` / `highlights 2.0` in all three profiles; the run and the abort ladder are [TARGET.md §6](TARGET.md), the mechanism is FINDINGS ("The tonemapper…") |
 | **T3 atmosphere** | haze far/near local contrast 1.22–3.67 vs 0.46–1.18; sky 92–128 luma at saturation 0.28–0.61 vs 160–199 at 0.13–0.26 | **open** | n17 (`rtx.volumetrics.enableFogRemap` and its bounds — we ship volumetrics but no fog remap at all) |
 | **T1 materials** | the pack has 2334 materials and only 315 `_normal` / 280 `_rough` / **32 `_metal`** maps: ~1 in 7 gets a real BRDF | **open** | n18 (the runtime's `rtx.legacyMaterial` / `rtx.opaqueMaterial` numbers), then an offline PBR-ify pass |
 | **T2 HD assets** | pack albedo is mostly 2048 px; the "8K pack" claim is the channel's, not verifiable | **measured** | census in FINDINGS; the asset work is upstream (MIT pack) |
@@ -75,7 +75,11 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 
 The reference, what it publishes (nothing) and the full table are in
 [TARGET.md](TARGET.md); the evidence is in [FINDINGS.md](FINDINGS.md), "The reference video we are
-told to beat".
+told to beat" and "The tonemapper, and the keys our own profiles had been writing wrong". That second
+section also carries a warning for T3: three keys our own profiles have been carrying are **not
+options of 1.6.1** (`rtx.enableFogMaxDistanceRemap`, `rtx.antiCulling.object`,
+`rtx.antiCulling.light`) and have therefore never done anything — listed with their reasons in
+`config/rtx-dead-keys.txt`, deliberately not renamed.
 
 ## Parked and aborted work
 
@@ -107,6 +111,12 @@ game.
    `rtx.hairCardTextures` line was not parsed; the 45-hash fallback is in the s32 notes.
 6. **Frame pacing (finding G)** — keep `logs/perf/*.csv`; the baseline to beat is 76.9 spikes/min
    (2026-11-12 00:48) and the regression to explain is 137.2/min (10:22).
+7. **The n16 tonemap (T4)** — the profiles now run the **Global** tonemapper with a −0.5 EV anchor,
+   and nobody has seen it. Take the 16-stop tour, then run the two `tools/target-gap.py` commands in
+   [TARGET.md §6](TARGET.md): the daytime numbers have to move toward ceiling 0.5–3 % / headroom
+   ≥ 2.0 / p50 100–130, and the six "good" shots must not move badly
+   (`build/tmp/n16/good-before.json` is the baseline — 02 p50 17.4, 03 p50 7.0). Check the night
+   shots **first**: they are what this change can break, and the ladder says what to undo if they do.
 
 ## How this page is kept honest
 

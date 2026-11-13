@@ -42,6 +42,36 @@ if $TOOL check > "$T/check.log" 2>&1; then ok "rtxprofile.sh check: every key of
 if grep -q "rtx.conf.perf: [1-9][0-9]* keys, 0 unknown" "$T/check.log"; then ok "audit counted the perf keys and found 0 unknown"; else bad "audit did not report 0 unknown for the perf profile"; fi
 if grep -q "rtx.enableVolumetricLighting" "$T/check.log"; then ok "audit still flags the legacy key in config/rtx.conf (negative control)"; else bad "audit is vacuous: legacy key not flagged"; fi
 
+# --- 1b the n16 option-table audit ----------------------------------------------------------
+# tools/rtxkeycheck.py greps the binary's strings, so it accepts rtx.<category>.<leaf> whenever both
+# halves appear somewhere - rtx.tonemap.tonemappingMode (not an option; the option is
+# rtx.tonemappingMode) passes it as "leaf+category". tools/rtx-option-audit.py checks the exact
+# names against the runtime's own auto-generated table (config/rtx-options-1.6.1.tsv).
+if python3 tools/rtx-option-audit.py --quiet config/rtx.conf.perf > "$T/optaudit.log" 2>&1; then
+  ok "option-table audit: every key of rtx.conf.perf names a real 1.6.1 option (or is a documented dead key)"
+else
+  bad "option-table audit on rtx.conf.perf" "see $T/optaudit.log"
+fi
+printf 'rtx.tonemap.tonemappingMode = 0\nrtx.tonemappingMode = 0\n' > "$T/fakekey.conf"
+if python3 tools/rtx-option-audit.py --quiet "$T/fakekey.conf" >/dev/null 2>&1; then
+  bad "option-table audit is vacuous: rtx.tonemap.tonemappingMode was accepted"
+else
+  ok "option-table audit rejects rtx.tonemap.tonemappingMode, the name the n16 task file used"
+fi
+deadinfo=$(python3 - <<'PY'
+import sys
+tab = {}
+for line in open("config/rtx-options-1.6.1.tsv", encoding="utf-8"):
+    if not line.startswith("#"):
+        tab[line.split("\t")[0]] = 1
+dead = [l.split("\t")[0] for l in open("config/rtx-dead-keys.txt", encoding="utf-8")
+        if not l.startswith("#") and l.strip()]
+live = [k for k in dead if k in tab]
+print("%d %s" % (len(dead), "OK" if not live and len(dead) == 5 else "WRONG:" + (",".join(live) or "count %d" % len(dead))))
+PY
+)
+[ "$deadinfo" = "5 OK" ] && ok "the dead-key allow-list is exactly the 5 documented keys and every one is still dead" || bad "dead-key allow-list is wrong ($deadinfo)"
+
 # --- 2/3 switching and round-trips --------------------------------------------------------
 $TOOL status "$G" > "$T/status0.log" 2>&1
 if grep -q "^profile  : current" "$T/status0.log"; then ok "status identifies the shipped file as 'current'"; else bad "status did not identify 'current'"; fi
@@ -96,7 +126,8 @@ for k in decalTextures ignoreTextures uiTextures skyBoxTextures particleTextures
   c=$(grep -m1 "rtx.$k = " config/rtx.conf | tr -d '\r' | sha256sum)
   [ "$a" = "$c" ] && ok "texture list rtx.$k carried through unchanged" || bad "texture list rtx.$k changed"
 done
-for k in sceneScale zUp skyBrightness emissiveIntensity localtonemap.shadows translucentMaterial.normalIntensity; do
+for k in sceneScale zUp skyBrightness emissiveIntensity localtonemap.shadows translucentMaterial.normalIntensity \
+         tonemappingMode tonemap.exposureBias localtonemap.highlights tonemap.finalizeWithACES; do
   a=$(get "$G/rtx.conf" "rtx.$k"); b=$(get config/rtx.conf "rtx.$k")
   [ "$a" = "$b" ] && ok "look-critical rtx.$k unchanged ($a)" || bad "look-critical rtx.$k changed ($b -> $a)"
 done

@@ -27,6 +27,8 @@
 rtx.restirGI.boilingFilterRemoveReservoirThreshold = 30
 rtx.decalTextures = 0x0270E41E9BF89516, 0x11C6FD244CAED049, 0x1A1B9A4E6CAF5E9E, 0x1A2F5F13EC1D6CDD, 0x1B91964934D3E1B1, 0x20D2BD9A8F8CB7F1, 0x26626F3D0B9542FD, 0x2E80B8878F003D7A, 0x35BF4E34E77A0B7C, 0x38FA6E19237E82FE, 0x39E5406DC4D3006D, 0x3F3E25323C1E0220, 0x432E891037A5F4CE, 0x45ABC0B544E897FF, 0x470163CEBDD9080F, 0x4B0B6CE7E032DD29, 0x56190D6EE7379FE5, 0x5B1F839051230514, 0x5F3832E42403337A, 0x62DC87C416A654CD, 0x64DC83584D2F7779, 0x66EFA5FE769C8102, 0x6BD6FA2D62E32EDA, 0x73AC780C8EDE6485, 0x76CF04376B04B8B4, 0x78F9BBFB79156E88, 0x791CFC283E2D00E1, 0x86E7F5D9BDCB6871, 0x960E9DA1FBC8D55C, 0x98F1B88719A0D2C8, 0xA244C9C2D5956E1A, 0xA29AEC4A3D81DFDC, 0xA6D7045F8740A5DF, 0xB97DAA02F39D2524, 0xBBB8BF8C92DEC94F, 0xBE686B6B6B8AE7ED, 0xC1DEE32B1A6EDBE3, 0xC7593BF9215112DD, 0xC8EDDFB620CA8A5F, 0xCA4EAF478D3E998C, 0xD0A66A65C7528968, 0xDB4F6AFB517CAA97, 0xDD0B477219193EA2, 0xE099A3A212027ADE, 0xE857B38281B72432, 0xFC343E2104C444F9, 0xFDFC58D603A94554
 rtx.restirGI.validateVisibilityChange = True
+# n16 audit: dead name in 1.6.1 (the option is rtx.volumetrics.enableFogMaxDistanceRemap,
+# default True), so it has never run. Left alone - n17 owns fog. See config/rtx.conf.
 rtx.enableFogMaxDistanceRemap = False
 rtx.dlfg.enable = False
 rtx.fallbackLightRadius = 3
@@ -49,7 +51,7 @@ rtx.enableTransmissionApproximationInIndirectRays = True
 rtx.freeCameraSpeed = 50
 rtx.stochasticAlphaBlendOpacityThreshold = 0.2
 rtx.lightmapTextures = 0xB6E06CE024FE9111
-rtx.localtonemap.shadows = 2.5
+# rtx.localtonemap.shadows moved to the n16 block at the end of this file (2.5 -> 1.0).
 rtx.dlfg.enablePresentMetering = False
 rtx.instanceOverrideInstanceIdx = 2147483647
 rtx.useNewGuiInputMethod = False
@@ -207,7 +209,8 @@ rtx.hairCardTextures = 0x0504F3815DC61AA1, 0x08E10D793AD4E2AA, 0x0B1832275CFCB7C
 
 # Kept from the live file, unchanged, because they are look-critical for the pack, not fps:
 #   rtx.sceneScale 0.01 / rtx.zUp True / rtx.ignoreGameDirectionalLights True /
-#   rtx.skyBrightness 1.0 / rtx.emissiveIntensity 1.0 / rtx.localtonemap.shadows 2.5 /
+#   rtx.skyBrightness 1.0 / rtx.emissiveIntensity 1.0 / rtx.localtonemap.shadows (n16 moved it
+#   to 1.0 and wrote the reason at the end of this file) /
 #   rtx.autoExposure.enabled False / rtx.translucentMaterial.normalIntensity (s02 water; n07 sets
 #   it to 1.0 to pair with the regenerated sheets)
 #   and every texture-hash list (decal/ui/skyBox/particle/animatedWater/lightmap/ignore).
@@ -236,6 +239,10 @@ rtx.di.maxHistoryLength = 12
 rtx.risLightSampleCount = 12
 rtx.volumetrics.temporalReuseMaxSampleCount = 4
 rtx.volumetrics.restirGridGuardBandFactor = 1.3
+# n16 audit: both names are DEAD in 1.6.1 - the options are rtx.antiCulling.object.enable and
+# rtx.antiCulling.light.enable (both default False), so anti-culling has never been on here.
+# Renaming them is a TLAS/VRAM decision (numObjectsToKeep default 10000), not a look one: it
+# belongs to a perf task. docs/FINDINGS.md, "Dead keys".
 rtx.antiCulling.object = True
 rtx.antiCulling.light = True
 rtx.antiCulling.light.numFramesToExtendLightLifetime = 600
@@ -262,3 +269,30 @@ rtx.volumetrics.enableTranslucentShadows = True
 # is "...include OBJECT_MASK_TRANSLUCENT into primary visibility rays", and over an ocean-sized
 # single sheet that is an extra intersection on every shadow ray. If the 60 fps profile wants the
 # coloured light through water, add it and watch the frame time at stop 11-water-santa-maria.
+
+
+# ---------------------------------------------------------------------------
+# n16 (2026-11-13, docs/TARGET.md §4 T4): the daytime frame has no bright end - the tonemap.
+# Same five keys as config/rtx.conf, same values; the tooltips, the 1.6.1 source lines and the
+# retune ladder are in config/rtx.conf's n16 block and .strata/notes-n16-tonemap-highlights.md.
+# Nothing here costs rays: the local tonemapper's mip pyramid stops running entirely
+# (rtx_local_tone_mapping.cpp:144 returns false while rtx.tonemappingMode = 0), and the global
+# pass is three compute dispatches over the frame plus a 256-bin curve (rtx_tone_mapping.cpp).
+# Measured before: headroom p99.9/p50 1.41-1.81, ceiling 0.003-0.027 %, p50 123-170
+# (build/tmp/n15/gap.json). This task could not render (rule 1), so the after-numbers are owed by
+# the next live run - docs/TARGET.md §6.
+rtx.tonemappingMode = 0
+#   NOT rtx.tonemap.tonemappingMode: that name is not an option and is silently ignored
+#   (tools/rtx-option-audit.py against config/rtx-options-1.6.1.tsv). 0 = Global, default 1 = Local.
+rtx.tonemap.exposureBias = -0.5
+#   Hard EV (auto exposure is off here too): exposureFactor = 2^(exposureBias + userEVBias).
+#   The Remix UI's "Global Exposure" drag; -0.5 EV is the p50 anchor, retune ladder in rtx.conf.
+rtx.localtonemap.shadows = 1.0
+rtx.localtonemap.highlights = 2.0
+#   Both inert while rtx.tonemappingMode = 0; they are the Local A/B starting values (the shipped
+#   2.5 / default-4 pair is a 90:1 squeeze of exactly the shadow and highlight branches).
+#   rtx.tonemap.finalizeWithACES = True is already in this file (line 84) and is NOT repeated here -
+#   within one layer the later line wins (Config::parseOption -> m_options.insert_or_assign,
+#   src/util/config/config.cpp:1137), so a second copy only invites a future edit of the wrong one.
+#   What does change is that in Global mode it is live for the first time: in Local mode it was
+#   rtx.localtonemap.finalizeWithACES (default True) that ran.

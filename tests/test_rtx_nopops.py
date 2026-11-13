@@ -53,6 +53,7 @@ WANT = {
 LOOK = [
     "rtx.localtonemap.shadows", "rtx.skyBrightness", "rtx.emissiveIntensity",
     "rtx.tonemap.finalizeWithACES", "rtx.translucentMaterial.normalIntensity",
+    "rtx.tonemappingMode", "rtx.tonemap.exposureBias", "rtx.localtonemap.highlights",
     "rtx.sceneScale", "rtx.zUp", "rtx.ignoreGameDirectionalLights",
     "rtx.graphicsPreset", "rtx.pathMaxBounces", "rtx.pathMinBounces",
     "rtx.usePostFilter", "rtx.postFilterThreshold",

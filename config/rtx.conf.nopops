@@ -62,13 +62,23 @@
 #       pool this plugin keeps live that is finding A. nopops inherits whatever the
 #       shipped file says, so the A/B stays a temporal-only diff.
 #   rtx.usePostFilter / rtx.postFilterThreshold stay False / 10 (an NRC training-clamp pair).
-#   Every look key is byte-identical to config/rtx.conf: localtonemap.shadows 2.5 (it amplifies a
-#       step in direct light, and lowering it would flatten the shadow edges of shots 02-04 and
-#       09/10 - measured and written down in the notes, not shipped), skyBrightness,
-#       emissiveIntensity, tonemap.finalizeWithACES, translucentMaterial.normalIntensity 0.35,
-#       sceneScale, zUp, ignoreGameDirectionalLights, graphicsPreset, and all eight texture-hash
-#       lists. scripts/rtxprofile-selftest.sh hashes the lists and asserts the look keys and
+#   Every look key is byte-identical to config/rtx.conf, including the n16 tonemap block
+#       (tonemappingMode 0 = Global, tonemap.exposureBias -0.5, localtonemap.shadows 1.0,
+#       localtonemap.highlights 2.0, tonemap.finalizeWithACES True). n16 changed the shipped
+#       localtonemap.shadows from 2.5 to 1.0 - it amplifies a step in direct light, and at 2.5 it
+#       lifted the floor - and this profile inherits whatever the shipped file says, so the A/B
+#       stays a temporal-only diff either way. Also inherited unchanged: skyBrightness,
+#       emissiveIntensity, translucentMaterial.normalIntensity, sceneScale, zUp,
+#       ignoreGameDirectionalLights, graphicsPreset, and all eight texture-hash lists.
+#       scripts/rtxprofile-selftest.sh hashes the lists and asserts the look keys and
 #       graphicsPreset come through unchanged.
+#   WHY n16 MATTERS FOR THIS A/B: with rtx.tonemappingMode = 0 the local tonemapper is not
+#       dispatched at all (rtx_local_tone_mapping.cpp:144), so the whole-image curve in
+#       rtx_tone_mapping.cpp is what runs, and that curve is mixed with the previous frame's at
+#       exp(-0.07) - about 14 frames to settle (tonemapping_tone_curve.comp.slang, "Temporal
+#       filtering"). That is a second, independent smoothing of a lighting change, on top of the
+#       nine temporal keys this profile moves. Read the A/B with that in mind: if a step now lags,
+#       it may be the curve, not the reservoirs.
 #
 # HOW TO READ THE A/B: scripts/lighting-test.sh, driving under the lamps at dusk with
 # [clock] apply=1. Two things the plugin cannot fix from its own side: the shadow-direction jump
@@ -87,6 +97,10 @@ rtx.minReplacementTextureMipMapLevel = 1
 rtx.restirGI.boilingFilterRemoveReservoirThreshold = 30
 rtx.decalTextures = 0x0270E41E9BF89516, 0x11C6FD244CAED049, 0x1A1B9A4E6CAF5E9E, 0x1A2F5F13EC1D6CDD, 0x1B91964934D3E1B1, 0x20D2BD9A8F8CB7F1, 0x26626F3D0B9542FD, 0x2E80B8878F003D7A, 0x35BF4E34E77A0B7C, 0x38FA6E19237E82FE, 0x39E5406DC4D3006D, 0x3F3E25323C1E0220, 0x432E891037A5F4CE, 0x45ABC0B544E897FF, 0x470163CEBDD9080F, 0x4B0B6CE7E032DD29, 0x56190D6EE7379FE5, 0x5B1F839051230514, 0x5F3832E42403337A, 0x62DC87C416A654CD, 0x64DC83584D2F7779, 0x66EFA5FE769C8102, 0x6BD6FA2D62E32EDA, 0x73AC780C8EDE6485, 0x76CF04376B04B8B4, 0x78F9BBFB79156E88, 0x791CFC283E2D00E1, 0x86E7F5D9BDCB6871, 0x960E9DA1FBC8D55C, 0x98F1B88719A0D2C8, 0xA244C9C2D5956E1A, 0xA29AEC4A3D81DFDC, 0xA6D7045F8740A5DF, 0xB97DAA02F39D2524, 0xBBB8BF8C92DEC94F, 0xBE686B6B6B8AE7ED, 0xC1DEE32B1A6EDBE3, 0xC7593BF9215112DD, 0xC8EDDFB620CA8A5F, 0xCA4EAF478D3E998C, 0xD0A66A65C7528968, 0xDB4F6AFB517CAA97, 0xDD0B477219193EA2, 0xE099A3A212027ADE, 0xE857B38281B72432, 0xFC343E2104C444F9, 0xFDFC58D603A94554
 rtx.restirGI.validateVisibilityChange = False
+# n16 audit (tools/rtx-option-audit.py): this key is DEAD in 1.6.1 - the option is
+# rtx.volumetrics.enableFogMaxDistanceRemap (default True), so the line below has never done
+# anything and fog max-distance remap has been running at its default. Left as it is: turning
+# it into a live False is a fog change, and n17 owns fog. docs/FINDINGS.md, "Dead keys".
 rtx.enableFogMaxDistanceRemap = False
 rtx.dlfg.enable = False
 rtx.fallbackLightRadius = 3
@@ -116,7 +130,8 @@ rtx.enableTransmissionApproximationInIndirectRays = True
 rtx.freeCameraSpeed = 50
 rtx.stochasticAlphaBlendOpacityThreshold = 0.2
 rtx.lightmapTextures = 0xB6E06CE024FE9111
-rtx.localtonemap.shadows = 2.5
+# rtx.localtonemap.shadows moved into the n16 block at the end of this file (2.5 -> 1.0),
+# so that the tonemap keys this task ships sit together with their reasons.
 rtx.dlfg.enablePresentMetering = False
 rtx.instanceOverrideInstanceIdx = 2147483647
 rtx.useNewGuiInputMethod = False
@@ -278,12 +293,18 @@ rtx.volumetrics.restirGridGuardBandFactor = 1.5
 #    for, even though they are technically offscreen. This helps reduce noise in
 #    cases where the camera is moving around." 1.1 -> 1.5: the runtime's own
 #    answer to view-direction dependence, for the froxel/ReSTIR volumetric grid.
+# n16 audit: DEAD NAME. The option is rtx.antiCulling.object.enable (default False), so this
+# line and the one under it have never run - the anti-culling frustum is still off. The intent
+# below is right, the name is not; renaming them makes them live and that is a TLAS/VRAM
+# decision (numObjectsToKeep default 10000), not a look one, so it belongs to a perf task.
+# docs/FINDINGS.md, "Dead keys".
 rtx.antiCulling.object = True
 #   "Extends lifetime of objects that go outside the camera frustum (anti-culling
 #    frustum)." Off by default. This is about the GEOMETRY: a lamp post, a sign
 #    gantry or a pier railing that leaves the frustum leaves the TLAS, so a
 #    visibility ray to an off-screen lamp passes through it and the light leaks
 #   (and the post itself pops). Costs TLAS memory, not shaders.
+# n16 audit: DEAD NAME, see above - the option is rtx.antiCulling.light.enable (default False).
 rtx.antiCulling.light = True
 #   "Enable Anti-Culling for lights." Off by default. It applies to the game's
 #   own converted lights (rtx.enableReplacementLights is True and
@@ -417,6 +438,102 @@ rtx.opacityMicromap.building.splitBillboardGeometry = True
 #     Minecraft profile because there vertex colour is grass/leaf TINT, not baked light. SA's
 #     procobj cards also carry vertex colour, but we have not measured whether theirs are tint or
 #     baked fade, so it is an open item, not a shipped line.
+
+# ---------------------------------------------------------------------------
+# n16 (2026-11-13, docs/TARGET.md §4 T4): the daytime frame has no bright end.
+# Measured before (tools/target-gap.py, build/tmp/n15/gap.json, 640x360 + JPEG q72): our four
+# daytime shots sit at headroom p99.9/p50 = 1.41-1.81 with ceiling pixels (luma >= 252) at
+# 0.003-0.027 % of the frame, where the five reference frames are 1.79-3.49 and 0.01-3.95 %;
+# our p50 is 123-170 where theirs is 65-142. Notes with every number:
+# .strata/notes-n16-tonemap-highlights.md.
+#
+# Every key below was checked with tools/rtx-option-audit.py against config/rtx-options-1.6.1.tsv,
+# the runtime's OWN option table (RtxOptions.md at the remix-1.6.1 tag, auto-generated by Remix
+# itself, MIT, upstream github.com/NVIDIAGameWorks/dxvk-remix). That tool exists because the older
+# audit in this repo (tools/rtxkeycheck.py, a `strings` check) accepts rtx.tonemap.tonemappingMode
+# - the name the task file used - while the option is rtx.tonemappingMode: rtx_option.h:267 builds
+# the config name as category + "." + name, and the declaration is
+# RTX_OPTION("rtx", TonemappingMode, tonemappingMode, TonemappingMode::Local, ...) at
+# rtx_options.h:1181. A key that names no option is kept in the file and ignored
+# (rtx_option_layer.cpp:416-421), so the task's spelling would have made this whole change do
+# nothing, silently.
+rtx.tonemappingMode = 0
+#   "The tonemapping type to use, 0 for Global, 1 for Local (Default). ... Local tonemapping ...
+#   uses spatially-local parameters determined by regions of the rendered image rather than the
+#   whole image." Default 1 = Local, and Local is exactly the mechanism docs/FINDINGS.md ("Night
+#   realism") names: DxvkLocalToneMapping renders three synthetic exposures (x2^shadows, x1,
+#   x2^-highlights - with our 2.5 and the default 4 that is a 90:1 spread), weights them per pixel
+#   by a gaussian around 0.5 gamma luminance, mip-averages the pair to rtx.localtonemap.mip = 3
+#   and applies the fitted line as ONE multiplier on R, G and B - the runtime's own comment: "a
+#   crude multiplier on all RGB channels. This is... generally pretty wrong". A local normalisation
+#   toward 0.5 gamma lifts the floor and pulls the ceiling down, and it is re-solved around
+#   whatever is in frame (n10's view-dependent exposure; the daytime numbers above are what it does
+#   at noon). Global mode instead fits ONE curve to the whole frame's histogram, pins linear 0.18
+#   to 0.18, maps the top of the range to white, clamps any lift to rtx.tonemap.maxExposureIncrease
+#   (5 stops) and mixes that curve with the previous frame's at exp(-0.07) (~14 frames to settle),
+#   so a lighting change converges instead of snapping - which also matters for n01's "no pops" A/B.
+#   The graphics-preset layer does not own this key: updateGraphicsPresets (rtx_options.cpp:410-620)
+#   writes bounces, denoise, sparse rendering, volumetrics quality, stochastic alpha blend and
+#   postFx.enable, and no tonemap key - so with rtx.graphicsPreset = 1 this line is ours.
+rtx.tonemap.exposureBias = -0.5
+#   "The exposure value to use for the global tonemapper when auto exposure is disabled, or a bias
+#   multiplier on top of the auto exposure's calculated exposure value." Default 0, and auto
+#   exposure is off in every profile we ship, so this is a hard EV: rtx_tone_mapping.cpp:234 sets
+#   exposureFactor = 2^(exposureBias + userEVBias), where userEVBias = (userBrightness - 50)/100 *
+#   userBrightnessEVRange (rtx_options.h:1514-1516). -0.5 EV is the anchor that pulls p50 from
+#   ~147 toward the 100-130 target while the histogram fit leaves the top of the curve near white.
+#   Retune ladder for the next live run: p50 still above 130 -> -0.75, then -1.0; the frame goes
+#   muddy (p05 collapses, the night shots lose their floor) -> come back up and use
+#   rtx.tonemap.shadowContrast (default 0) instead of the exposure.
+#   The task's other two candidates, evaluated and NOT shipped:
+#     rtx.userBrightness / rtx.userBrightnessEVRange do feed the same EV bias, but their real
+#     config names are the doubled rtx.userBrightness.userBrightness and
+#     rtx.userBrightnessEVRange.userBrightnessEVRange (category + "." + name again - the short
+#     spellings are only the UI's category strings), and both carry RtxOptionFlags::UserSetting:
+#     they are the Remix UI's "Brightness" slider, they belong in user.conf, and user.conf sits
+#     ABOVE rtx.conf (rtx_option_layer.cpp:386-397 offers to migrate them out of rtx.conf). Trim
+#     the slider in game; do not fight it from a profile.
+#     rtx.postfx.exposureFraction is not an exposure knob at all - it is the shutter fraction of
+#     the post-FX motion blur (rtx_postFx.cpp:127 DragFloat("Exposure Fraction", ...) inside the
+#     motion-blur block, :294 postFxArgs.exposureFraction; tooltip "Simulate the camera exposure,
+#     the longer exposure will cause stronger motion blur", default 0.4). Shipping it for T4 would
+#     have bought blur, not highlights.
+rtx.localtonemap.shadows = 1.0
+#   "Shadow area strength. Higher values cause brighter shadows." Runtime default 2; this file said
+#   2.5 (as the live <game>/rtx.conf still does). INERT while rtx.tonemappingMode = 0, because
+#   DxvkLocalToneMapping::isEnabled() is false (rtx_local_tone_mapping.cpp:144) - written so the
+#   Local A/B (rtx.tonemappingMode = 1) starts from n05's number instead of the squeeze: 2^1 = x2
+#   where 2.5 was x5.66.
+rtx.localtonemap.highlights = 2.0
+#   "Highlight area strength. Higher values cause darker highlight." Runtime default 4, never set
+#   in this repo, so the highlight branch has always run at x2^-4 = x0.0625 - a 90:1 spread against
+#   shadows. Also inert while mode = 0; in the Local A/B the pair becomes 2^1 : 2^-2 = 8:1, which
+#   is the knob n05 parked at 1.5 (docs/FINDINGS.md, "Night realism").
+#
+# NOT changed, with the reason:
+#   rtx.tonemap.finalizeWithACES = True (already in this file; runtime default False). In Local
+#     mode it was inert - the local pass has its own rtx.localtonemap.finalizeWithACES, default
+#     True - so switching to Global newly turns it on: the apply pass runs ACESFilm over the fitted
+#     curve (tonemapping_apply_tonemapping.comp.slang). That is the filmic shoulder we want, and
+#     the task requires keeping it.
+#   rtx.useLegacyACES (default True) - "Use a luminance-only approximation of ACES that
+#     over-saturates the highlights." It now decides WHICH ACES runs. Untouched on purpose: two
+#     unmeasured changes at once is how a grading task ends up blaming the wrong knob. It is the
+#     first A/B if the sun and chrome come out posterised.
+#   rtx.autoExposure.enabled = False (kept). With Global mode and auto exposure off the exposure is
+#     one fixed number, so the frame stops re-exposing when the camera turns.
+#   rtx.tonemap.dynamicRange (15) / toneCurveMaxStops (8) / toneCurveMinStops (-24) /
+#   maxExposureIncrease (5) / curveShift (0) / shadowContrast (0) / shadowMinSlope (0) - the shape
+#   of the curve. All left at their defaults: they are the ladder behind the Remix UI's "Tuning
+#   Mode" checkbox and not one of them has a measurement behind it yet.
+#
+# MEASURED OR NOT, stated plainly: this task could not render - the header's rule 1 forbids running
+# the game, wine or Steam, and a tonemap change only becomes a number once the runtime draws a
+# frame. The keys, their defaults and the mechanism above are measured (the runtime's own table and
+# source); the DIRECTION of each knob is derived from that source; the after-numbers are owed by the
+# next live run, whose exact command is docs/TARGET.md §6. The before side is recorded in
+# build/tmp/n16/gap.json and in the notes, including the shots the 2026-11-12 report called good.
+# Undo: tools/rtxprofile.sh current <game>, or delete these five lines.
 
 
 # n01: the live temporal keys the shipped profile never wrote (see the header).

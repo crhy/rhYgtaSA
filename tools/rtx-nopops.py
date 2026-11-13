@@ -82,13 +82,23 @@ HEADER = """# rhyremix "no pops" A/B profile - n01. Install with:
 #       pool this plugin keeps live that is finding A. nopops inherits whatever the
 #       shipped file says, so the A/B stays a temporal-only diff.
 #   rtx.usePostFilter / rtx.postFilterThreshold stay False / 10 (an NRC training-clamp pair).
-#   Every look key is byte-identical to config/rtx.conf: localtonemap.shadows 2.5 (it amplifies a
-#       step in direct light, and lowering it would flatten the shadow edges of shots 02-04 and
-#       09/10 - measured and written down in the notes, not shipped), skyBrightness,
-#       emissiveIntensity, tonemap.finalizeWithACES, translucentMaterial.normalIntensity 0.35,
-#       sceneScale, zUp, ignoreGameDirectionalLights, graphicsPreset, and all eight texture-hash
-#       lists. scripts/rtxprofile-selftest.sh hashes the lists and asserts the look keys and
+#   Every look key is byte-identical to config/rtx.conf, including the n16 tonemap block
+#       (tonemappingMode 0 = Global, tonemap.exposureBias -0.5, localtonemap.shadows 1.0,
+#       localtonemap.highlights 2.0, tonemap.finalizeWithACES True). n16 changed the shipped
+#       localtonemap.shadows from 2.5 to 1.0 - it amplifies a step in direct light, and at 2.5 it
+#       lifted the floor - and this profile inherits whatever the shipped file says, so the A/B
+#       stays a temporal-only diff either way. Also inherited unchanged: skyBrightness,
+#       emissiveIntensity, translucentMaterial.normalIntensity, sceneScale, zUp,
+#       ignoreGameDirectionalLights, graphicsPreset, and all eight texture-hash lists.
+#       scripts/rtxprofile-selftest.sh hashes the lists and asserts the look keys and
 #       graphicsPreset come through unchanged.
+#   WHY n16 MATTERS FOR THIS A/B: with rtx.tonemappingMode = 0 the local tonemapper is not
+#       dispatched at all (rtx_local_tone_mapping.cpp:144), so the whole-image curve in
+#       rtx_tone_mapping.cpp is what runs, and that curve is mixed with the previous frame's at
+#       exp(-0.07) - about 14 frames to settle (tonemapping_tone_curve.comp.slang, "Temporal
+#       filtering"). That is a second, independent smoothing of a lighting change, on top of the
+#       nine temporal keys this profile moves. Read the A/B with that in mind: if a step now lags,
+#       it may be the curve, not the reservoirs.
 #
 # HOW TO READ THE A/B: scripts/lighting-test.sh, driving under the lamps at dusk with
 # [clock] apply=1. Two things the plugin cannot fix from its own side: the shadow-direction jump

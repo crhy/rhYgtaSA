@@ -120,7 +120,7 @@ Two extra facts worth keeping:
 | **T1** PBR materials | the pack's PBR maps **plus DLSS 5's learned materials** on an RTX 5090 | the same pack: **2334** `mat_<HASH>` materials, of which only ~300 have maps (315 `_normal`, 280 `_rough`, 185 `_height`, **32 `_metal`**); the rest get the runtime's default legacy BRDF | (a) turn the runtime's own material knobs: `rtx.legacyMaterial.roughnessConstant` / `.metallicConstant` / `.roughnessAnisotropy`, `rtx.opaqueMaterial.roughnessScale/roughnessBias/metallicScale/metallicBias`; (b) offline PBR-ify pass (normal+roughness from albedo) for the top ground/road textures by hash — we already read and write DDS in `tools/water_normal_soft.py`; (c) probe `rtx.dlssNeuralRendering` and record the verdict | (a) 40 min · (b) 3–4 h · (c) 45 min | pack is **MIT** — patchable and re-hostable with credit; Proper Shaders is proprietary, link only |
 | **T2** HD geometry / textures | an "8K texture pack" claim; the pack itself is 2K/4K; Remix 1.6 adds OpenEXR/HDR skyboxes and ComfyUI 2.0 AI texture pipelines | the pack's 2K albedo set (164 of 345 at 2048 px), `rtx.texturemanager.budgetPercentageOfAvailableVram = 40` on a 16 GB card, no HDR sky | measure the texture budget and the streaming cost of the pack's 4K set; HDR sky is pack/Toolkit work, not ours | 1–2 h to measure; the assets are upstream | MIT pack; the runtime zip is NVIDIA's EULA (`redistribute: ask` in `deps/manifest.json`) |
 | **T3** atmosphere | Remix volumetrics; DLSS 5's foliage light scattering + volumetric control mask | `rtx.volumetrics.enable = True` and the froxel keys — but **no fog-remap keys at all**, so San Andreas' fixed-function fog never becomes volumetric | `rtx.volumetrics.enableFogRemap = True` + `fogRemapMaxDistanceMin/MaxMeters` + `fogRemapTransmittanceMeasurementDistanceMin/MaxMeters` + `fogRemapColorMultiscatteringScale` (and try `enableHeterogeneousFog`); target far/near 0.5–0.9 and sky luma ≥ 150 | 60–90 min + one tour | none (runtime knobs) |
-| **T4** grading | warm filmic with real roll-off (ceiling 1–4 %, headroom 2.4–3.5), partly DLSS 5's tone model | `rtx.tonemap.finalizeWithACES = True`, but `tonemappingMode` left at its default **Local**, `localtonemap.shadows = 2.5`, auto-exposure off → headroom 1.4–1.8, ceiling ≤ 0.03 %, warmth −67…+10 | `rtx.tonemap.tonemappingMode = 0` (Global) for the daytime profile, retune `rtx.localtonemap.*`, and pull p50 to ≈ 110 with `rtx.userBrightness` / `userBrightnessEVRange` / `rtx.postfx.exposureFraction` while letting p99.9 reach ≈ 250. Targets: ceiling 0.5–3 %, headroom ≥ 2.0, warmth ≥ +15, warm share ≥ 70 % | 60–90 min + measure | none (runtime knobs) |
+| **T4** grading | warm filmic with real roll-off (ceiling 1–4 %, headroom 2.4–3.5), partly DLSS 5's tone model | `rtx.tonemap.finalizeWithACES = True`, but `tonemappingMode` left at its default **Local**, `localtonemap.shadows = 2.5`, auto-exposure off → headroom 1.4-1.8, ceiling ≤ 0.03 %, warmth −67…+10 | **shipped by n16:** `rtx.tonemappingMode = 0` (Global — not `rtx.tonemap.tonemappingMode`, which is not an option), `rtx.tonemap.exposureBias = -0.5` as the anchor, `localtonemap.shadows 2.5 → 1.0` and `highlights 4 → 2.0` for the Local A/B, `finalizeWithACES` kept. Targets: ceiling 0.5–3 %, headroom ≥ 2.0, warmth ≥ +15, warm share ≥ 70 % — **not yet measured**, see §6 | 60–90 min + measure | none (runtime knobs) |
 
 **KEEP WHAT WORKS still applies.** Every one of these tasks must re-measure the shots the 2026-11-12
 report called good (the sodium lamps at night, the sunset on the pier, the dawn) and show they did
@@ -129,17 +129,12 @@ files, so "before" and "after" are two commands.
 
 ## 5. The plan, in queue order
 
-| task | gap | one line |
-|---|---|---|
-| **n16-tonemap-highlights** | T4 | Global tonemap + an exposure anchor that lets highlights exist; the biggest measured number in the table |
-| **n17-fog-aerial-perspective** | T3 | map San Andreas' fixed-function fog onto Remix volumetrics so distance fades instead of staying crisp |
-| **n18-legacy-material-brdf** | T1a | give the ~2000 materials that have no PBR maps a sane roughness/metallic instead of the runtime default |
-| **n19-dlss5-neural-probe** | T1c/T4 | find out whether `rtx.dlssNeuralRendering` does anything on an RTX 4070 Ti SUPER under Proton, and write the answer down either way |
-
-After those, the two bigger bets are recorded but not scheduled: an offline **PBR-ify pass**
-(generate normal/roughness for the most-seen ground and road textures, patch the pack's material
-layer with a backup, MIT lets us) and a **texture-budget pass** (what the pack's 4K set costs on
-16 GB, and whether the 40 % texture-manager budget is the right number).
+| task | gap | one line | state |
+|---|---|---|---|
+| **n16-tonemap-highlights** | T4 | Global tonemap + an exposure anchor that lets highlights exist; the biggest measured number in the table | **config shipped, after-numbers owed** (see §6) |
+| **n17-fog-aerial-perspective** | T3 | map San Andreas' fixed-function fog onto Remix volumetrics so distance fades instead of staying crisp | queued — and read §6 of FINDINGS first: `rtx.enableFogMaxDistanceRemap` in our profiles is a **dead key**, the option is `rtx.volumetrics.enableFogMaxDistanceRemap` and it has been running at its default True |
+| **n18-legacy-material-brdf** | T1a | give the ~2000 materials that have no PBR maps a sane roughness/metallic instead of the runtime default | queued |
+| **n19-dlss5-neural-probe** | T1c/T4 | find out whether `rtx.dlssNeuralRendering` does anything on an RTX 4070 Ti SUPER under Proton, and write the answer down either way | queued |
 
 ## 6. Re-measuring this at any time
 
@@ -155,6 +150,61 @@ round-trip). Use the same options on both sides or the comparison is meaningless
 docstring defines every metric and its constants; `tests/test_target_gap.py` keeps the definitions
 from drifting.
 
-What rhY should look at in game after n16/n17: whether the sun, chrome and wet patches are
-**bright** rather than grey; whether the far skyline is paler than the near buildings; whether the
-daytime frame still looks like San Andreas at noon and not like a blue-tinted flat render.
+### The n16 run: the tonemap change is in the tree and has never been rendered
+
+n16 shipped `rtx.tonemappingMode = 0`, `rtx.tonemap.exposureBias = -0.5`,
+`rtx.localtonemap.shadows 2.5 → 1.0` and `rtx.localtonemap.highlights 4 → 2.0` in
+`config/rtx.conf`, `config/rtx.conf.perf` and `config/rtx.conf.nopops`, and it could **not** measure
+them: the header rule of every task in this repo forbids running the game, wine or Steam, and a
+tonemap change only becomes a number once the runtime draws a frame. So the after-numbers below are
+owed by whoever runs the next tour. Nothing else in this page changes; this section is the protocol.
+
+1. Install the profile and take the tour (the 16-stop tour, so the shots line up with the baselines):
+   `tools/rtxprofile.sh perf <game>` then `scripts/shot.sh` / the tour as usual.
+2. Daytime, against `build/tmp/n15/gap.json` (the before side is also in `build/tmp/n16/gap.json`):
+   ```
+   python3 tools/target-gap.py <the 5 reference frames> <the 4 new daytime shots> \
+       --json build/tmp/n16/gap-after.json
+   ```
+   Targets (docs/TARGET.md §4 T4): **ceiling 0.5-3 %, headroom >= 2.0, p50 100-130, warmth >= +15,
+   warm-hue share >= 70 %**.
+3. KEEP WHAT WORKS, first thing, before tuning anything else — `build/tmp/n16/good-before.json` is
+   the baseline (02 p50 17.4 / 03 p50 7.0 / 04 p50 63.6 / 08a 100.6 / 08b 86.3 / 09 27.8):
+   ```
+   python3 tools/target-gap.py <the six new good shots> --json build/tmp/n16/good-after.json
+   ```
+4. Abort ladder, in this order, one change per run:
+   * night shots darker than the baseline (02/03 below p50 17.4 / 7.0, or % black above 34/52) →
+     `rtx.tonemap.exposureBias = 0`, keep the mode change, re-run;
+   * p50 still above 130 at noon with the anchor at 0 → `rtx.tonemap.exposureBias = -0.5` again and
+     move the curve instead: `rtx.tonemap.shadowMinSlope` / `shadowContrast` (both default 0);
+   * sun, chrome or wet asphalt posterised (ceiling > 3 % with a hard clip, `% clip` climbing while
+     `roll-off band %` falls) → try `rtx.useLegacyACES = False` (the refined ACES; the default True
+     is the variant whose tooltip says it "over-saturates the highlights");
+   * the frame still re-exposes when the camera turns, or the whole image brightens when the sky is
+     in frame → that is the histogram fit itself: put `rtx.tonemappingMode = 1` back with
+     `shadows = 1.0 / highlights = 2.0` and compare — that pair is why the local values were retuned
+     instead of left at 2.5 / 4.0;
+   * if a good shot moves badly and none of the above fixes it, **the change is wrong, not the
+     shot**: `tools/rtxprofile.sh current <game>` and the n16 block comes out of the three profiles.
+5. What to look at with your own eyes, in this order: whether the sun, chrome and wet patches are
+   **bright** rather than grey; whether the far skyline is paler than the near buildings; whether the
+   daytime frame still looks like San Andreas at noon and not like a blue-tinted flat render; and
+   whether the sodium lamps at 21:00 still read (they are the ones this change can break).
+
+One more thing to check on that first run, because it is free: the runtime's own dump of what the
+layers resolved. `grep -A80 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log` should
+show `rtx.tonemappingMode = 0` and `rtx.tonemap.exposureBias = -0.5`. If a key is missing there, the
+layer below it is not being read — and `tools/rtx-option-audit.py` is the tool that says whether the
+name in the file is a name the runtime knows at all.
+
+After those, the two bigger bets are recorded but not scheduled: an offline **PBR-ify pass**
+(generate normal/roughness for the most-seen ground and road textures, patch the pack's material
+layer with a backup, MIT lets us) and a **texture-budget pass** (what the pack's 4K set costs on
+16 GB, and whether the 40 % texture-manager budget is the right number). A third one came out of
+n16: a **static EV anchor cannot serve noon and 21:00 at once** — the plugin already pushes
+`rtx.skyBrightness` per frame (`plugin/src/sun.cpp:542`) and `remixapi_SetConfigVariable` takes any
+real option at runtime, so a time-of-day `rtx.tonemap.exposureBias` is the shape of the fix, but it
+needs the n16 numbers first. Queued as `.strata/n22-daynight-exposure-anchor.md` (immediately after
+n16 in `.strata/night-queue.txt`), with the night numbers it has to beat and the rate-limiter rule
+written into it.
