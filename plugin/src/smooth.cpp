@@ -63,6 +63,43 @@ bool rhyRateStep(RhyRate& r, float target, float dt) {
     return true;
 }
 
+// ---------------------------------------------------- signed rate limit (n22)
+
+void rhySignedRateInit(RhySignedRate& r, float value, float maxPerSec, float eps) {
+    r.cur = value;
+    r.maxPerSec = maxPerSec > 0.0f ? maxPerSec : 0.0f;
+    r.eps = eps >= 0.0f ? eps : 0.0f;
+}
+
+bool rhySignedRateStep(RhySignedRate& r, float target, float dt) {
+    if (!(dt > 0.0f)) {
+        dt = 0.0f;
+    }
+    if (!(r.maxPerSec > 0.0f)) {
+        return false;  // a bound of 0 means "frozen", and frozen means frozen
+    }
+    if (r.eps > 0.0f && std::fabs(target - r.cur) <= r.eps) {
+        if (r.cur == target) {
+            return false;
+        }
+        r.cur = target;
+        return true;
+    }
+    const float room = r.maxPerSec * dt;
+    float next = target;
+    if (next > r.cur + room) {
+        next = r.cur + room;
+    }
+    if (next < r.cur - room) {
+        next = r.cur - room;
+    }
+    if (next == r.cur) {
+        return false;
+    }
+    r.cur = next;
+    return true;
+}
+
 // ------------------------------------------------------------------ fades
 
 void rhyFadeClampRampSeconds(float& up, float& down) {

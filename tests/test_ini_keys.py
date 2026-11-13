@@ -30,8 +30,9 @@ CFG = os.path.join(REPO, "plugin", "src", "config.cpp")
 HDR = os.path.join("plugin", "src", "config.h")
 
 # The sections this repo documents in the shipped ini. [fade] is s28's ramp/budget layer plus
-# n01's handle cadence; [clock] is s29's time axis; [shutdown] is n09's exit detection.
-DOCUMENTED = ("clock", "fade", "shutdown")
+# n01's handle cadence; [clock] is s29's time axis; [shutdown] is n09's exit detection;
+# [tonemap] is n22's sun-driven exposure anchor (its floors are in plugin/src/exposure.h).
+DOCUMENTED = ("clock", "fade", "shutdown", "tonemap")
 
 CALL = re.compile(r"\bini(Int|Float|String|U64|Rgb)(Sec)?\s*\(")
 LIT = re.compile(r'"([^"]*)"')
@@ -220,6 +221,32 @@ class TestIniKeys(unittest.TestCase):
             self.assertIn(key, kinidefaults().get("fade", {}),
                           "kIniDefaults does not write %s" % key)
 
+    def test_the_tonemap_anchor_knobs_are_all_there(self):
+        # n22: the [tonemap] block is the undo switch plus the curve's endpoints. If
+        # any of these disappears the feature becomes un-disableable, which is the
+        # one thing an unmeasured runtime write to the user layer must not be.
+        for key in ("apply", "day_ev", "night_ev", "dusk_deg", "dawn_deg",
+                    "max_ev_per_sec", "min_ev", "max_ev"):
+            self.assertIn(("tonemap", key), self.code, "config.cpp has no [tonemap] %s" % key)
+            self.assertIn(key, self.ini_doc.get("tonemap", {}),
+                          "config/rhyremix-production.ini does not document %s" % key)
+            self.assertIn(key, kinidefaults().get("tonemap", {}),
+                          "kIniDefaults does not write %s" % key)
+
+    def test_the_day_anchor_equals_the_profile_anchor(self):
+        """n22's no-op-at-noon property, checked where both sides are visible.
+
+        config/rtx.conf carries rtx.tonemap.exposureBias = -0.5 (n16). The plugin's
+        [tonemap] day_ev must be the SAME number, or the plugin would move the
+        daytime grade under a run that thinks it is measuring n16.
+        """
+        conf = read(os.path.join(REPO, "config", "rtx.conf"))
+        m = re.search(r"^\s*rtx\.tonemap\.exposureBias\s*=\s*(-?[0-9.]+)\s*$",
+                      conf, re.M)
+        self.assertIsNotNone(m, "config/rtx.conf no longer sets rtx.tonemap.exposureBias")
+        self.assertAlmostEqual(num(self.code[("tonemap", "day_ev")]), float(m.group(1)),
+                               msg="[tonemap] day_ev must equal rtx.conf's static anchor")
+
     def test_cadence_bounds_are_ordered_in_the_code(self):
         # handle_cadence_min_ms must stay below handle_cadence_ms, and the direction budget
         # must not be looser than the body's own [sun] step_deg, or the cadence is just the
@@ -233,7 +260,10 @@ class TestIniKeys(unittest.TestCase):
         hdr = read(os.path.join(REPO, HDR))
         missing = [k for k in ("handle_cadence_ms", "handle_cadence_min_ms", "handle_step_deg",
                                "handle_rel_lum", "clock_ms_per_game_minute", "clock_jitter_min",
-                               "clock_reanchor_ms", "clock_calendar_stable_reads")
+                               "clock_reanchor_ms", "clock_calendar_stable_reads",
+                               "tonemap_apply", "tonemap_day_ev", "tonemap_night_ev",
+                               "tonemap_dusk_deg", "tonemap_dawn_deg",
+                               "tonemap_max_ev_per_sec", "tonemap_min_ev", "tonemap_max_ev")
                    if not re.search(r"\b%s\b" % k, hdr)]
         self.assertEqual(missing, [], "config.h does not declare: " + ", ".join(missing))
 

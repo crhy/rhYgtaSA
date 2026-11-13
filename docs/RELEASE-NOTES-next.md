@@ -97,6 +97,18 @@ If something in the update looks wrong, everything is reversible
 - The sky's brightness now follows the sun at runtime, so night is actually dark and lamps can
   compete with it. Two `rtx.conf` values were changed and nothing else: `rtx.emissiveIntensity`
   10 → 1.0 (shopfront windows were being rendered at 30000) and `rtx.skyBrightness` 3 → 1.0.
+- **The brightness of the whole picture now follows the sun too.** The new grading profile fixes the
+  renderer's exposure at one number for the whole frame — good at noon, wrong at night, because the
+  file that carries it cannot know what time it is. The plugin now drives that same number from the
+  sun's height: the noon value is unchanged (still −0.5 EV, so the daytime look is exactly what the
+  grading change was meant to test), and at 21:00 the frame gets twice the light it would otherwise
+  have had, arriving over at least twenty seconds rather than in one frame. If night now reads too
+  bright or too dark, the knob is `[tonemap] night_ev` in `rhyremix.ini` (edit it while the game
+  runs); `[tonemap] apply=0` stops the plugin writing it — and if an earlier run already wrote a
+  value, the Remix menu's own **Global Exposure** control sets it back, because that is the same
+  place the plugin writes. **We have not seen this in game yet** —
+  the numbers behind it are measurements of the old frames, and the first live run is what tells us
+  whether the night shots got better.
 
 ### Traffic signals
 
@@ -282,6 +294,11 @@ What each shot should prove, and the knobs to A/B if it does not, are in
    world still arrives all at once. In the log, the line to look at is
    `published: … rebuilds=… cad=…ms step<=… skip=…`: if `step<=` is near 0.25 while the world still
    pops, the step is the renderer's, and that is the answer the A/B is after.
+8. **Night brightness, after the exposure change.** At the 21:00 stops (under a lamp, the sodium
+   close-up, the signals) say whether the street is readable without being washed out, and whether the
+   sky is still black. In the log, the 10-second line now carries `exposure=+0.500 EV (target +0.500,
+   max step 0.005)` at a night stop and `exposure=-0.500` at a noon stop; if it reads −0.5 at 21:00 the
+   plugin is not pushing and that is a bug to report, not a look to describe.
 
 ---
 

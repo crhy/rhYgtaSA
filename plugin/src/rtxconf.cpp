@@ -184,6 +184,11 @@ static const ProbeKey kProbeKeys[] = {
     {"rtx.localtonemap.exposure", "1.0"},
     {"rtx.localtonemap.boostLocalContrast", "False"},
     {"rtx.tonemap.finalizeWithACES", "True"},
+    // n22: the key the plugin now drives at runtime from the sun's elevation
+    // (plugin/src/exposure.h, sun.cpp). Probing it costs one SetConfigVariable and
+    // puts its name in the probe log next to the doubled-name trap above, which is
+    // how a live run confirms the name the runtime knows is this one.
+    {"rtx.tonemap.exposureBias", "-0.5"},
     {"rtx.tonemap.toneCurveMinStops", "-6"},
     {"rtx.tonemap.toneCurveMaxStops", "6"},
     {"rtx.tonemap.colorGradingEnabled", "False"},

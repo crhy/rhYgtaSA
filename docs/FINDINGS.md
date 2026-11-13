@@ -1,3 +1,98 @@
+## One exposure anchor cannot serve noon and 21:00: driving `rtx.tonemap.exposureBias` from the sun (2026-11-13, n22)
+
+Task n22 (`.strata/n22-daynight-exposure-anchor.md`), the follow-up n16 queued. n16 shipped
+`rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles; in Global mode
+that anchor **is** the exposure of the whole frame, and rtx.conf is a file while the game clock is
+not. This section is what n22 measured, what it built, and - explicitly - what it could not measure.
+
+### First: does the n16 after-measurement exist? No
+
+The task's own stop condition was "take the n16 after-numbers from the live run first; if the night
+shots did not move badly, this task may be unnecessary". Checked:
+
+* `build/tmp/n16/` contains only `gap.json` and `good-before.json`, both written by n16 as **before**
+  files; there is no `gap-after.json` / `good-after.json` anywhere in `build/`;
+* the newest frame in `<game>/screenshots/shots/` is `shot_2026-11-12_11-51-04.png`, while n16's
+  config block was committed at **2026-11-13 01:26** - so no frame has ever been drawn with
+  `tonemappingMode = 0`;
+* `.strata/night-status.txt` shows no test session between n16 and n22.
+
+So the night side of n16 is **unmeasured, not measured-and-fine**, and the before numbers say the risk
+is real (below). Building the curve is justified; claiming to have measured its effect is not.
+
+### The mechanism, in one line each (1.6.1 source, already cited in the n16 section above)
+
+`exposureFactor = 2^(rtx.tonemap.exposureBias + userEVBias)` (`rtx_tone_mapping.cpp:234`), auto
+exposure off in every profile we ship, so the bias is a hard EV number; the Remix UI's own control is
+`DragFloat("Global Exposure", &rtx.tonemap.exposureBias, -4, 4)` (`rtx_tone_mapping.cpp:134`), which
+is where the ±4 clamp in `plugin/src/exposure.cpp` comes from. The option is real and settable at
+runtime: `config/rtx-options-1.6.1.tsv` lists `rtx.tonemap.exposureBias`, float, default **0** (so
+-0.5 is our number, not NVIDIA's), and `tests/test_exposure_anchor.py` fails if that name ever stops
+being an option - the same audit that caught n16's task file writing `rtx.tonemap.tonemappingMode`.
+
+### The before side, measured (the risk, not a target)
+
+`build/tmp/n16/good-before.json` (2026-11-12 10:22 tour, Local tonemapping + `shadows = 2.5`):
+noon p50 123-170 with 0.28-1.79 % black; 02 grove pools 21:00 p50 **17.4** / 34.5 % black; 03 sodium
+lamp closeup 21:00 p50 **7.0** / 52.2 % black; 09 grove dawn 05:30 p50 27.8 / 8.0 % black. The night
+frames' headroom (8.6-28) comes *from* the local tonemapper n16 switched off. A -0.5 EV anchor sized
+for noon takes a quarter of the light off a frame already sitting there.
+
+### What the plugin now publishes, computed by its own code (not a rendered frame)
+
+`tests/exposure_check.cpp` (output in `build/tmp/n22/curve.txt`), shipped `[tonemap]` defaults, the
+plugin's own solar model at day-of-year 186 / DST on:
+
+| tour stop | pinned clock | sun elevation | anchor EV | vs the static -0.5 | light |
+|---|---|---|---|---|---|
+| 00-baseline-noon-grove | 13:00 | +78.7° | -0.500 | +0.000 | x1.00 |
+| 12-car-mirror-grove | 13:00 | +78.7° | -0.500 | +0.000 | x1.00 |
+| 08a/08b sunset | 19:05 | +11.0° | -0.500 | +0.000 | x1.00 |
+| 09-grove-dawn | 05:30 | -3.8° | +0.089 | +0.589 | x1.50 |
+| 01-07, 11 night stops | 21:00 | -10.0° | +0.500 | +1.000 | x2.00 |
+
+Three facts fall out of that table and they are the design:
+
+* **Noon is untouched.** Where the sun is above the band the plugin publishes exactly the -0.5 the
+  profiles carry, so the daytime numbers the next live run takes are n16's numbers, unchanged by
+  n22. The sunset stops (19:05, +11°) are also untouched - the two shots the report called good at
+  p50 100.6 / 86.3 do not move.
+* **The input is the sky, not the dial.** Equal elevation gives equal EV: 19:30 (+6.19°) and the
+  morning minute that reaches the same elevation (06:24) get the same number to 1e-5, and the pair
+  symmetric about solar noon agrees within 0.01 EV. Note what this does *not* say: 05:30 and 19:30
+  are **not** the same sky at this latitude and season (the model's own sky: solar noon 12:57 at
+  +78.73°, sunrise 05:52, geometric sunset 20:04), so 05:30 is
+  still below the horizon at -3.8° and gets +0.089 EV while 19:30 is at +6.2° and gets -0.5. That is
+  the point of using elevation - a clock rule would have given them the same number, which is wrong.
+* **The rate bound is for the clock, not for the sun.** A whole simulated game day at the measured
+  clock rate (2 s per game minute) moves the anchor at <= **0.0004 EV/s**, twenty-five times under the
+  0.05 EV/s bound. What the bound exists for is a clock that jumps: the 2026-11-12 log recorded 104.5°
+  of sun elevation between two samples, and `plugin/lua/SARemix_Tour.lua` pins the clock per stop, so
+  13:00 -> 21:00 steps the *target* the whole 1.0 EV in one frame. Through the follower the published
+  value still takes 19.9 s to get there, with a biggest single-frame move of 0.005 EV.
+
+### Why a second rate limiter (`RhySignedRate`) and not `RhyRate`
+
+An EV is signed and its unit is absolute. `RhyRate`'s bound is multiplicative and it clamps `cur` and
+`target` to >= 0, so it cannot carry a value that crosses zero - measured in `tests/smooth_check.cpp`:
+`rhyRateStep` toward -0.5 EV publishes **0.0 forever**. The signed sibling is a straight slew limit
+(`|move| <= maxPerSec * dt`, plus a 0.005 EV deadband snap at the end of a ramp), and its floors live
+in `rhyExposureClamp()`: `max_ev_per_sec` refused below 0.005 and above 0.25 EV/s, the EV clamp
+repaired if inverted and never allowed outside ±8, the twilight band required to run upward and to
+have width. Same rule as `[fade] in_ms >= 500`: a floor cannot be talked out of from the ini.
+
+### Not measured (and what would settle it)
+
+**Nothing about how a frame looks with the curve on.** Rule 1 of every task in this repo forbids
+running the game, wine or Steam, and an exposure change only becomes a pixel once the runtime draws a
+frame. The next **live run** owes: the six good shots against `build/tmp/n16/good-before.json` (the
+abort line: 02 below p50 17.4 or above 34.5 % black, 03 below 7.0 / above 52.2 %), the four daytime
+shots against `build/tmp/n16/gap.json` (which n22 predicts are unchanged), and
+`grep -A80 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log` showing the plugin's
+value rather than rtx.conf's -0.5 at a 21:00 stop. The knob to argue with is `[tonemap] night_ev`:
+0.5 if the night frames come back blown, 0.0 to undo the swing while keeping the machinery, and
+`apply=0` to undo the whole change. The protocol is docs/TARGET.md §6.
+
 ## The tonemapper, and the keys our own profiles had been writing wrong (2026-11-13, n16)
 
 Task n16 (docs/TARGET.md §4 T4): the daytime frame has no bright end. Two findings came out of it —

@@ -568,6 +568,39 @@ nothing else - `tests/test_rtx_nopops.py` asserts exactly that, and
 prove it. Why those nine, and why `rtx.demodulate.enableDirectLightBoilingFilter` is not
 one of them, is the table in FINDINGS ("the renderer's own time knobs").
 
+| Night frames darkened by a noon number: one static EV anchor served 13:00 and 21:00 at once | Global tonemapping (n16) makes the exposure of the whole frame `2^(rtx.tonemap.exposureBias + userEVBias)`, and `rtx.conf` is read once and cannot know the clock | `[tonemap] day_ev → night_ev` blended over **solar elevation** and pushed at runtime (`plugin/src/exposure.cpp`, `sun.cpp`), slew-limited at `max_ev_per_sec` by the new `RhySignedRate` (`plugin/src/smooth.cpp`); `day_ev` equals the profile's −0.5 so noon is a no-op (n22) |
+
+## The exposure anchor is a function of the sun, not of the clock (n22)
+
+n16 turned the tonemapper Global (`rtx.tonemappingMode = 0`) to stop the daytime frame re-exposing
+per region. The cost is that the exposure of the whole frame is now one number,
+`2^(rtx.tonemap.exposureBias + userEVBias)` (`rtx_tone_mapping.cpp:234`), and the number in
+`config/rtx.conf` is the same at every hour. Measured on the shots the 2026-11-12 report called good
+(`build/tmp/n16/good-before.json`): noon p50 123-170 with 0.3-1.8 % black, 21:00 p50 7-17 with
+34-52 % black — and the night frames' headroom came from the local tonemapper n16 had just switched
+off. A −0.5 EV anchor sized for noon is a quarter of the light off those frames.
+
+`plugin/src/exposure.{h,cpp}` is the fix, and it is deliberately shaped like `tod.cpp`:
+
+* **Input: solar elevation**, through `skyDaylightFactor` (`solar.cpp:301`), not the clock. Equal
+  elevation gives equal EV, so dawn and dusk agree; 05:30 and 19:30 do **not** (at this latitude in
+  July the sun rises ~05:52 and sets ~19:57, so 05:30 is still below the horizon) — which is exactly
+  why elevation is the right input.
+* **Noon is a no-op.** `day_ev = -0.5` is the number the three profiles already carry, so the plugin
+  publishes what `rtx.conf` says whenever the sun is above the band. The daytime grade cannot move,
+  and the live run's noon numbers stay n16's numbers.
+* **Rate limited by a new primitive.** `RhyRate` cannot carry a signed value: its bound is
+  multiplicative and it clamps to ≥ 0 (measured in `tests/smooth_check.cpp`: toward −0.5 EV it
+  publishes 0.0 forever). `RhySignedRate` is a straight slew limit, shipped at 0.05 EV/s, with the
+  floors in `rhyExposureClamp()` (0.005..0.25 EV/s, EV clamp never outside ±8, band must run upward).
+  A whole simulated game day at the real clock rate moves the anchor at ≤ 0.0004 EV/s, so the bound
+  exists for the hazard the log actually recorded: 104.5° of sun elevation between two samples, and
+  the tour pinning the clock 13:00 → 21:00 in one frame.
+* **What it never writes:** `rtx.userBrightness` / `rtx.userBrightnessEVRange` (the doubled names,
+  `RtxOptionFlags::UserSetting`, `user.conf` above `rtx.conf`) and `rtx.tonemappingMode` at runtime.
+* **Not measured:** how a frame looks with it on. Rule 1 forbids rendering here; the live protocol is
+  docs/TARGET.md §6 and the knob to argue with is `night_ev`.
+
 ## Two writes to one game function: the signal hook and the bulb (s30)
 
 `CTrafficLights::DisplayActualLight` (0x49DAB0) registers every lit signal head

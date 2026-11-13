@@ -9,6 +9,7 @@
 
 #include "log.h"
 #include "lamps.h"
+#include "exposure.h"   // n22: the [tonemap] floors live with the curve
 
 // Same module-folder logic as log.cpp: ask for the module that contains a
 // function of this file, then take its directory. Falls back to the current
@@ -151,6 +152,16 @@ static const char* const kIniDefaults =
     "cloud_per_sec=0.05\r\n"
     "settings=rhyremix-rtx.conf\r\n"
     "probe=0\r\n"
+    "\r\n"
+    "[tonemap]\r\n"
+    "apply=1\r\n"
+    "day_ev=-0.5\r\n"
+    "night_ev=0.5\r\n"
+    "dusk_deg=-10\r\n"
+    "dawn_deg=4\r\n"
+    "max_ev_per_sec=0.05\r\n"
+    "min_ev=-4\r\n"
+    "max_ev=4\r\n"
     "\r\n"
     "[trafficlights]\r\n"
     "enabled=1\r\n"
@@ -683,6 +694,30 @@ static void loadConfig() {
     if (c.weather_cloud_per_sec > 10.0f) {
         c.weather_cloud_per_sec = 10.0f;
     }
+
+    // --- n22: the exposure anchor, driven by the sun ([tonemap] section) ---
+    // The floors are NOT here: they are rhyExposureClamp() in exposure.cpp, so an
+    // ini cannot be a way around them (same division as [fade], where
+    // rhyFadeClampRampSeconds owns the >= 0.5 s floor). Parsing only reads what the
+    // reader wrote and hands it to the clamp.
+    c.tonemap_apply = iniIntSec("tonemap", "apply", 1);
+    RhyExposureParams tp;
+    rhyExposureDefaults(tp);
+    tp.dayEv = iniFloatSec("tonemap", "day_ev", -0.5f);
+    tp.nightEv = iniFloatSec("tonemap", "night_ev", 0.5f);
+    tp.duskDeg = iniFloatSec("tonemap", "dusk_deg", -10.0f);
+    tp.dawnDeg = iniFloatSec("tonemap", "dawn_deg", 4.0f);
+    tp.maxEvPerSec = iniFloatSec("tonemap", "max_ev_per_sec", 0.05f);
+    tp.minEv = iniFloatSec("tonemap", "min_ev", -4.0f);
+    tp.maxEv = iniFloatSec("tonemap", "max_ev", 4.0f);
+    rhyExposureClamp(tp);
+    c.tonemap_day_ev = tp.dayEv;
+    c.tonemap_night_ev = tp.nightEv;
+    c.tonemap_dusk_deg = tp.duskDeg;
+    c.tonemap_dawn_deg = tp.dawnDeg;
+    c.tonemap_max_ev_per_sec = tp.maxEvPerSec;
+    c.tonemap_min_ev = tp.minEv;
+    c.tonemap_max_ev = tp.maxEv;
 
     // --- lamp switching by twilight rather than by wall clock ---
     std::string lampWhen = iniStringSec("streetlights", "when", "twilight");
@@ -1290,6 +1325,15 @@ static void loadConfig() {
            c.sun_rel_per_sec, c.sun_deg_per_sec, c.phase_fade_ms,
            c.handle_cadence_ms, c.handle_cadence_min_ms, c.handle_step_deg,
            100.0f * c.handle_rel_lum);
+    // n22: the exposure anchor, on one line, because "why is the night frame
+    // darker than it was?" and "did the plugin touch my exposure at all?" are both
+    // answered by these numbers - and by whether the day value equals the -0.5 the
+    // profile carries, which is what makes noon a no-op.
+    rhyLog("config: tonemap exposure apply=%d day=%+.2f EV night=%+.2f EV band "
+           "%.1f..%.1f deg slew=%.3f EV/s clamp %.1f..%.1f EV",
+           c.tonemap_apply, c.tonemap_day_ev, c.tonemap_night_ev,
+           c.tonemap_dusk_deg, c.tonemap_dawn_deg, c.tonemap_max_ev_per_sec,
+           c.tonemap_min_ev, c.tonemap_max_ev);
     // n09: the shutdown windows, on one line, because "did the plugin notice the exit at all?" is
     // the question the 2026-11-12 log could not answer.
     rhyLog("config: shutdown present<=%dms device<=%dms window<=%dms calls<=%dms log=%dms "

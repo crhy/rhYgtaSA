@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "delayed.h"
+#include "exposure.h"
 #include "log.h"
 #include "remix.h"
 #include "rtxconf.h"
@@ -546,6 +547,68 @@ static void applySkySettings(const RhyConfig& c, float dt, DWORD now) {
     }
 }
 
+// ---------------------------------------------------------------- exposure anchor (n22)
+
+// The renderer's exposure, pushed to follow the sun. n16 made the tonemapper
+// Global (rtx.tonemappingMode = 0), and in Global mode the exposure of the whole
+// frame is one number: 2^(rtx.tonemap.exposureBias + userEVBias)
+// (rtx_tone_mapping.cpp:234). rtx.conf carries -0.5 for the whole day, and the
+// measurement that shows what that costs is build/tmp/n16/good-before.json: the
+// shots the 2026-11-12 report called good sit at p50 7-17 with 34-52 % black, and
+// their headroom came from the local tonemapper n16 switched off. A -0.5 EV anchor
+// sized for noon takes a quarter of the light off those frames.
+//
+// So the same option is driven from the sun's elevation (plugin/src/exposure.h),
+// and it goes through a slew limiter for the same reason the ambient does: the
+// 2026-11-12 log recorded 104.5 degrees of sun elevation between two samples, and
+// an exposure anchor that follows that unthrottled is the whole screen brightening
+// in one frame - the one thing n01/s28 exist to prevent. The bound is
+// [tonemap] max_ev_per_sec (0.05 EV/s: the full swing takes >= 20 s).
+//
+// Two things this deliberately does NOT do:
+//   * it never writes rtx.userBrightness / rtx.userBrightnessEVRange. Those are
+//     the Remix UI's Brightness slider (RtxOptionFlags::UserSetting, doubled names,
+//     in user.conf, which sits ABOVE rtx.conf) and writing them fights the player.
+//   * it never writes rtx.tonemappingMode at runtime: switching mode re-arms the
+//     local pyramid and changes the look discontinuously at the switch point.
+static RhyExposureAnchor g_exposure;
+
+static void applyExposureAnchor(const RhyConfig& c, float dt, DWORD now) {
+    if (!c.tonemap_apply) {
+        return;  // rtx.conf's static anchor stands, exactly as before n22
+    }
+    RhyExposureParams p;
+    rhyExposureDefaults(p);
+    p.dayEv = c.tonemap_day_ev;
+    p.nightEv = c.tonemap_night_ev;
+    p.duskDeg = c.tonemap_dusk_deg;
+    p.dawnDeg = c.tonemap_dawn_deg;
+    p.maxEvPerSec = c.tonemap_max_ev_per_sec;
+    p.minEv = c.tonemap_min_ev;
+    p.maxEv = c.tonemap_max_ev;
+
+    if (!g_exposure.seeded) {
+        // First frame publishes its own target rather than ramping to it, exactly
+        // like the sky ambient: a plugin that has just connected must not fade the
+        // world up from black. The runtime's own global curve mixes the previous
+        // frame's at exp(-0.07) (~14 frames), so even this step is smoothed by the
+        // renderer over a quarter of a second.
+        rhyExposureAnchorInit(g_exposure, p, g_sunElev);
+    } else {
+        rhyExposureAnchorStep(g_exposure, p, g_sunElev, dt);
+    }
+
+    static DWORD s_pushTick = 0;
+    if (s_pushTick && now - s_pushTick < 100) {
+        return;  // 10 Hz, like the ambient: the option layer is a file, not a uniform
+    }
+    s_pushTick = now;
+    // 0.01 EV: below a hundredth of a stop the renderer cannot show the difference,
+    // and rhyRtxSetFloat's cache means a value that has not moved is not sent again.
+    rhyRtxSetFloat("rtx.tonemap.exposureBias", rhyExposureAnchorEv(g_exposure),
+                   0.01f);
+}
+
 // ------------------------------------------------------------------ per frame
 
 void rhySunFrame() {
@@ -739,16 +802,29 @@ void rhySunFrame() {
     updateDistant(g_moon, cfg->moon_angular, cfg->moon_hash, 0.0f,
                   moonBudget, "moon", *cfg, dt);
     applySkySettings(*cfg, dt, now);
+    applyExposureAnchor(*cfg, dt, now);
 
     static DWORD s_logTick = 0;
     if (now - s_logTick >= 10000) {
         s_logTick = now;
+        // What the exposure half of this line means depends on the switch: with
+        // [tonemap] apply=0 the plugin publishes nothing at all, and printing a
+        // number there would be a fiction.
+        char expo[80];
+        if (cfg->tonemap_apply) {
+            std::snprintf(expo, sizeof expo, "%+.3f EV (target %+.3f, max step %.3f)",
+                          rhyExposureAnchorEv(g_exposure), g_exposure.targetSeen,
+                          g_exposure.maxStepSeen);
+        } else {
+            std::snprintf(expo, sizeof expo, "off, rtx.conf's static anchor stands");
+        }
         rhyLog("sky: sun elev=%+.1f az=%.1f airMass=%.2f T=%.3f/%.3f/%.3f "
                "daylight=%.2f | moon elev=%+.1f az=%.1f phase=%.2f | lamps=%s "
                "(clock=%d:%02d tod=%.2f min ms/min=%.0f doy=%d month=%d day=%d) | "
                "tod: ticks=%u torn=%u jitter=%u reanchor=%u wraps=%u bad=%u | "
                "cal: stable=%d accepted=%u rejected=%u | cloud=%.2f | "
-               "published: sun %.2f,%.2f,%.2f sky=%.3f emissive=%.3f rebuilds=%d/%d "
+               "published: sun %.2f,%.2f,%.2f sky=%.3f emissive=%.3f exposure=%s "
+               "rebuilds=%d/%d "
                "cad=%d/%dms step<=%.2f/%.2f skip=%d/%d "
                "| rtx: set=%u unknown=%u badval=%u",
                g_sunElev, sun.azimuthDeg, sun.airMass, sun.transmit[0],
@@ -760,7 +836,8 @@ void rhySunFrame() {
                g_tod.wraps, g_tod.badSamples,
                g_cal.stable, g_cal.accepted, g_cal.rejected, g_weather.cloud,
                g_sun.rate[0].cur, g_sun.rate[1].cur, g_sun.rate[2].cur,
-               g_skyRate.cur, g_emissiveRate.cur, g_sun.rebuilds, g_moon.rebuilds,
+               g_skyRate.cur, g_emissiveRate.cur, expo,
+               g_sun.rebuilds, g_moon.rebuilds,
                g_sun.cad.intervalMs, g_moon.cad.intervalMs,
                g_sun.maxStepDegSeen, g_moon.maxStepDegSeen,
                g_sun.cad.skips, g_moon.cad.skips,

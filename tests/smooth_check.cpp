@@ -112,6 +112,126 @@ static void testRateLimiter() {
        maxStep <= 0.05f && j.cur > 0.1f && j.cur < 0.9f);
 }
 
+// n22: the exposure anchor. rtx.tonemap.exposureBias is ONE number for the whole
+// frame (Global tonemapping, rtx_tone_mapping.cpp:234), so an unthrottled change
+// to it is the whole screen brightening - the pop this file exists to prevent. The
+// shipped bound is [tonemap] max_ev_per_sec = 0.05 EV/s, i.e. the full day/night
+// swing (n16's -0.5 anchor to n22's +0.5 night anchor, 1.0 EV) takes >= 20 s.
+//
+// Why a second primitive and not RhyRate: an EV is signed and its unit is
+// absolute. RhyRate's bound is multiplicative and it clamps cur and target to
+// >= 0, so it cannot carry a value that crosses zero - the last check below
+// measures exactly that, so the reason cannot be lost.
+static void testSignedRate() {
+    std::printf("\n== RhySignedRate: the exposure anchor may not step (n22) ==\n");
+
+    const float dt = 1.0f / 60.0f;
+    const float evPerSec = 0.05f;   // the shipped [tonemap] max_ev_per_sec
+
+    // The measured worst case for this value: the 2026-11-12 log recorded 104.5
+    // degrees of sun elevation between two samples, and the anchor is a function
+    // of that elevation - so the TARGET can step the whole 1.0 EV in one frame.
+    RhySignedRate r;
+    rhySignedRateInit(r, -0.5f, evPerSec, 0.005f);
+    float maxStep = 0.0f;
+    float prev = r.cur;
+    int framesToTarget = -1;
+    bool monotone = true, overshot = false;
+    for (int f = 0; f < 60 * 60; ++f) {
+        rhySignedRateStep(r, 0.5f, dt);   // noon -> night, in one frame
+        const float d = r.cur - prev;
+        maxStep = std::max(maxStep, std::fabs(d));
+        if (d < -1e-6f) {
+            monotone = false;
+        }
+        if (r.cur > 0.5f + 1e-6f) {
+            overshot = true;
+        }
+        if (framesToTarget < 0 && std::fabs(r.cur - 0.5f) <= 0.005f) {
+            framesToTarget = f;
+        }
+        prev = r.cur;
+    }
+    std::printf("      -0.5 -> +0.5 EV: biggest single-frame move %.5f EV, "
+                "on target after %.2f s\n", maxStep, framesToTarget / 60.0);
+    // The bound is the slew plus the deadband snap: inside eps the follower is
+    // allowed to jump to the target (0.005 EV = 1/200 of a stop, and it is the last
+    // move of a ramp, not a step in the middle of one).
+    ok("a 1 EV exposure step never moves more than 0.05 EV/s in one frame",
+       maxStep <= evPerSec * dt + 0.005f + 1e-6f);
+    ok("the full day/night swing takes at least 19 s (0.05 EV/s is a floor, not a cap)",
+       framesToTarget >= 60 * 19);
+    ok("so its average rate never beat the bound either",
+       1.0f / (framesToTarget / 60.0f) <= evPerSec + 1e-3f);
+    ok("and it does arrive at the target (a rate limit is not a clamp)",
+       std::fabs(r.cur - 0.5f) < 1e-4f);
+    ok("the anchor is monotone on the way down (no overshoot, no breathing)",
+       monotone && !overshot);
+
+    // The other direction, and the crossing of zero: this is the case RhyRate
+    // cannot express. Half an EV up, half an EV down, through 0.
+    maxStep = 0.0f;
+    prev = r.cur;
+    for (int f = 0; f < 60 * 40; ++f) {
+        rhySignedRateStep(r, -0.5f, dt);
+        maxStep = std::max(maxStep, std::fabs(r.cur - prev));
+        prev = r.cur;
+    }
+    std::printf("      +0.5 -> -0.5 EV: biggest frame %.5f EV, now at %+.4f\n",
+                maxStep, r.cur);
+    ok("going back down is bounded the same way",
+       maxStep <= evPerSec * dt + 0.005f + 1e-6f);
+    ok("and it crosses zero and lands (-0.5)", std::fabs(r.cur + 0.5f) < 1e-4f);
+
+    // Why not RhyRate: it clamps to >= 0, so a signed target below zero is
+    // unreachable and a value at 0 has no multiplicative room at all.
+    RhyRate wrong;
+    rhyRateInit(wrong, 0.0f, 3.0f, 0.25f, 0.002f);
+    for (int f = 0; f < 600; ++f) {
+        rhyRateStep(wrong, -0.5f, dt);
+    }
+    std::printf("      RhyRate toward -0.5 EV: published %+.4f (it cannot go below 0)\n",
+                wrong.cur);
+    ok("RhyRate really is unusable for a signed EV (documented, not folklore)",
+       wrong.cur == 0.0f);
+
+    // A bound of 0 means frozen, and frozen must mean frozen: the caller cannot
+    // get a step out of it by asking for a big dt.
+    RhySignedRate frz;
+    rhySignedRateInit(frz, -0.5f, 0.0f, 0.005f);
+    bool moved = false;
+    for (int f = 0; f < 10; ++f) {
+        moved = rhySignedRateStep(frz, 4.0f, 1.0f) || moved;
+    }
+    ok("maxPerSec = 0 freezes the value instead of ignoring the bound",
+       !moved && frz.cur == -0.5f);
+
+    // The deadband: inside eps the follower snaps, so it does not crawl toward
+    // its target forever, and the snap itself is bounded by eps.
+    RhySignedRate d;
+    rhySignedRateInit(d, 0.499f, evPerSec, 0.005f);
+    const float before = d.cur;
+    rhySignedRateStep(d, 0.5f, dt);
+    ok("inside the deadband it snaps to the target, by no more than eps",
+       d.cur == 0.5f && std::fabs(d.cur - before) <= 0.005f);
+
+    // A target that flips every frame (a clock oscillating across the twilight
+    // band) must leave the published value still.
+    RhySignedRate alt;
+    rhySignedRateInit(alt, 0.0f, evPerSec, 0.005f);
+    maxStep = 0.0f;
+    prev = alt.cur;
+    for (int f = 0; f < 600; ++f) {
+        rhySignedRateStep(alt, (f % 2) ? -0.5f : 0.5f, dt);
+        maxStep = std::max(maxStep, std::fabs(alt.cur - prev));
+        prev = alt.cur;
+    }
+    std::printf("      alternating -0.5/+0.5 target: published stays at %+.4f "
+                "(biggest frame %.5f)\n", alt.cur, maxStep);
+    ok("a target that flips every frame does not make the exposure flicker",
+       maxStep <= evPerSec * dt + 1e-4f && alt.cur > -0.5f && alt.cur < 0.5f);
+}
+
 static void testFades() {
     std::printf("\n== RhyFade: a lamp ramps, it does not switch ==\n");
 
@@ -616,6 +736,7 @@ static void testPlayerGrace() {
 
 int main() {
     testRateLimiter();
+    testSignedRate();
     testFades();
     testDistanceGain();
     testSelection();

@@ -14,6 +14,7 @@ add_library(rhyremix SHARED
   src/game.cpp
   src/smooth.cpp
   src/tod.cpp
+  src/exposure.cpp
   src/probe.cpp
   src/rtxconf.cpp
   src/solar.cpp

@@ -67,7 +67,7 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 
 | gap | what the measurement says | status | owner |
 |---|---|---|---|
-| **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **config shipped by n16, after-numbers owed** — the change has never been rendered (rule 1 forbids running the game here) | n16 shipped `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` + `localtonemap.shadows 1.0` / `highlights 2.0` in all three profiles; the run and the abort ladder are [TARGET.md §6](TARGET.md), the mechanism is FINDINGS ("The tonemapper…") |
+| **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **config shipped by n16 + plugin anchor shipped by n22, after-numbers owed** — neither has ever been rendered (rule 1 forbids running the game here) | n16 shipped `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` + `localtonemap.shadows 1.0` / `highlights 2.0` in all three profiles; n22 drives that same option from solar elevation at runtime (`[tonemap] day_ev -0.5 → night_ev +0.5`, ≤ 0.05 EV/s), so noon is unchanged and 21:00 gets 2× the light. The run and the abort ladder are [TARGET.md §6](TARGET.md); the mechanism is FINDINGS ("The tonemapper…", "One exposure anchor cannot serve noon and 21:00") |
 | **T3 atmosphere** | haze far/near local contrast 1.22–3.67 vs 0.46–1.18; sky 92–128 luma at saturation 0.28–0.61 vs 160–199 at 0.13–0.26 | **open** | n17 (`rtx.volumetrics.enableFogRemap` and its bounds — we ship volumetrics but no fog remap at all) |
 | **T1 materials** | the pack has 2334 materials and only 315 `_normal` / 280 `_rough` / **32 `_metal`** maps: ~1 in 7 gets a real BRDF | **open** | n18 (the runtime's `rtx.legacyMaterial` / `rtx.opaqueMaterial` numbers), then an offline PBR-ify pass |
 | **T2 HD assets** | pack albedo is mostly 2048 px; the "8K pack" claim is the channel's, not verifiable | **measured** | census in FINDINGS; the asset work is upstream (MIT pack) |
@@ -117,6 +117,12 @@ game.
    ≥ 2.0 / p50 100–130, and the six "good" shots must not move badly
    (`build/tmp/n16/good-before.json` is the baseline — 02 p50 17.4, 03 p50 7.0). Check the night
    shots **first**: they are what this change can break, and the ladder says what to undo if they do.
+8. **The n22 exposure anchor** — same run, one extra check. `grep 'config: tonemap exposure'` shows
+   `day=-0.50 EV night=+0.50 EV slew=0.050 EV/s`, and the 10 s sky line must read
+   `exposure=+0.500 EV` at a 21:00 stop and `exposure=-0.500` at a noon stop (the noon side is a
+   no-op by design, so the daytime shots are predicted unchanged — if they moved, the plugin is
+   pushing when it should not). Night too dark: raise `[tonemap] night_ev`; night blown: `night_ev=0`;
+   undo all of it: `apply=0`. Details: [TARGET.md §6](TARGET.md), FINDINGS (n22).
 
 ## How this page is kept honest
 

@@ -18,8 +18,14 @@
 //
 // Two consequences to keep in mind:
 //   * Values land in the USER layer, which outranks rtx.conf and persists
-//     between runs. Everything we send must therefore be idempotent, and
-//     rhyremix --reset-rtx exists to clear the layer again.
+//     between runs. Everything we send must therefore be idempotent, and a key
+//     we stop sending keeps the last value we sent: `tools/rtxprofile.sh
+//     restore` puts rtx.conf back, NOT this layer. (n22 found this comment
+//     promising a `rhyremix --reset-rtx` command that does not exist anywhere in
+//     the tree - do not write it into a doc as an undo. The layer is the
+//     runtime's own file; the Remix UI's controls write the same layer, and no
+//     user.conf exists in the game tree as of 2026-11-13, so where it lands is a
+//     question for a live run.)
 //   * Writing the same value every frame is wasted work (and may rewrite the
 //     user settings file), so values are cached and only re-sent when they move
 //     by more than a threshold.

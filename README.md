@@ -34,7 +34,7 @@ install and test it. What is in the box today:
 | **Water** | five variants, `remix-ref` by default, installed by the installer and re-ensured on every start, with the `rtx.conf` keys each variant needs | `tools/water.sh`, `tools/rtx_water_keys.py`, `config/water/*.usda` |
 | **Vegetation** | 119 foliage card textures tagged as cutouts (`rtx.hairCardTextures`) instead of being blended into scribbled lines | `tools/vegetation_hashes.py`, `tools/vegetation.sh` for the pack itself |
 | **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf` | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops` |
-| **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with a fixed exposure anchor, so the sun, chrome and wet patches can be bright instead of grey | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16; **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
+| **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with an exposure anchor that follows the sun, so the sun, chrome and wet patches can be bright instead of grey and 21:00 is not darkened by a noon number | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16), and `[tonemap] day_ev → night_ev` driven off solar elevation at runtime (n22); **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
 | **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
 | **Safety** | every install step reversible, the plugin stops touching a dead Remix bridge, and the launcher ends the Wine tree if the game hangs on Quit | `apply.sh` backups, `plugin/src/shutdown.cpp`, `launcher/launch-rtx.sh` |
 
@@ -324,6 +324,23 @@ numbers are asserted in `tests/smooth_check.cpp` (`bash scripts/check-all.sh` ru
 value the plugin publishes may move by more than a small amount in one frame, whatever the game clock
 or the renderer does underneath. See `docs/FINDINGS.md`, "Lighting changed instantly, everywhere at
 once".
+
+**The exposure anchor follows the sun, not the clock.** With the tonemapper in Global mode (n16) the
+exposure of the whole frame is one number, `2^(rtx.tonemap.exposureBias + userEVBias)`, and a number
+in `rtx.conf` cannot be -0.5 at noon and +0.5 at 21:00 - measured, the noon shots sit at p50 123-170
+while the shots the report called good at night sit at p50 7-17 with 34-52 % of their pixels black.
+So the plugin pushes that same option from the sun's **elevation** (`plugin/src/exposure.cpp`,
+pushed by `sun.cpp` next to `rtx.skyBrightness`): `[tonemap] day_ev = -0.5` at full daylight -
+deliberately the same number the profiles carry, so noon is untouched and only the night end moves -
+up to `[tonemap] night_ev = +0.5` at night, across the same twilight band as `[sky]`, at most
+`max_ev_per_sec = 0.05` EV per second (the full swing takes >= 20 s: an exposure change that is one
+frame wide is the whole screen brightening). It never writes the Remix UI's Brightness slider
+(`rtx.userBrightness*`: user settings, and `user.conf` outranks `rtx.conf`) and never switches
+`rtx.tonemappingMode` at runtime. Undo is `[tonemap] apply=0` (the last value written stays in the
+runtime's user layer, which outlives the run — the Remix menu's Global Exposure control sets it back;
+docs/TARGET.md §6), and the knob to argue with after a live run is `night_ev`. Asserted in `tests/exposure_check.cpp` (equal elevation gives equal EV, noon
+equals the profile's anchor, a whole simulated day stays inside the rate bound) and
+`tests/smooth_check.cpp`; see `docs/FINDINGS.md`, "One exposure anchor cannot serve noon and 21:00".
 
 **A lamp in the streamed area is on, and the camera does not get a vote.** Selection is by distance
 from CJ, never by what the screen is pointed at: there is no frustum test, no screen-size sort and

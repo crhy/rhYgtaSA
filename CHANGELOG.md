@@ -895,7 +895,7 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
   `.strata/n1[6-9]-*.md` files, drop the four queue lines and the two manifest changes; no behaviour,
   config or plugin code changed in this task.
 
-### Grading (n16) — the daytime frame had no bright end: the tonemapper is now Global (on top of `a0cd0f4`)
+### Grading (n16) — the daytime frame had no bright end: the tonemapper is now Global (on top of `a0cd0f4`, shipped in `b1afcc2`)
 
 - **Changed (the look, all three profiles):** `config/rtx.conf`, `config/rtx.conf.perf` and
   `config/rtx.conf.nopops` now carry `rtx.tonemappingMode = 0` (Global; the runtime default is
@@ -971,6 +971,76 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
   delete the n16 block (five keys) from the three profiles. The tooling undoes independently: delete
   `tools/rtx-option-audit.py`, `config/rtx-options-1.6.1.tsv`, `config/rtx-dead-keys.txt`,
   `tests/test_rtx_option_audit.py` and the three selftest lines.
+
+### Grading (n22) — one EV anchor could not serve noon and 21:00: the exposure now follows the sun (on top of `b1afcc2`)
+
+**Not yet run in game.** Everything measured below is a before-number, a fact about the runtime's own
+option table, or a number the plugin's own code computes; the pixel side is owed by the next **live
+run** (rule 1 of every task here forbids running the game, wine or Steam, and an exposure change only
+becomes a pixel once the runtime draws a frame). Protocol: [docs/TARGET.md](docs/TARGET.md) §6.
+
+- **Added (plugin): `rtx.tonemap.exposureBias` is now driven from the sun's elevation at runtime.**
+  n16's `-0.5` is one number for the whole frame in Global mode
+  (`exposureFactor = 2^(exposureBias + userEVBias)`, `rtx_tone_mapping.cpp:234`) and rtx.conf is a
+  file: sized to pull p50 147 → ~110 at noon it takes a quarter of the light off a 21:00 frame that
+  already sits at p50 7-17 with 34-52 % black (`build/tmp/n16/good-before.json`). New module
+  `plugin/src/exposure.{h,cpp}` (pure C++, like `tod.cpp`/`shutdown.cpp`) blends
+  `night_ev → day_ev` over solar elevation with `skyDaylightFactor`, and `sun.cpp` pushes the result
+  through `remixapi_SetConfigVariable` the way it already pushes `rtx.skyBrightness`.
+  **Noon is a no-op by construction:** `day_ev = -0.5` is the same number the three profiles carry,
+  so the daytime grade cannot move and the noon numbers the live run takes are still n16's; only the
+  night end moves (21:00 gets `+0.5` EV = 2x the light, inside the runtime's own
+  `DragFloat("Global Exposure", -4, 4)` span, `rtx_tone_mapping.cpp:134`).
+- **Fixed (no pops): an exposure change is rate limited.** New primitive `RhySignedRate`
+  (`plugin/src/smooth.cpp`) — `RhyRate` cannot carry it: its bound is multiplicative and it clamps to
+  ≥ 0, and an EV is signed with an absolute unit (measured in `tests/smooth_check.cpp`: `RhyRate`
+  toward −0.5 EV publishes 0.0 forever). Shipped bound `[tonemap] max_ev_per_sec = 0.05` EV/s, so the
+  full swing takes ≥ 20 s; the floors (0.005..0.25 EV/s, EV clamp −8..+8, band must run upward) are in
+  `rhyExposureClamp()` and cannot be talked out of from the ini. Measured: the sun at the real clock
+  rate moves the anchor at ≤ 0.0004 EV/s, so the bound only ever bites on a clock that jumps — the
+  2026-11-12 log recorded 104.5° of sun elevation between two samples, and `SARemix_Tour.lua` pins
+  the clock per stop (13:00 → 21:00 in one frame steps the target the whole 1.0 EV; the published
+  value still takes 19.9 s).
+- **Added (config): a `[tonemap]` section** in `config/rhyremix-production.ini` — `apply` (the undo
+  switch), `day_ev`, `night_ev`, `dusk_deg`/`dawn_deg` (same band as `[sky]`), `max_ev_per_sec`,
+  `min_ev`/`max_ev`; written by `kIniDefaults`, logged as `config: tonemap exposure …`, and the
+  10 s sky line now carries `exposure=… EV (target …, max step …)`.
+- **Deliberately not touched:** `rtx.userBrightness` / `rtx.userBrightnessEVRange` (the real names are
+  doubled, they carry `RtxOptionFlags::UserSetting`, they are the Remix UI's Brightness slider, and
+  `user.conf` sits **above** `rtx.conf` — `rtx_option_layer.cpp:386-397`), `rtx.tonemappingMode` at
+  runtime (switching mode re-arms the local pyramid and changes the look discontinuously at the
+  switch point) and `rtx.postfx.exposureFraction` (the motion-blur shutter, n16's audit).
+- **Tests:** `tests/exposure_check.cpp` (new, run by `check-all` as `nat-expo`) — equal elevation on
+  the way up and down gives the same EV (19:30 ↔ 06:24), the pair symmetric about solar noon agrees,
+  noon equals the profile's −0.5, the floors hold, a whole simulated game day at the real clock rate
+  never exceeds the bound and lands back where it started, and a pinned clock does not step the
+  exposure; `tests/smooth_check.cpp` gained the `RhySignedRate` bounds (68 checks);
+  `tests/test_exposure_anchor.py` (new) checks the key against the runtime's own option table, that
+  the plugin pushes it from `g_sunElev` and never from the clock, that it never sends the four
+  forbidden names, that the ini sits inside the compiled floors, and that the docs say which numbers
+  are measured and which are owed; `tests/test_ini_keys.py` now documents `[tonemap]` and pins
+  `day_ev == rtx.conf`'s static anchor.
+- **Fixed (docs gate):** `CHANGELOG.md` now names `b1afcc2` — n16's own commit, which its entry could
+  not know while it was being written, and which `tests/test_changelog_coverage.py` requires. The
+  gate was red on `main` when n22 started (`79 checks passed, 1 failed`); it is green again.
+- **Fixed (docs, found while writing the undo for this):** `plugin/src/rtxconf.h` promised a
+  `rhyremix --reset-rtx` command that exists nowhere in the tree. The comment now says what is real —
+  the user layer outlives the run, `tools/rtxprofile.sh restore` does not touch it, and where the
+  runtime's own user-layer file lands is a question for a live run (no `user.conf` exists in the game
+  tree as of this task).
+- **Undo:** `[tonemap] apply=0` in `rhyremix.ini` (one line, no rebuild) stops the plugin writing the
+  key, so rtx.conf's static −0.5 is what a fresh install gets. One caveat that belongs to the layer,
+  not to the feature: `SetConfigVariable` writes the runtime's **user** layer, which outranks
+  `rtx.conf` and outlives the run, so after a run that pushed +0.5 the file's −0.5 does not come back
+  by itself — run once with `apply=1` at a noon stop (the plugin re-publishes −0.5) or set it with the
+  Remix UI's Global Exposure control, which writes the same layer. `tools/rtxprofile.sh restore`
+  restores `rtx.conf`, not this layer. (While `apply=1` the plugin owns the value every frame it is
+  running, which is why the persistence is only a problem on the way out.)
+  To take the feature out of the tree: delete `plugin/src/exposure.{h,cpp}`,
+  `tests/exposure_check.cpp`, `tests/test_exposure_anchor.py`, the `[tonemap]` blocks in
+  `config/rhyremix-production.ini` and `config.cpp`'s `kIniDefaults`, the `applyExposureAnchor()` call
+  in `sun.cpp`, the `RhySignedRate` block in `smooth.{h,cpp}`, and the `nat-expo` lines in
+  `scripts/check-all.sh`.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

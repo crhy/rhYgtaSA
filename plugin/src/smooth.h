@@ -53,6 +53,36 @@ void rhyRateInit(RhyRate& r, float value, float relPerSec, float absPerSec,
 // change is big enough to be worth pushing to the renderer).
 bool rhyRateStep(RhyRate& r, float target, float dt);
 
+// ---------------------------------------------------- signed rate limit (n22)
+
+// A follower for a value whose meaningful unit is ABSOLUTE and whose range
+// CROSSES ZERO: an exposure bias in EV. RhyRate cannot carry one. Its bound is
+// multiplicative, and 2^EV is never negative, so the EV itself is not the thing
+// you can multiply: at cur = 0 the relative term vanishes and the follower is
+// left with absPerSec alone, while at cur = -3 the same "3x per second" would
+// allow a 6 EV jump. It also clamps cur and target to >= 0, which is right for
+// an ambient level and wrong for a signed trim. So the exposure gets the shape
+// its unit actually has: a straight slew limit.
+//
+// n22: rtx.tonemap.exposureBias is one number for the whole frame (Global
+// tonemapping, rtx_tone_mapping.cpp:234), so a change to it is the whole image
+// brightening - the pop every other limiter in this file exists to prevent. The
+// game clock can jump 104.5 degrees of sun elevation between two samples
+// (measured, 2026-11-12), and the anchor is a function of that elevation, so
+// without a bound here a clock jump would be a one-frame exposure step.
+struct RhySignedRate {
+    float cur;        // the value we have actually published
+    float maxPerSec;  // |move| <= maxPerSec * dt, always
+    float eps;        // deadband: within this of the target, snap to the target
+};
+
+void rhySignedRateInit(RhySignedRate& r, float value, float maxPerSec, float eps);
+
+// Advance cur toward target over dt seconds, moving by at most maxPerSec * dt.
+// Returns true when cur changed. Unlike rhyRateStep it never clamps the value
+// to >= 0: the caller owns the range (see rhyExposureClamp in exposure.h).
+bool rhySignedRateStep(RhySignedRate& r, float target, float dt);
+
 // ------------------------------------------------------------------ fades
 
 // What the caller must do to the Remix handle after this frame's tick.

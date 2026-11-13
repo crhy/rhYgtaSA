@@ -196,7 +196,50 @@ One more thing to check on that first run, because it is free: the runtime's own
 layers resolved. `grep -A80 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log` should
 show `rtx.tonemappingMode = 0` and `rtx.tonemap.exposureBias = -0.5`. If a key is missing there, the
 layer below it is not being read — and `tools/rtx-option-audit.py` is the tool that says whether the
-name in the file is a name the runtime knows at all.
+name in the file is a name the runtime knows at all. **One correction since n22:** the exposureBias
+line in that dump is only -0.5 while the plugin is not pushing — see the n22 subsection below.
+
+### The n22 run: the exposure anchor now follows the sun (also never rendered)
+
+n22 put the same option under plugin control: `plugin/src/exposure.{h,cpp}` blends
+`[tonemap] night_ev → day_ev` over **solar elevation** and `sun.cpp` pushes it through
+`remixapi_SetConfigVariable` next to `rtx.skyBrightness`, rate-limited at
+`[tonemap] max_ev_per_sec = 0.05` EV/s. Like n16, it could not measure the result — rule 1 — so the
+after-numbers below are owed by the same live run that owes n16's. What the code does prove, in
+`tests/exposure_check.cpp` (table in `build/tmp/n22/curve.txt`): at 13:00 and 19:05 the plugin
+publishes **-0.5**, i.e. exactly what `rtx.conf` carries, so **the four daytime shots and the two
+sunset shots are unchanged by n22**; at 21:00 it publishes **+0.5** (2x the light) and at 05:30
+**+0.089** (1.5x). Read the n16 protocol above with that split in mind.
+
+1. Nothing to install for this: it is plugin behaviour, on by default, and the profile switch does
+   not touch it. Confirm it is live first, cheaply:
+   ```
+   grep -m3 'config: tonemap exposure' <game>/rhyremix.log
+   grep -m3 'exposure=' <game>/rhyremix.log | tail -1
+   ```
+   The first line is the ini's effective numbers (`day=-0.50 EV night=+0.50 EV … slew=0.050 EV/s`);
+   the second is the 10 s sky line, `exposure=+0.500 EV (target +0.500, max step 0.005)` at a night
+   stop. `exposure=` missing or stuck at -0.5 at 21:00 means the push is not happening.
+2. Then the same two measurements as above, unchanged: the six good shots against
+   `build/tmp/n16/good-before.json`, the four daytime shots against `build/tmp/n16/gap.json`. The
+   daytime side is predicted unchanged; if it moved, the plugin is pushing at a daytime stop and
+   that is a bug, not a look.
+3. The knob to argue with is `[tonemap] night_ev` in `rhyremix.ini` (edit it while the game runs —
+   the ini is re-read live — and the anchor walks to the new value at <= 0.05 EV/s):
+   * night still darker than the baseline (02 p50 < 17.4 or > 34.5 % black, 03 < 7.0 / > 52.2 %) →
+     raise it: `night_ev=1.0`, re-run;
+   * night blown, lamps blooming, the sky line grey instead of black → lower it: `night_ev=0.0`,
+     which keeps the machinery and removes the swing;
+   * anything else → `apply=0` in `rhyremix.ini` stops the plugin writing the key from then on.
+     One caveat, and it is the layer's, not the feature's: `SetConfigVariable` writes the runtime's
+     **user** layer, which outranks `rtx.conf` and outlives the run — so if an earlier run pushed
+     +0.5, `apply=0` alone does not bring the static −0.5 back. Either run once with `apply=1` at a
+     noon stop (the plugin re-publishes −0.5, which is the same value the file wants anyway), or put
+     the number back with the Remix UI's own Global Exposure control, which writes that same layer.
+     `tools/rtxprofile.sh restore` puts `rtx.conf` back, not this layer.
+4. The dump check, corrected: at a **21:00** stop the effective value should read **+0.5**, not
+   -0.5, because the plugin writes the user layer, which outranks `rtx.conf`. At 13:00 it should
+   read -0.5 — the same number from two directions, which is the no-op property in the log.
 
 After those, the two bigger bets are recorded but not scheduled: an offline **PBR-ify pass**
 (generate normal/roughness for the most-seen ground and road textures, patch the pack's material

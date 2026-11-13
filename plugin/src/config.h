@@ -163,6 +163,26 @@ struct RhyConfig {
     std::string sky_settings; // extra "key = value" file to push ("" = none)
     int   sky_probe;          // 1 = probe which rtx.* keys this build accepts
 
+    // --- n22: the exposure anchor, driven by the sun ([tonemap] section) ------
+    // n16 put rtx.tonemappingMode = 0 (Global) and rtx.tonemap.exposureBias = -0.5
+    // into all three profiles. In Global mode the exposure of the whole frame is
+    // 2^(exposureBias + userEVBias) (rtx_tone_mapping.cpp:234) - one number, for
+    // the whole day, because rtx.conf is a file. Sized for noon (p50 147 -> ~110)
+    // that anchor takes a quarter of the light off a 21:00 frame already at p50
+    // 7-17 with 34-52 % black (build/tmp/n16/good-before.json). These keys drive
+    // the same option from the sun's elevation instead, at runtime, through
+    // plugin/src/exposure.h. day_ev defaults to the profiles' -0.5, so at full
+    // daylight the plugin publishes what rtx.conf already says: the noon grade is
+    // untouched by this, only the night end moves.
+    int   tonemap_apply;        // 0 = never write rtx.tonemap.exposureBias
+    float tonemap_day_ev;       // the anchor at full daylight
+    float tonemap_night_ev;     // ... at night
+    float tonemap_dusk_deg;     // sun elevation where the ramp starts, going down
+    float tonemap_dawn_deg;     // ... and where daylight is back, going up
+    float tonemap_max_ev_per_sec;  // slew bound; clamped to 0.005..0.25 EV/s
+    float tonemap_min_ev;       // hard clamp on the published value (UI span -4..4)
+    float tonemap_max_ev;       // ... and its ceiling
+
     // --- lamp switching ---
     // 0 = the old on_hour/off_hour window. 1 = solar twilight, which is what a
     // real photocell does and is the reason "on_hour=19" is wrong in summer.

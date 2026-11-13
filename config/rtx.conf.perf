@@ -287,6 +287,9 @@ rtx.tonemappingMode = 0
 rtx.tonemap.exposureBias = -0.5
 #   Hard EV (auto exposure is off here too): exposureFactor = 2^(exposureBias + userEVBias).
 #   The Remix UI's "Global Exposure" drag; -0.5 EV is the p50 anchor, retune ladder in rtx.conf.
+#   n22: the plugin overwrites this at runtime from the sun (rhyremix.ini [tonemap],
+#   day_ev -0.5 -> night_ev +0.5 over solar elevation, <= 0.05 EV/s). The user layer outranks this
+#   file, so this is the startup / full-daylight value; [tonemap] apply=0 puts a static number back.
 rtx.localtonemap.shadows = 1.0
 rtx.localtonemap.highlights = 2.0
 #   Both inert while rtx.tonemappingMode = 0; they are the Local A/B starting values (the shipped

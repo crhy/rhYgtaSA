@@ -153,6 +153,19 @@ run nat-shut-cc "compile shutdown_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/shutdown_check.cpp plugin/src/shutdown.cpp -o build/tmp/shuttc
 warncheck nat-shut-cc "compile shutdown_check"
 run nat-shut "tests/shutdown_check.cpp (n09 shutdown detection: windows, latching, wrap)" 120 build/tmp/shuttc
+# n22 (docs/TARGET.md §6, the follow-up n16 queued): the renderer's exposure anchor.
+# exposure.cpp is pure C++ (the curve, its floors, the follower), so the whole claim of
+# the change runs here: the anchor is a function of SOLAR ELEVATION (equal elevation on
+# the way up and on the way down gives the same EV), at full daylight it equals the -0.5
+# the three profiles carry (so noon is a no-op and the daytime numbers stay n16's), the
+# floors cannot be talked out of, and over a whole simulated game day - and across the
+# tour's pinned clock jumps - the published value never moves faster than
+# [tonemap] max_ev_per_sec. What this CANNOT do is say what the frame looks like: that
+# needs a live run (rule 1), and docs/TARGET.md §6 is the protocol for it.
+run nat-expo-cc "compile exposure_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/exposure_check.cpp plugin/src/exposure.cpp plugin/src/solar.cpp plugin/src/smooth.cpp -o build/tmp/expc
+warncheck nat-expo-cc "compile exposure_check"
+run nat-expo "tests/exposure_check.cpp (n22: the exposure anchor follows the sun, bounded)" 120 build/tmp/expc
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),
