@@ -129,6 +129,16 @@ run nat-handle-cc "compile handle_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/handle_check.cpp plugin/src/smooth.cpp -o build/tmp/handlec
 warncheck nat-handle-cc "compile handle_check"
 run nat-handle "tests/handle_check.cpp (n01 handle cadence: old threshold rule vs clock)" 120 build/tmp/handlec
+# n12 (V5 of the 2026-11-12c report): the car's own lamps. vehiclelights.cpp is pure
+# C++ - the corona record is a plain struct, so the game's light dummies can be built
+# by hand and the assertions are physical: which corona became which lamp, which way
+# the beam points (from the car's own front/rear dummies), how wide it is (40-60 deg),
+# and how much light it carries (a low beam's ~5000 peak intensity against a street
+# luminaire's 868, a rear position lamp's ~25 cd against a 30 m emissive billboard).
+run nat-veh-cc "compile vehicle_lights_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/vehicle_lights_check.cpp plugin/src/vehiclelights.cpp plugin/src/lamps.cpp plugin/src/solar.cpp -o build/tmp/vehc
+warncheck nat-veh-cc "compile vehicle_lights_check"
+run nat-veh "tests/vehicle_lights_check.cpp (n12: corona records -> sized head and tail lamps)" 120 build/tmp/vehc
 # n09 (the 2026-11-12 exit hang): WHEN the plugin is allowed to stop calling the Remix bridge.
 # shutdown.cpp is pure C++ - the device reads are arguments - so every path runs here: a one-frame
 # Present failure, an alt-tab that comes back, an alt-tab that does not, Quit (the window goes first),

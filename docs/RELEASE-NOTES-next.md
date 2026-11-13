@@ -137,6 +137,34 @@ If something in the update looks wrong, everything is reversible
   `rhyremix.ini` gives the bulb-only look back for comparison; `glow_radius` sets how far the spill
   reaches.
 
+### Car lights, exhaust smoke and lit windows
+
+- **A car's lamps are the size of lamps.** Until now the only light a car put into the world was the
+  game's own glow sprite, and the game draws one of those at a radius of 15 game units - a **30
+  metre** billboard per bulb, which is why a pair of tail lamps painted the sand red for metres and
+  why the front of the car did nothing at all (the game's headlight beam sprite is excluded from the
+  raytraced scene, so nothing came with it). The plugin now reads where the game itself puts each
+  lamp and adds a light of the right size at each one: a reflector the size of a hand in a
+  **50-degree beam** aimed along the car's own axis, and red lenses the size of a fist at the rear,
+  brighter when the brakes are on. A headlamp is now the brightest thing inside its beam and a tail
+  lamp is a lamp, not a flood - about 1/170 of the street lamp over its head, which is what a real
+  rear position lamp is next to a street light.
+- **Exhaust smoke is smoke.** The renderer turns any glow-style sprite into a self-lit surface, so a
+  puff of soot was emitting light instead of scattering it - the pink-white plumes of the last test
+  round, measured brighter than the road under a street lamp. That self-glow is now a third of what
+  it was, so the scene's lights decide how bright a plume is; three of the game's smoke textures were
+  also in no renderer category at all and are now listed as particles.
+- **Lit windows stop being white blocks.** Some building windows were clipping to pure neutral
+  white - no texture, no colour, a block. The emissive gain is now capped, harder by day than at
+  night, which is where the measurement was. This is one global dial: per-window control lives in the
+  asset pack's materials, not in a config file, so if a sign or a neon loses its punch the fix is in
+  the pack.
+
+All three are tunable and switchable: `[vehiclelights]` in `rhyremix.ini` (`enabled=0` turns the car
+lamps off for comparison, `head_flux` / `tail_flux` / `brake_flux` set the strengths), and
+`rtx.emissiveBlendOverrideEmissiveIntensity` in the renderer profile (back to its `0.2` default to
+see the old glowing puffs).
+
 ### Water
 
 - Three switchable water materials instead of the pack's one: `tools/water.sh realistic` (open

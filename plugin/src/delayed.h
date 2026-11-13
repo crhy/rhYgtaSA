@@ -36,7 +36,11 @@ enum LightTagNamespace {
     // 32-bit tag). Two different heads can land on the same tag; the only
     // consequence is that a flush-before-create retires the other head's handle
     // a few frames early, and that handle was already off the draw list.
-    kTagSignalHead = 500000
+    kTagSignalHead = 500000,
+    // n12: one per vehicle lamp, from the lamp's own hash. A headlamp is
+    // re-created every time the car moves, so the destroy-before-create rule of
+    // rhyFlushDelayedTag applies exactly as it does for a lamp light.
+    kTagVehicle = 600000
 };
 
 // Number of handles still waiting to be destroyed (for the log line).

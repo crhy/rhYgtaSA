@@ -94,3 +94,29 @@ radius=6
 night_only=1
 radiance=1.5
 resync_frames=30
+
+; ---------------------------------------------------------------------------
+; n12: THE CAR'S OWN LIGHTS. The only light sources a car has in this scene are
+; the game's corona sprites, and every corona the game registers for a vehicle is
+; radius 15.0 game units - a 30 m wide additive billboard per bulb. The module
+; reads the game's corona store (read-only, nothing patched), pairs the dummies of
+; one vehicle, and adds lights sized to the real lamps: a 0.09 m reflector in a
+; 50-degree beam along the car's own axis, and 0.05 m red lenses at the rear.
+; Why each number is what it is: config/rhyremix-production.ini. The game layout
+; and the radiometry: plugin/src/vehiclelights.h. The assertions:
+; tests/vehicle_lights_check.cpp.
+[vehiclelights]
+enabled=1
+max_lights=24
+max_distance=90
+max_spread=6.0
+head_flux=950
+tail_flux=20
+brake_flux=100
+head_radius=0
+tail_radius=0
+head_cone_deg=0
+head_cone_softness=-1
+brake_red_min=220
+move_step=0.8
+cadence_ms=120

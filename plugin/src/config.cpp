@@ -1060,6 +1060,105 @@ static void loadConfig() {
         c.stop_present_after_ms = 0;
     }
 
+    // --- n12: the [vehiclelights] section. The flux numbers are in the plugin's
+    // own units, the ones signalheads.h rhyLuminaireFlux defines (one street
+    // luminaire = 3473 of them with the shipped ini, i.e. about 5 real lumens).
+    // A car's low beam is 1000-1200 lm but puts them into a ~50 degree beam whose
+    // peak intensity is 20 000-30 000 cd - about ten times a street luminaire's,
+    // which is why the number here is not "1200 lm / 5": the runtime's cone is a
+    // mask, not a concentrator (rhyBeamConcentrationGain in vehiclelights.h), so
+    // the shipped 950 is the beam-equivalent flux that lands on the road 30 m
+    // ahead, not the bulb's catalogue lumens. A rear position lamp is 2-20 cd and
+    // a brake lamp 60-300 cd, hence 20 and 100.
+    c.veh_enabled = iniIntSec("vehiclelights", "enabled", 1);
+    c.veh_max_lights = iniIntSec("vehiclelights", "max_lights", 24);
+    c.veh_max_distance = iniIntSec("vehiclelights", "max_distance", 90);
+    c.veh_head_flux = iniFloatSec("vehiclelights", "head_flux", 950.0f);
+    c.veh_tail_flux = iniFloatSec("vehiclelights", "tail_flux", 20.0f);
+    c.veh_brake_flux = iniFloatSec("vehiclelights", "brake_flux", 100.0f);
+    c.veh_head_radius = iniFloatSec("vehiclelights", "head_radius", 0.0f);
+    c.veh_tail_radius = iniFloatSec("vehiclelights", "tail_radius", 0.0f);
+    c.veh_head_cone_deg = iniFloatSec("vehiclelights", "head_cone_deg", 0.0f);
+    c.veh_head_cone_softness = iniFloatSec("vehiclelights", "head_cone_softness", -1.0f);
+    c.veh_brake_red_min = iniIntSec("vehiclelights", "brake_red_min", 220);
+    c.veh_move_step = iniFloatSec("vehiclelights", "move_step", 0.8f);
+    c.veh_cadence_ms = iniIntSec("vehiclelights", "cadence_ms", 120);
+    c.veh_max_spread = iniFloatSec("vehiclelights", "max_spread", 6.0f);
+    if (c.veh_max_lights < 0) {
+        c.veh_max_lights = 0;
+    }
+    if (c.veh_max_lights > 128) {
+        c.veh_max_lights = 128;  // the corona store itself holds 64 entries
+    }
+    if (c.veh_max_distance < 0) {
+        c.veh_max_distance = 0;  // 0 = no upper bound
+    }
+    if (c.veh_max_distance > 400) {
+        c.veh_max_distance = 400;
+    }
+    if (!(c.veh_head_flux >= 0.0f)) {
+        c.veh_head_flux = 0.0f;  // 0 = the module's own default
+    }
+    if (c.veh_head_flux > 20000.0f) {
+        c.veh_head_flux = 20000.0f;
+    }
+    if (!(c.veh_tail_flux >= 0.0f)) {
+        c.veh_tail_flux = 0.0f;
+    }
+    if (c.veh_tail_flux > 2000.0f) {
+        c.veh_tail_flux = 2000.0f;
+    }
+    if (!(c.veh_brake_flux >= 0.0f)) {
+        c.veh_brake_flux = 0.0f;
+    }
+    if (c.veh_brake_flux > 4000.0f) {
+        c.veh_brake_flux = 4000.0f;
+    }
+    if (c.veh_brake_flux > 0.0f && c.veh_brake_flux < c.veh_tail_flux) {
+        c.veh_brake_flux = c.veh_tail_flux;  // a brake lamp is never dimmer
+    }
+    if (!(c.veh_head_radius >= 0.0f) || c.veh_head_radius > 2.0f) {
+        c.veh_head_radius = 0.0f;  // 0 = the fixture
+    }
+    if (!(c.veh_tail_radius >= 0.0f) || c.veh_tail_radius > 2.0f) {
+        c.veh_tail_radius = 0.0f;
+    }
+    // coneAngleDegrees is the HALF angle (rtx_remix_api.cpp:544 takes its cosine),
+    // and past 90 the cone is a hemisphere: a headlamp aimed at the sky.
+    if (!(c.veh_head_cone_deg >= 0.0f) || c.veh_head_cone_deg > 90.0f) {
+        c.veh_head_cone_deg = 0.0f;
+    }
+    if (!(c.veh_head_cone_softness >= 0.0f)) {
+        c.veh_head_cone_softness = -1.0f;  // -1 = the fixture's
+    }
+    if (c.veh_head_cone_softness > 1.0f) {
+        c.veh_head_cone_softness = 1.0f;
+    }
+    if (c.veh_brake_red_min < 0) {
+        c.veh_brake_red_min = 0;  // 0 = never call a tail lamp a brake lamp
+    }
+    if (c.veh_brake_red_min > 255) {
+        c.veh_brake_red_min = 255;
+    }
+    if (!(c.veh_move_step >= 0.05f)) {
+        c.veh_move_step = 0.05f;  // below this a parked car churns handles
+    }
+    if (c.veh_move_step > 10.0f) {
+        c.veh_move_step = 10.0f;  // above it the beam lags behind the car
+    }
+    if (c.veh_cadence_ms < 50) {
+        c.veh_cadence_ms = 50;
+    }
+    if (c.veh_cadence_ms > 2000) {
+        c.veh_cadence_ms = 2000;
+    }
+    if (!(c.veh_max_spread >= 1.0f)) {
+        c.veh_max_spread = 1.0f;
+    }
+    if (c.veh_max_spread > 20.0f) {
+        c.veh_max_spread = 20.0f;
+    }
+
     std::string list = iniString("list", "rhyremix_lights.txt");
     if (!list.empty() && (list.find(':') != std::string::npos ||
                           list[0] == '\\' || list[0] == '/')) {
@@ -1199,6 +1298,13 @@ static void loadConfig() {
            c.shutdown_calls_ms, c.shutdown_log_ms, c.stop_present_after_ms,
            c.stop_present_after_ms ? "Present is dropped once the bridge has been gone that long"
                                    : "Present is always forwarded to the bridge client");
+    rhyLog("config: vehiclelights enabled=%d max=%d dist=%d spread=%.1f flux "
+           "head=%.0f tail=%.0f brake=%.0f (red>=%d) radius head=%.2f tail=%.2f "
+           "cone=%.1f/%.2f move=%.2f cadence=%dms",
+           c.veh_enabled, c.veh_max_lights, c.veh_max_distance, c.veh_max_spread,
+           c.veh_head_flux, c.veh_tail_flux, c.veh_brake_flux, c.veh_brake_red_min,
+           c.veh_head_radius, c.veh_tail_radius, c.veh_head_cone_deg,
+           c.veh_head_cone_softness, c.veh_move_step, c.veh_cadence_ms);
 }
 
 // Timestamp of the ini the loaded values came from.  A FILETIME is two 32-bit

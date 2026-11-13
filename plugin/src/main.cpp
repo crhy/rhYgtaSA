@@ -16,6 +16,7 @@
 #include "streetlights.h"
 #include "sun.h"
 #include "trafficlights.h"
+#include "vehiclecorona.h"
 
 // The game's D3D9 device (0 until rendering starts); in the RTX build it belongs
 // to the Remix bridge client d3d9.dll in the game folder.
@@ -174,6 +175,7 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
     rhyRemixInitOnce();        // first frame, on the render thread
     rhyStreetlightsInitOnce(); // loads rhyremix.ini and the lamp list once
     rhyTrafficInitOnce();      // loads rhyremix_traffic.txt once
+    rhyVehicleLightsInitOnce(); // n12: the corona store's layout, checked once
     rhyFlushDelayed();         // destroy handles retired on earlier frames
     rhyConfigReloadIfChanged(); // re-read rhyremix.ini when it changed on disk
     // s28: a fade is a sequence of CreateLight calls, so the frame gets an
@@ -205,6 +207,7 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
     rhySunFrame();             // sun as a Remix distant light (replaces the Lua sun)
     rhyStreetlightsFrame();    // draw the street lamp lights before presenting
     rhyTrafficFrame();         // draw the traffic light lights too
+    rhyVehicleCoronaFrame();   // n12: the car's own head and tail lamps
 
     // One line a second, independent of which module is on.  This is the number
     // to watch while tuning: "live" is how many handles the bridge still holds

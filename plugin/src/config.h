@@ -305,6 +305,29 @@ struct RhyConfig {
                                 // been gone this long, stop calling the bridge client's Present and
                                 // return D3D_OK: the experiment that says whether the exit spin is
                                 // inside that call or inside the game's own device-reset loop.
+
+    // --- n12: the car's own lights ([vehiclelights] section) ---------------
+    // The game's only vehicle light sources are its corona sprites: a 15 game-unit
+    // (30 m) billboard per bulb, which the runtime renders as emissive geometry and
+    // (with rtx.enableSeparateUnorderedApproximations) lets light the surroundings.
+    // That is test-2026-11-12c V5: "tail lights throw large red blobs on the sand
+    // (too wide/strong for 2 small bulbs); headlights a small weak pool". The module
+    // reads the game's corona store (read-only) and adds our own lights sized to the
+    // real lamps. plugin/src/vehiclelights.h holds the rules and the game layout.
+    int   veh_enabled;        // 0 = the module does nothing
+    int   veh_max_lights;     // cap on live vehicle lamps (nearest vehicles first)
+    int   veh_max_distance;   // metres; a vehicle further than this gets no light
+    float veh_head_flux;      // headlamp, in the plugin's flux units (see signalheads.h)
+    float veh_tail_flux;      // rear position lamp
+    float veh_brake_flux;     // rear brake lamp (>= tail)
+    float veh_head_radius;    // metres; 0 = rhyVehicleHeadFixture()
+    float veh_tail_radius;    // metres; 0 = rhyVehicleTailFixture()
+    float veh_head_cone_deg;  // HALF angle of the beam; 0 = the fixture's 25 (50 deg)
+    float veh_head_cone_softness;  // -1 = the fixture's
+    int   veh_brake_red_min;  // observed tail-lamp red that means "braking" (0 = off)
+    float veh_move_step;      // metres a lamp may drift before its handle is rebuilt
+    int   veh_cadence_ms;     // floor on the rebuild period of one lamp's handle
+    float veh_max_spread;     // metres: the lamps of one vehicle must fit in this box
 };
 
 // Loads once on first call; returns the same pointer every time.

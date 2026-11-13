@@ -1552,3 +1552,100 @@ be tagged as Opaque Unknown"), `buildRequests.enableAnimatedInstances = False` a
 which is exactly what procobj grass is). Measured against the 1.6.1 source those are also the
 defaults, so the change is a pin: the caps our own "Out of memory budget" device loss refers to are
 now written down where they cannot drift.
+
+## A car's lamp is a 30 m billboard: the corona store, and the one runtime path behind V5, V6 and V7 (2026-11-12, n12)
+
+`.strata/test-2026-11-12c.md` lists three complaints that look unrelated — tail lights throwing
+red blobs on the sand, exhaust puffs glowing pink, building windows as flat white blocks. They
+are three views of two facts: the game publishes a vehicle's lamps as **corona sprites of radius
+15.0 game units**, and the runtime turns any additive/semi blend into an **emissive surface with
+a forced emissive intensity**.
+
+### The game side: where a car's lamps actually live
+
+`CVehicle` keeps no lamp list we could read. What it does every frame is call
+`CCoronas::RegisterCorona` (thunk `0x6FC580`, real body `0x6FC180`), and that store is readable
+without patching anything:
+
+```
+0xC3E038  dword   live corona count, 0..64          (0x6FC35D inc, 0x6FC36F store)
+0xC3E000  11 sprite pointers, indexed by the sprite index the thunk is handed
+                     (`movzbl 0x28(%esp),%edx; mov 0xc3e000(,%edx,4),%eax`);
+                     the init loop at 0x6FAA8B loads the names from 0x8D4950, stride 0x1A:
+                     0/1 coronastar, 2 coronamoon, 3 coronareflect, 4 coronaheadlightline,
+                     9 coronaringb
+0xC3E058  entry 0, stride 0x3C, 64 entries          (0x6FC39F lea 0xc3e058(%ecx),%eax)
+    +0x00 float x,y,z      +0x0C uint32 key (entity + head index)   +0x10 uint32 texture
+    +0x14 float strength   +0x1C float range                        +0x28 float radius
+    +0x2C uchar r,g,b,a
+```
+
+The six `RegisterCorona` calls in the vehicle render path — `0x6E0D01`, `0x6E0DF7`, `0x6E219F`,
+`0x6E2297`, `0x6E253E`, `0x6E2633` — all read the model at `vehicle+0x384` and the class at
+`+0x594`, push sprite **4** (`coronaheadlightline`) or **1** (`coronastar`), a bluish-white
+colour (`0xa0,0xa0,0x8c` / `0x96,0xc3,0xc3`), **radius 15.0**, and the vehicle as the link
+argument. The red rear lamps come from the model's 2dFx entries instead (the loop at `0x53B5A8`
+walks 40-byte `C2dFx` entries, pushes sprite **2** `coronamoon`, strength 35.0, **radius 15.0**,
+and the entry's colour, read per light state from the three bytes at `0x8CCFF0`). So: front lamps
+are identifiable by sprite, rear lamps only by hue. And the key is `entity + head_index` with the
+index reaching **7** (`0x6E219A` pushes `esi+7`), which is why grouping is "keys within 16 bytes",
+not `key & ~3`.
+
+Two consequences for V5, both measured rather than assumed: `coronaheadlightline`
+(`0x4DBD066761A29F5B`) is already in `rtx.ignoreTextures`, so the headlight beam sprite is
+**removed from the raytraced scene** and nothing lights the road in front of the car — that is
+"headlights a small weak pool". And the rear lamps' 15-unit red billboard is in no category at
+all, so it is rendered as emissive geometry and, with `rtx.enableSeparateUnorderedApproximations`
+(default true), it also *lights* the surroundings — a 4 cm bulb reaching the renderer as a 30 m
+red ball. That is "too wide/strong for 2 small bulbs".
+
+### The runtime side: one code path, three symptoms
+
+`rtx_instance_manager.cpp:882` sets `emissiveBlend = isBlendTypeEmissive(blendType)`; lines
+1132-1138 then take any such draw call whose material uses the legacy alpha state and **force**
+its emissive intensity to `rtx.emissiveBlendOverrideEmissiveIntensity` (default **0.2**) with the
+albedo as the emissive colour. `rtx_scene_manager.cpp:1771` multiplies every material's emissive
+by the global `rtx.emissiveIntensity`. So:
+
+* **V6, exhaust puffs** — a smoke sprite is an alpha/additive blend, so it is not smoke, it is a
+  self-lit sheet whose colour is its own texture. The runtime's own tooltip says what the knob is
+  for: "Adjust this if particles for example look overly bright globally."
+* **V5, the red wash** — the tail corona sprite rides the same path.
+* **V7, windows** — the asset pack's authored emissives, scaled only by the one global dial.
+  There is **no per-texture emissive category in 1.6.1**: every `*Textures` option in
+  `rtx_options.h` is a geometry/material category, not radiometry. Per-material control belongs
+  in the pack's `mat_<HASH>` materials, which this task does not touch.
+
+### The measurements (tools/frame_light_measure.py, build/tmp/video-2026-11-12)
+
+| metric | what the frames say |
+|---|---|
+| red spill on the sand | 6.9k-17.5k px, equivalent radius 47-75 px, source core up to 1572 px |
+| headlight pool | 35k-119k px of bright non-red ground, peak high-pass 168-201 |
+| smoke puffs | 90-719 px, mean RGB **[172, 57, 80]**, pink-ness min(R,B)-G **21.4**, high-pass luminance 31-96 **above the ground they rise from** |
+| clipped-white windows | **0.30-0.40 %** of the ground band has all three channels ≥ 235; biggest connected block **850-963 px** (~46×24, a window pane); chroma **1.7/255** at mean RGB [252,252,252] |
+
+The window row is the one that decides V7: neutral white with no chroma and no texture is an
+emissive term above the tonemapper's knee, not a lit window. A real lit window carries its lamp's
+spectrum (chroma 10-40 for the pack's warm interiors) and shows its mullions.
+
+### What changed
+
+* `plugin/src/vehiclelights.{h,cpp}` (pure) and `plugin/src/vehiclecorona.{h,cpp}` (game +
+  bridge): read the corona store page-validated, pair one vehicle's dummies, aim the beam along
+  the car's own front-to-rear axis, and create a **0.09 m reflector in a 50-degree cone**
+  (`coneAngleDegrees` is the **half** angle — `rtx_remix_api.cpp:544` takes its cosine, which is
+  why the street lamps' `cone_angle=120` is a 240-degree flood) plus **0.05 m red lenses**, brake
+  filament brighter. Radiance comes from flux with the cone's geometric concentration
+  `2/(1-cos θ)` applied, because `light_shaping.slangh`'s shaping is a 0..1 **mask** and nothing
+  renormalizes it — a cone-cut light without that factor is 21x dimmer than the same lamp unshaped.
+* `rtx.emissiveBlendOverrideEmissiveIntensity = 0.06` in every shipped profile (from the 0.2
+  default): a 3.3x cut, so the scene's lights decide how bright a plume is while the sprite keeps
+  enough glow to read as one.
+* `rtx.particleTextures` gained the three smoke sprites that were in no category at all —
+  `smoke5 0xC70DC799C5BFFE65`, `smoke4 0x3F66C5D5F91C3708` (the textures of the fx systems the
+  game itself calls `smoke50lit` / `smoke30lit`) and `bullethitsmoke1 0x2D558BC31F67FD1D`.
+  Coronas were considered for that list and left out: the Particle category does not touch the
+  emissive term, so it would be a wide change with no measured benefit.
+* `emissive_day 1.0 → 0.5`, `emissive_night 1.0 → 0.8` in the shipped ini — day cut harder,
+  because that is where the clipping is measured.
