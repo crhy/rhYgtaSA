@@ -70,7 +70,7 @@ rtx.restirGI.useDLSSRRCompatibilityMode = True
 rtx.enableCulling = False
 rtx.demodulate.enableDirectLightBoilingFilter = False
 rtx.graphicsPreset = 1
-rtx.animatedWaterTextures = 0x00FAD6ECF37BFBDB, 0x02502A4AFB4CADBB, 0x071C53CBDEFFBA77, 0x0C746F1683798424, 0x0DC55F6D9DEBCADB, 0x0DFE4F77C157CEA2, 0x120BED9788C58EDD, 0x1225B4DFF6506137, 0x1A1A35CA8382015E, 0x1D024B67914A61A9, 0x1DE1B1AA2398A7DC, 0x278367335989356B, 0x2FAC7A403DB8EF89, 0x334EFD7D0C9A0557, 0x3DFD2B96C1930F78, 0x3EF016691656F970, 0x418DEBB0F4A2A197, 0x434FC43F7BF7EC1F, 0x47F0D076364FE100, 0x48519E8FE2DC6D8B, 0x4E8D2FCE735ACA80, 0x4FFDCE29E1793968, 0x51DB758F888C8A7C, 0x529A2C691C741B21, 0x566FF5AF1575B4F6, 0x59296793798A7318, 0x5D20FD88C0A70C13, 0x5D69653013D1FE27, 0x5FAE7571446D5A1F, 0x6363571649761AFC, 0x66ABA8DF426979B7, 0x6E419569F50C57A3, 0x6E8F5B279EFEC93C, 0x71D279975B0F4808, 0x7492C2957CEB1377, 0x75007E056037B9BF, 0x7EAA20F654D73E23, 0x80A5DB2A47161FDF, 0x8398EA381E2D5BAB, 0x91548A1865B639AC, 0x91E3C33F56C7C402, 0x923E2560A8DB36F4, 0x9A6022AB4E9D706A, 0x9B7E84B205AABCF3, 0x9BD20D5EED3F151F, 0xA006DCDD5668F14C, 0xA4EED0463F70FD79, 0xC120BA4E84CE7AE8, 0xC75EC8EE882E2237, 0xCD648C3913D2AAE4, 0xCE2FA1C23180ECA3, 0xD04D48CB7D9648C0, 0xD48CB1BB322048DA, 0xD9EDCDEC1D0221F2, 0xDB5C2DFA92C01020, 0xDB6D83AA39677D42, 0xDD8A0AE1E5EB9369, 0xDE8822B32A6BC670, 0xE692218518A4111F, 0xEFA8FB7D8D3AA6C3, 0xF40C8156FAB61149
+rtx.animatedWaterTextures = 0x00FAD6ECF37BFBDB, 0x02502A4AFB4CADBB, 0x071C53CBDEFFBA77, 0x0C746F1683798424, 0x0DC55F6D9DEBCADB, 0x0DFE4F77C157CEA2, 0x120BED9788C58EDD, 0x1225B4DFF6506137, 0x1A1A35CA8382015E, 0x1D024B67914A61A9, 0x1DE1B1AA2398A7DC, 0x278367335989356B, 0x2FAC7A403DB8EF89, 0x334EFD7D0C9A0557, 0x3DFD2B96C1930F78, 0x3EF016691656F970, 0x418DEBB0F4A2A197, 0x434FC43F7BF7EC1F, 0x47F0D076364FE100, 0x48519E8FE2DC6D8B, 0x4E8D2FCE735ACA80, 0x4FFDCE29E1793968, 0x51DB758F888C8A7C, 0x529A2C691C741B21, 0x566FF5AF1575B4F6, 0x59296793798A7318, 0x5D20FD88C0A70C13, 0x5D69653013D1FE27, 0x5FAE7571446D5A1F, 0x6363571649761AFC, 0x66ABA8DF426979B7, 0x6E419569F50C57A3, 0x6E8F5B279EFEC93C, 0x71D279975B0F4808, 0x7492C2957CEB1377, 0x75007E056037B9BF, 0x7EAA20F654D73E23, 0x80A5DB2A47161FDF, 0x8398EA381E2D5BAB, 0x91548A1865B639AC, 0x91E3C33F56C7C402, 0x923E2560A8DB36F4, 0x9A6022AB4E9D706A, 0x9B7E84B205AABCF3, 0x9BD20D5EED3F151F, 0xA006DCDD5668F14C, 0xA4EED0463F70FD79, 0xA75A0B41F2454F04, 0xC120BA4E84CE7AE8, 0xC75EC8EE882E2237, 0xCD648C3913D2AAE4, 0xCE2FA1C23180ECA3, 0xD04D48CB7D9648C0, 0xD48CB1BB322048DA, 0xD9EDCDEC1D0221F2, 0xDB5C2DFA92C01020, 0xDB6D83AA39677D42, 0xDD8A0AE1E5EB9369, 0xDE8822B32A6BC670, 0xE692218518A4111F, 0xEFA8FB7D8D3AA6C3, 0xF40C8156FAB61149
 rtx.neeCache.enableModeAfterFirstBounce = 2
 rtx.postFilterThreshold = 10
 rtx.russianRouletteMode = 1
@@ -84,7 +84,16 @@ rtx.postfx.enableChromaticAberration = False
 rtx.opacityMicromap.enable = True
 rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate = 2048
 rtx.opacityMicromap.cache.maxBudgetSizeMB = 768
-rtx.translucentMaterial.normalIntensity = 0.35
+# n07: the same four opacity-micromap guard rails config/rtx.conf carries, next to the caps they
+# sit beside (pinned from xoxor4d's GTA IV / Portal 2 RTX profiles and from the runtime's own
+# defaults; the reason is our OOM device loss - docs/VEGETATION.md).
+rtx.opacityMicromap.cache.maxVidmemSizePercentage = 0.15
+rtx.opacityMicromap.building.conservativeEstimation.maxTexelTapsPerMicroTriangle = 64
+rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False
+rtx.opacityMicromap.building.splitBillboardGeometry = True
+# n07: 1.0 pairs with the regenerated water sheets (tools/water.sh remix-ref / soft); 0.35 is the
+# number for the pack's own sheet (tools/water.sh realistic / calm). See config/rtx.conf.
+rtx.translucentMaterial.normalIntensity = 1.0
 
 # s32: the hillside vegetation (grass/bush/fern/leaf cards) comes out as soft scribbled lines.
 # These are the alpha-cutout card textures of the game's procedural-vegetation objects: every
@@ -198,7 +207,8 @@ rtx.hairCardTextures = 0x0504F3815DC61AA1, 0x08E10D793AD4E2AA, 0x0B1832275CFCB7C
 # Kept from the live file, unchanged, because they are look-critical for the pack, not fps:
 #   rtx.sceneScale 0.01 / rtx.zUp True / rtx.ignoreGameDirectionalLights True /
 #   rtx.skyBrightness 1.0 / rtx.emissiveIntensity 1.0 / rtx.localtonemap.shadows 2.5 /
-#   rtx.autoExposure.enabled False / rtx.translucentMaterial.normalIntensity 0.35 (s02 water)
+#   rtx.autoExposure.enabled False / rtx.translucentMaterial.normalIntensity (s02 water; n07 sets
+#   it to 1.0 to pair with the regenerated sheets)
 #   and every texture-hash list (decal/ui/skyBox/particle/animatedWater/lightmap/ignore).
 # The rtx.restirGI.* block is carried unchanged but is inert while the indirect mode is SHaRC:
 # the integration mode is one of Importance Sampled / ReSTIR GI / NRC / SHaRC, and the log says
@@ -233,3 +243,21 @@ rtx.antiCulling.light.numFramesToExtendLightLifetime = 600
 # rather than rays. If fps matters more than steadiness, drop
 # rtx.di.initialSampleCount back to 4 FIRST and keep maxHistoryLength: history is
 # nearly free, candidates are not.
+
+
+# ---------------------------------------------------------------------------
+# n07 water and foliage: the same look keys as config/rtx.conf (research log:
+# .strata/notes-n07-water-research.md), minus the one that costs rays.
+# Pair with `bash tools/water.sh remix-ref <game>`.
+rtx.translucentMaterial.animatedWaterEnable = True
+rtx.translucentMaterial.animatedWaterSecondaryNormalLodBias = 2.0
+rtx.opaqueMaterial.layeredWaterNormalEnable = True
+rtx.rayreconstruction.invalidateHistoryForAnimatedWater = False
+rtx.rayreconstruction.combineSpecularAlbedo = True
+rtx.volumetrics.enableTranslucentShadows = True
+#   Volumetric lighting is on in this profile too, so this is what keeps a light cone alive where it
+#   crosses the sea surface; it is a froxel-grid term, not a ray term, so it is safe in a perf file.
+# NOT here on purpose: rtx.enableDirectTranslucentShadows (True in config/rtx.conf). Its tooltip
+# is "...include OBJECT_MASK_TRANSLUCENT into primary visibility rays", and over an ocean-sized
+# single sheet that is an extra intersection on every shadow ray. If the 60 fps profile wants the
+# coloured light through water, add it and watch the frame time at stop 11-water-santa-maria.

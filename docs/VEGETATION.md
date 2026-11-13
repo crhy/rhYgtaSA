@@ -170,6 +170,29 @@ mv "/media/rhy/data/Gamez/GTASA-RTX/modloader/V Vegetation Mix/gta3.img/insanity
    "/media/rhy/data/Gamez/GTAmods/removed-from-game/rtx-copy/V Vegetation Mix/gta3.img/"
 ```
 
+### n07: the caps those two log lines name are now pinned in both shipped profiles (2026-11-12)
+
+The community Remix profiles that survived a scene like this one (xoxor4d's GTA IV RTX and Portal 2
+RTX) both write the keys that set those limits, so `config/rtx.conf` and `config/rtx.conf.perf` now
+carry them:
+
+```ini
+rtx.opacityMicromap.cache.maxVidmemSizePercentage = 0.15
+rtx.opacityMicromap.building.conservativeEstimation.maxTexelTapsPerMicroTriangle = 64
+rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False
+rtx.opacityMicromap.building.splitBillboardGeometry = True
+```
+
+Checked against the 1.6.1 source (`src/dxvk/rtx_render/rtx_opacity_micromap_manager.h`) those are also
+the runtime's own defaults - `maxTexelTapsPerMicroTriangle` carries NVIDIA's comment "Set to 64 as a
+safer cap. 512 has been found to cause a timeout. Any micro triangles requiring more texel taps will
+be tagged as Opaque Unknown" - so this is a pin, not a tune: the caps the device loss refers to sit
+next to the MB caps and cannot drift. `splitBillboardGeometry` is the reuse win for batched procobj
+grass ("games often batch instanced geometry that reuses same geometry and textures"). NVIDIA's
+Minecraft mod goes the other way for a high-volume terrain workload (`rtx.opacityMicromap.enable =
+false`); that stays the tested-off A/B above. Research and URLs:
+`.strata/notes-n07-water-research.md`.
+
 ## Test order
 
 **One command does this whole ladder** (s16): `tools/vegetation.sh on <game> --step N` installs

@@ -93,6 +93,51 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   handle (60 s standing: 175 creates, 0 changes in the last 55 s) and the head rule (stale+near kept,
   stale+far dropped, cap 20 over 200 heads inside the radius keeps all 200).
 
+### Water and vegetation (n07) — the water setup the other RTX Remix projects actually use
+
+- **Added (n07): `tools/water.sh remix-ref`, a water variant built from other projects' shipped
+  numbers rather than from guessing.** `AperturePBR_Translucent` with transmittance (0.62, 0.8, 0.8)
+  at 4 m (xoxor4d's GTA IV RTX default water material), IOR 1.33, thin-walled off, a 12 fps flipbook,
+  and a regenerated wave sheet at a 6 deg median facet tilt (the pack's sheet measures 44 deg, with
+  32 % of texels over 60 deg and a 21.3 deg/texel gradient; NVIDIA's own Minecraft mod ships an ocean
+  at `slope_rms 0.0325` ~ 2.2 deg). `tools/water.sh pack` still restores the pack's file byte for byte.
+- **Fixed (n07): the runtime's own water path never ran on the game's second water surface.**
+  `translucent_surface_material_interaction.slangh:62` gates it on `animatedWaterEnable &&
+  surface.isAnimatedWater`, and lines 73-83 show what that buys - the sprite-sheet cell's UV scrolled
+  by `animatedWaterPrimaryNormalMotion` plus a second normal sample at
+  `animatedWaterSecondaryNormalLodBias` ("blurred, resulting in lower frequency waves"). The sea
+  texture was in `rtx.animatedWaterTextures`; `waterclear256` (`0xA75A0B41F2454F04`) was not, so both
+  profiles now carry it (62 hashes, sorted, identical in `rtx.conf` and `rtx.conf.perf`).
+- **Added (n07): the renderer keys the water research points at** - `combineSpecularAlbedo = True`
+  (NVIDIA's Minecraft mod: "without it, shaded water reflects blotchy sky-coloured smears instead of
+  the scene"), `invalidateHistoryForAnimatedWater = False` (the sheet no longer re-randomises per
+  frame, so keep the history), `animatedWaterSecondaryNormalLodBias = 2.0`,
+  `volumetrics.enableTranslucentShadows = True`, and `enableDirectTranslucentShadows = True` in the
+  look profile only; `rtx.translucentMaterial.normalIntensity` moved 0.35 -> 1.0 because the map now
+  carries the softening. The GTA IV project's shoreline fade (`rtx.water.shore*`) is documented as a
+  **fork-runtime** feature: measured unknown in our 1.6.1 dll, so it is not written anywhere.
+- **Measured (n07): why the water edges flicker.** `$G/data/water.dat` is text - 307 polygons (301
+  quads + 6 triangles) that butt exactly edge-to-edge in **5969** pairs and overlap in only **2**
+  (`water1.dat`: 267 / 4586 / 1). So SA's sea is one coplanar sheet cut into exactly-butted polygons,
+  not GTA IV's stack of coincident quads; a ray on a shared edge can hit neither polygon, and a
+  perfect-mirror translucent lobe flips that pixel between sea and seabed. Stock 1.6.1 has no hit-
+  tolerance or depth-fade key, so what shipped reduces the contrast of the flicker; the seam itself
+  needs rebuilt geometry or a fork runtime, and the docs say so.
+- **Added (n07): opacity-micromap guard rails pinned in both profiles**
+  (`cache.maxVidmemSizePercentage 0.15`,
+  `building.conservativeEstimation.maxTexelTapsPerMicroTriangle 64`,
+  `buildRequests.enableAnimatedInstances = False`, `building.splitBillboardGeometry = True`) - the
+  values both xoxor4d profiles ship, which the 1.6.1 source shows are also the defaults; the caps our
+  own "Out of memory budget" device loss and "more texel taps than allowed" lines refer to are now
+  written down where they cannot drift. Two-sided foliage needed no new key: alpha-tested geometry is
+  exempt from triangle culling by definition (`rtx_options.h:933`), and the hair-card category already
+  disables backface culling.
+- **Tests (n07): `tests/test_water_remix_ref.py`** - the variant validates against the pack's own file
+  and carries the researched numbers in both prims; `water.sh` generates its own sheet at the
+  researched tilt, names the variant in `status`, restores byte-for-byte and writes nothing on
+  `--dry-run`; every rtx.conf key `water.sh` prints passes the runtime key audit; both profiles carry
+  the water and OMM keys and both water hashes; and no fork-only key is shipped (negative control).
+
 ### Traffic signals
 
 - **Added (n02b): a lit signal is two lights again — the bulb at the lens AND the glow around it.**

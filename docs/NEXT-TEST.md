@@ -3,7 +3,6 @@
 Seven steps, one variable each, from `~/rhYgtaSA`; `$G` is the game folder (set in step 0). Each step: run -> look -> read the
 report -> know the rollback. Reference: the 2026-11-12 00:49 tour (16 stops). After any step `bash scripts/diagnose.sh` re-reads
 the logs and changes nothing. Send back `report.md`, `sheet-*.png` from `$G/screenshots/report-<start>/`, `rhyremix.log`.
-
 ## 0. preflight — 30 s, changes nothing
 ```bash
 G=/media/rhy/data/Gamez/GTASA-RTX
@@ -47,27 +46,27 @@ N bulbs + N glows drawn`. Report: stops 06/07 — green pixels above luma 200 mu
 road/wall green stay near the 2026-11-12 level (the glow, wanted). Rollback: live ini edits under `[trafficlights]`:
 `glow_flux=0` = bulb only, `corona_radius=0` = the game's own 15 m flare, `source=list` = no hook.
 
-## 4. water — the regenerated normal sheet, then the A/B (s02, s32)
+## 4. water — the research variant, then the A/B (s02, s32, n07)
 ```bash
-bash tools/water.sh soft $G
+bash tools/water.sh remix-ref $G
 bash tools/water.sh realistic $G
 bash tools/water.sh calm $G
 ```
-Look: the sea at Santa Maria (stops 10/11, pier deck (378.5,-1963.9)) — no binary black/white speckle, foam reads as foam, the
-horizon a line not a wall of noise. `soft` is the s32 fix: `inputs:normalmap_texture` points at a sheet this repo regenerates
-from the pack's own (median facet tilt 44 deg -> 12 deg, 32 % over 60 deg -> 0 %); the pack's map is never written over.
-`realistic` / `calm` are the A/B, `pack` the control. Report: 11-water-santa-maria-2100 mean up from 6.8, black down from
-29.2 %. Rollback: `bash tools/water.sh pack $G`. With `soft` set `rtx.translucentMaterial.normalIntensity = 1.0` — the live
-0.35 multiplies the softening twice and turns the sea to glass.
+Look: the sea at Santa Maria (stops 10/11, pier deck (378.5,-1963.9)) — no black/white speckle, foam reads as foam, the horizon
+a line not a wall of noise. `remix-ref` is n07 (research: notes-n07 in .strata/): a regenerated sheet (median facet
+tilt 44 deg -> 6 deg), transmittance (0.62,0.8,0.8) @ 4 m, a 12 fps flipbook, and both water hashes now in
+`rtx.animatedWaterTextures`, which turns on the runtime's UV scroll + second LOD-blurred normal. Seam flicker: the sea is 307
+exactly-butted coplanar polygons, ~6000 seams (`$G/data/water.dat`); 1.6.1's answer is the calmer map + kept history +
+`combineSpecularAlbedo` — GTA IV's shoreline fade needs a fork runtime (`rtx.water.*` is not in our dll).
+Report: 11-water-santa-maria-2100 mean up from 6.8, black down from 29.2 %. Rollback: `bash tools/water.sh pack $G`; both
+profiles set `rtx.translucentMaterial.normalIntensity = 1.0` (0.35 for `realistic`/`calm`).
 
 ## 5. the 60 fps profile (s22)
 ```bash
 bash tools/rtxprofile.sh perf $G
 ```
-Look: MangoHud — ~60 fps at 1080p, no dip under ~45 in Pershing Square or on the hill. Report: every stop's mean within ~10 %
-of step 1 (SHaRC/NRC Medium, `pathMinBounces` 1, froxel grid /2, texture budget 40 %, OMM cache 768 MB behind 2 GB free). A
-stop that moves >20 % names a key that changed the look, not the fps. Rollback: `bash tools/rtxprofile.sh restore $G`
-(byte-exact).
+Look: MangoHud — ~60 fps at 1080p, no dip under ~45 in Pershing Square or on the hill. Report: every stop's mean within ~10 % of
+step 1. A stop that moves >20 % names a key that changed the look, not the fps. Rollback: `bash tools/rtxprofile.sh restore $G`.
 
 ## 6. vegetation: hair cards, then the LAA test (s03, s16, s32)
 ```bash
@@ -75,11 +74,10 @@ bash tools/vegetation.sh on $G
 python3 tools/vegetation_hashes.py $G/models/gta3.img --emit rtx.hairCardTextures
 ```
 Look: stop 14-vegetation-vinewood-noon (the lawn at (1300,-920), trees at 8-35 m), then two minutes on the hillside — the cards
-must read as leaves and blades, not soft scribbled lines, and no freeze or hitch. The shipped rtx.conf now tags 119 foliage
-card textures as `rtx.hairCardTextures` (cutouts, not alpha blends); none was in any list before. If stop 14 is *identical* to
+must read as leaves and blades, not soft scribbled lines, and no freeze or hitch. The shipped rtx.conf tags 119 foliage card
+textures as `rtx.hairCardTextures` (cutouts, not alpha blends). If stop 14 is *identical* to
 step 1 the 2402-char line was not parsed. Report: stop 14 mean and sat above step 1's (168.1 / 0.262), no `stop 14 failed:`.
 Rollback: `bash tools/vegetation.sh off $G` (hashes back byte-exact); the hair cards: delete that line.
-
 ## 7. character packs (s17)
 ```bash
 bash tools/characters.sh on $G

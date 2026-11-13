@@ -161,7 +161,7 @@ rtx.restirGI.useDLSSRRCompatibilityMode = True
 rtx.enableCulling = False
 rtx.demodulate.enableDirectLightBoilingFilter = False
 rtx.graphicsPreset = 1
-rtx.animatedWaterTextures = 0x00FAD6ECF37BFBDB, 0x02502A4AFB4CADBB, 0x071C53CBDEFFBA77, 0x0C746F1683798424, 0x0DC55F6D9DEBCADB, 0x0DFE4F77C157CEA2, 0x120BED9788C58EDD, 0x1225B4DFF6506137, 0x1A1A35CA8382015E, 0x1D024B67914A61A9, 0x1DE1B1AA2398A7DC, 0x278367335989356B, 0x2FAC7A403DB8EF89, 0x334EFD7D0C9A0557, 0x3DFD2B96C1930F78, 0x3EF016691656F970, 0x418DEBB0F4A2A197, 0x434FC43F7BF7EC1F, 0x47F0D076364FE100, 0x48519E8FE2DC6D8B, 0x4E8D2FCE735ACA80, 0x4FFDCE29E1793968, 0x51DB758F888C8A7C, 0x529A2C691C741B21, 0x566FF5AF1575B4F6, 0x59296793798A7318, 0x5D20FD88C0A70C13, 0x5D69653013D1FE27, 0x5FAE7571446D5A1F, 0x6363571649761AFC, 0x66ABA8DF426979B7, 0x6E419569F50C57A3, 0x6E8F5B279EFEC93C, 0x71D279975B0F4808, 0x7492C2957CEB1377, 0x75007E056037B9BF, 0x7EAA20F654D73E23, 0x80A5DB2A47161FDF, 0x8398EA381E2D5BAB, 0x91548A1865B639AC, 0x91E3C33F56C7C402, 0x923E2560A8DB36F4, 0x9A6022AB4E9D706A, 0x9B7E84B205AABCF3, 0x9BD20D5EED3F151F, 0xA006DCDD5668F14C, 0xA4EED0463F70FD79, 0xC120BA4E84CE7AE8, 0xC75EC8EE882E2237, 0xCD648C3913D2AAE4, 0xCE2FA1C23180ECA3, 0xD04D48CB7D9648C0, 0xD48CB1BB322048DA, 0xD9EDCDEC1D0221F2, 0xDB5C2DFA92C01020, 0xDB6D83AA39677D42, 0xDD8A0AE1E5EB9369, 0xDE8822B32A6BC670, 0xE692218518A4111F, 0xEFA8FB7D8D3AA6C3, 0xF40C8156FAB61149
+rtx.animatedWaterTextures = 0x00FAD6ECF37BFBDB, 0x02502A4AFB4CADBB, 0x071C53CBDEFFBA77, 0x0C746F1683798424, 0x0DC55F6D9DEBCADB, 0x0DFE4F77C157CEA2, 0x120BED9788C58EDD, 0x1225B4DFF6506137, 0x1A1A35CA8382015E, 0x1D024B67914A61A9, 0x1DE1B1AA2398A7DC, 0x278367335989356B, 0x2FAC7A403DB8EF89, 0x334EFD7D0C9A0557, 0x3DFD2B96C1930F78, 0x3EF016691656F970, 0x418DEBB0F4A2A197, 0x434FC43F7BF7EC1F, 0x47F0D076364FE100, 0x48519E8FE2DC6D8B, 0x4E8D2FCE735ACA80, 0x4FFDCE29E1793968, 0x51DB758F888C8A7C, 0x529A2C691C741B21, 0x566FF5AF1575B4F6, 0x59296793798A7318, 0x5D20FD88C0A70C13, 0x5D69653013D1FE27, 0x5FAE7571446D5A1F, 0x6363571649761AFC, 0x66ABA8DF426979B7, 0x6E419569F50C57A3, 0x6E8F5B279EFEC93C, 0x71D279975B0F4808, 0x7492C2957CEB1377, 0x75007E056037B9BF, 0x7EAA20F654D73E23, 0x80A5DB2A47161FDF, 0x8398EA381E2D5BAB, 0x91548A1865B639AC, 0x91E3C33F56C7C402, 0x923E2560A8DB36F4, 0x9A6022AB4E9D706A, 0x9B7E84B205AABCF3, 0x9BD20D5EED3F151F, 0xA006DCDD5668F14C, 0xA4EED0463F70FD79, 0xA75A0B41F2454F04, 0xC120BA4E84CE7AE8, 0xC75EC8EE882E2237, 0xCD648C3913D2AAE4, 0xCE2FA1C23180ECA3, 0xD04D48CB7D9648C0, 0xD48CB1BB322048DA, 0xD9EDCDEC1D0221F2, 0xDB5C2DFA92C01020, 0xDB6D83AA39677D42, 0xDD8A0AE1E5EB9369, 0xDE8822B32A6BC670, 0xE692218518A4111F, 0xEFA8FB7D8D3AA6C3, 0xF40C8156FAB61149
 rtx.neeCache.enableModeAfterFirstBounce = 2
 rtx.postFilterThreshold = 10
 rtx.russianRouletteMode = 1
@@ -176,11 +176,16 @@ rtx.postfx.enableChromaticAberration = False
 
 
 
-# s02 water: the pack water_normal.dds (10240x512 BC5, 20 frames) decodes to a median facet tilt of
-# 46 deg, which is why the sea reads as binary black/white under path tracing. 0.35 brings the
-# effective tilt to ~12 deg (measured decode, see .strata/notes-s02-water.md). Pair it with
-# config/water/realistic.usda via tools/water.sh realistic.
-rtx.translucentMaterial.normalIntensity = 0.35
+# s02/s32/n07 water: this is the runtime's only normal-strength knob (tooltip: "An arbitrary
+# strength scale factor to apply when decoding normals in the translucent material. Should only be
+# used for debugging or development."), and it multiplies whatever the normal map does.
+#   1.0  with the regenerated sheets ('remix-ref' 6 deg median tilt, 'soft' 12 deg) - the map
+#        already carries the softening; this is the shipped pairing.
+#   0.35 with the pack's own water_normal.dds ('realistic'/'calm'): the pack sheet decodes to a 44-46
+#        deg median facet tilt and 0.35 brings it to ~12 deg (measured, .strata/notes-s02-water.md).
+# Both numbers are kept here so the A/B is one line, but they belong to different variants: 0.35 on
+# top of 'remix-ref' is ~2 deg, i.e. glass.
+rtx.translucentMaterial.normalIntensity = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +274,116 @@ rtx.antiCulling.light.numFramesToExtendLightLifetime = 1000
 #   rtx.uniqueObjectDistance - s28 called this a light/object distance. It is
 #     "the distance an object can move in a single frame before it is no longer
 #     considered the same object", default 300, and our objects do not move.
+
+
+# ---------------------------------------------------------------------------
+# n07 (2026-11-12b findings F and H): water, the way the other RTX Remix projects do it.
+# Research log with every URL: .strata/notes-n07-water-research.md. The short version: every
+# project surveyed (NVIDIA's own Path-traced Minecraft mod, xoxor4d's GTA IV / Portal 2 RTX,
+# gta2-rtx-remix) puts its water in the runtime's AnimatedWater category and lets the runtime
+# animate it, and the two of them that ship water normals generate them (octahedral R/G, BC5, full
+# mip chain, calm slopes) instead of repairing the original - which is what tools/water.sh
+# remix-ref now does. Paired with config/water/remix-ref.usda.
+#
+# The category is the precondition for all of it: translucent_surface_material_interaction.slangh:62
+# gates the whole water path on `animatedWaterEnable && surface.isAnimatedWater`, and lines 73-83
+# show what that buys - the sprite-sheet frame's UV is scrolled by
+# `time * animatedWaterPrimaryNormalMotion` and the normal map is sampled a SECOND time at
+# `animatedWaterSecondaryNormalLodBias`, i.e. the runtime's own low-frequency wave layer.
+# 0x59296793798A7318 (the sea texture the game generates) has been in rtx.animatedWaterTextures
+# all along; 0xA75A0B41F2454F04 (the game's waterclear256, the other water material) was not, so
+# none of this ever ran on that surface. Both are in the list above now.
+rtx.translucentMaterial.animatedWaterEnable = True
+#   Default True, written out so the A/B is pinned. NFSU2-RTX-Remix ships the opposite for the
+#   opaque side (rtx.opaqueMaterial.layeredWaterNormalEnable = False), so this is a real fork in
+#   the road, not a free default.
+rtx.translucentMaterial.animatedWaterSecondaryNormalLodBias = 2.0
+#   Tooltip: "LoD bias to use when taking the second normal map sample. Values greater than 0 will
+#   cause the secondary normal map to be blurred, resulting in lower frequency waves." Default 1;
+#   2 because our sheet is now calm and the second layer is where the long swell should come from.
+rtx.opaqueMaterial.layeredWaterNormalEnable = True
+#   Default True; pinned because the docs' Animated Water entry names it ("...only when
+#   rtx.opaqueMaterial.layeredWaterNormalEnable is set to true") and any water draw the runtime
+#   classifies as opaque needs it.
+rtx.rayreconstruction.invalidateHistoryForAnimatedWater = False
+#   Tooltip (rtx_ray_reconstruction.h:77): "Adds animated water surfaces to the disocclusion mask,
+#   making DLSS Ray Reconstruction discard their temporal history every frame ... can introduce
+#   shimmering on objects seen through or near the water, so it is disabled by default." With the
+#   regenerated sheet the surface no longer re-randomises per frame (|grad tilt| 21.3 -> 1.0
+#   deg/texel), so keeping history is the right side of that trade; set True if the sea ever
+#   smears when the camera moves.
+rtx.rayreconstruction.combineSpecularAlbedo = True
+#   NVIDIA's own rtx.conf for the Path-traced Minecraft Remix mod, verbatim reason: "DLSS-RR needs
+#   the combined primary and secondary specular albedo to reconstruct water reflections: without
+#   it, shaded water reflects blotchy sky-coloured smears instead of the scene." That is finding F's
+#   "water still looks bad" under a denoiser. Cost: cloud reflections blur the refraction signal.
+rtx.enableDirectTranslucentShadows = True
+#   Tooltip: "Calculate coloured shadows for translucent materials (i.e. glass, water) in direct
+#   lighting." Default False; NVIDIA's Minecraft mod and NFSU2-RTX-Remix both ship True, GTA IV RTX
+#   and Portal 2 RTX ship False. It is the cheap half of the pair (primary visibility rays only);
+#   rtx.enableIndirectTranslucentShadows (reflections/GI) is deliberately NOT set - that is the one
+#   the two GTA-scale projects refuse, and finding G is about frame-time steadiness.
+rtx.volumetrics.enableTranslucentShadows = True
+#   "Let volumetric lighting pass through translucent surfaces (water, glass)" - NVIDIA's comment
+#   for the same line in the Minecraft profile. Volumetric lighting is on in this profile, so this
+#   is what keeps a light cone alive where it crosses the sea surface.
+#
+# NOT set, with the reason (all measured against config/rtx-runtime-keys.txt, i.e. our 1.6.1 dll):
+#   rtx.water.shoreFadeEnable / shoreCutDepth / shoreFadeWidth / shoreFadeDistance /
+#   shoreProbeSpread / shoreThinLayer / objectFadeWidth, rtx.atmosphere.waterHorizonFade*Meters -
+#     the shoreline fade xoxor4d's GTA IV RTX actually uses (docs/RemixWaterAPI_gta4.md in
+#     github.com/xoxor4d/dxvk-remix, branch game/gta4: a downward depth probe, then
+#     fade = saturate((depth + slope*shoreHeightScale - shoreCutDepth)/shoreFadeWidth), and at
+#     fade 0 the water hit is skipped, which "removes the bright reflection line where water meets
+#     the shore and the hard edge"). Those keys are in that FORK's runtime, not in stock 1.6.1 -
+#     rtxkeycheck.py reports all of them unknown here, so writing them would be a silent no-op.
+#   rtx.spatiallyHashedRadianceCache.queryForThinOpaquePrimaryView /
+#   rtx.subsurface.disableThinOpaqueInSecondaryRays - the Minecraft mod's "Reduce SHaRC/NRC shimmer
+#     on leaves" block; also unknown in 1.6.1.
+#   rtx.forceCutoutAlpha - real in 1.6.1 (default 0.5) but it only applies to the
+#     remix_category:alpha_blend_to_cutout category, which has no rtx.conf hash list in this build;
+#     our cards are already cutouts through rtx.hairCardTextures, so there is nothing for it to do.
+
+
+# ---------------------------------------------------------------------------
+# n07 foliage: the opacity-micromap guard rails, pinned from the two community profiles that
+# survived a scene like ours. The hillside is now 119 alpha-CUTOUT card textures
+# (rtx.hairCardTextures above, s32), and cutouts are exactly what opacity micromaps accelerate -
+# but this repo already ate an OMM out-of-memory device loss once (docs/VEGETATION.md: "GPU device
+# loss came 20 s after '[RTX Opacity Micromap] Out of memory budget'") and the same log line
+# "Instance requires more texel taps to resolve opacity than allowed" is in the good run too.
+# These four lines are what xoxor4d's GTA IV and Portal 2 RTX profiles carry for that scene type
+# (assets/rtx.conf in github.com/xoxor4d/gta4-rtx and github.com/xoxor4d/p2-rtx); measured against
+# the 1.6.1 source (src/dxvk/rtx_render/rtx_opacity_micromap_manager.h) most of them are also the
+# runtime's own defaults, so this is a pin, not a tune - the point is that the caps our own scar
+# refers to are written down and cannot drift.
+rtx.opacityMicromap.cache.maxVidmemSizePercentage = 0.15
+#   "Budget: Max Video Memory Size %." - the percentage cap that sits next to the MB caps already
+#   in this file (maxBudgetSizeMB / minFreeVidmemMBToNotAllocate); both community profiles ship 0.15.
+rtx.opacityMicromap.building.conservativeEstimation.maxTexelTapsPerMicroTriangle = 64
+#   Source comment, verbatim: "Set to 64 as a safer cap. 512 has been found to cause a timeout.
+#   Any micro triangles requiring more texel taps will be tagged as Opaque Unknown." That tag is
+#   the sane fallback for a dense grass card; the timeout is the freeze we were chasing in s03.
+rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False
+#   "Enables Opacity Micromaps for animated instances." Default False, and both profiles write
+#   False: SA's foliage is static procobj, so per-frame OMM rebuilds are pure loss.
+rtx.opacityMicromap.building.splitBillboardGeometry = True
+#   "Splits billboard geometry and corresponding Opacity Micromaps to quads for higher reuse ...
+#   Games often batch instanced geometry that reuses same geometry and textures." That is literally
+#   what procobj/vegepart grass is, so the reuse win is real here.
+#
+# The other half of the research answer for foliage, stated rather than shipped:
+#   * "two-sided" needs no key in 1.6.1 - rtx_options.h:933: "Enable front/backface culling for
+#     opaque objects. Objects with alpha blend or alpha test are not culled", and the hair-card
+#     category itself "disable[s] backface culling" (docs Render Categories page).
+#   * NVIDIA's Minecraft mod turns OMM OFF ("Keep opacity micromaps disabled for Minecraft's
+#     high-volume terrain workload"). That is the A/B for a hillside that still misbehaves, and
+#     docs/VEGETATION.md already documents how to take it (tools/vegetation.sh on <game> --step 3).
+#   * rtx.vertexColorIsBakedLighting (default True, "brightness contribution will be removed from
+#     the vertex color by dividing each component by the largest component") is set False in the
+#     Minecraft profile because there vertex colour is grass/leaf TINT, not baked light. SA's
+#     procobj cards also carry vertex colour, but we have not measured whether theirs are tint or
+#     baked fade, so it is an open item, not a shipped line.
 
 
 # n01: the live temporal keys the shipped profile never wrote (see the header).

@@ -1489,3 +1489,66 @@ The same Quit, started straight from `launcher/launch-rtx.sh`, `build/tmp/exit-h
   gone that long — if the game exits with that set, the spin was in the bridge client; and
   `RHYS_BRIDGE_TIMEOUTS=1`, which tests whether the config default survives the runtime's own flip.
   Either way the launcher now ends the run in 20 s instead of rhY waiting sixteen minutes.
+
+## Water and foliage, read from the other RTX Remix projects (2026-11-12, n07)
+
+rhY's report (`.strata/test-2026-11-12b.md`) said the water "still looks bad, edges flicker" even
+with the s32 sheet, and asked how the other Remix projects do water and foliage. The research log
+with every URL is `.strata/notes-n07-water-research.md`; this is the part that changes behaviour.
+
+### The edges: measured, and it is not what the GTA IV project fights
+
+`$G/data/water.dat` is a text file (first line `processed`, then one water polygon per line, four
+corners x seven floats). Parsed: **307 polygons (301 quads + 6 triangles), 5969 pairs that butt
+exactly edge-to-edge, and only 2 pairs that overlap at all** (`water1.dat`: 267 polygons, 4586
+seams, 1 overlap). So SA's sea is not GTA IV's stack of coincident quads — xoxor4d's GTA IV RTX
+comments on "the water quads the game stacks 0.2 mm apart (water.dat, some piers) stay coincident"
+and fixes that with a depth-probe shoreline fade; ours is one coplanar sheet cut into exactly-butted
+polygons. A ray that lands on a shared edge can hit neither polygon — the failure gta4-rtx's own
+water API names ("a single probe can slip through cracks and T-junctions between separate meshes") —
+and a perfect-mirror translucent lobe (the mdl has no roughness input) turns that into a pixel
+flipping between "sea" and "whatever is under the sea". The pack's sheet (median facet tilt 44 deg,
+21.3 deg/texel gradient) put a maximum-contrast facet on every one of those seams.
+
+Stock 1.6.1 has no key that widens a triangle's hit tolerance and no depth-based shoreline fade, so
+what shipped is the contrast reduction: a 6 deg sheet, the runtime's second LOD-blurred normal on
+both water surfaces, temporal history kept, and `rtx.rayreconstruction.combineSpecularAlbedo = True`
+(NVIDIA's own line in the Path-traced Minecraft Remix mod: "without it, shaded water reflects blotchy
+sky-coloured smears instead of the scene"). The real fixes — a fork runtime with `rtx.water.shore*`,
+or one rebuilt water mesh — are out of reach here, and saying so is part of the finding.
+
+### What the projects that ship water actually do
+
+| project | the part that matters |
+|---|---|
+| NVIDIA `rtx-remix-minecraft` (the only NVIDIA mod with readable water code) | translucent via the Remix API (IOR 1.33, transmittance 0.9/0.95/1.0 @ 10 m, thin wall off); **generates** the wave sheet (12x10 flipbook, 20 fps, one frame = 10 m, `slope_rms 0.0325` ≈ 2.2 deg median tilt, BC5 + full mips, octahedral with +Y down the image); underwater fog is a separate volumetric config; `combineSpecularAlbedo = true`; opacity micromaps off for a high-volume terrain workload |
+| `xoxor4d/gta4-rtx` (GTA IV) | water rebuilt every frame as one Remix-API mesh; default material IOR 1.33, transmittance **(0.62, 0.8, 0.8) @ 4 m**; shoreline fade in a **fork** runtime (`rtx.water.shoreCutDepth 0.02`, `shoreFadeWidth 0.1`, `shoreHeightScale 4`, `shoreFadeDistance 10`) |
+| `gebdag/gta2-rtx-remix` (GTA 2) | a generated 12x10 @ 30 fps flipbook over a 10 m tile, BC5 octahedral; **world scale set by the mesh's UV density** (one repeat per 10 m), not by the material; transmittance (0.45,0.75,0.55) @ 1 m, because they author a sand riverbed for the water to absorb against; all twelve animated tile hashes get the same material |
+| `xoxor4d/p2-rtx` (Portal 2) | stock runtime; `enableStochasticAlphaBlend = True` fully tuned, `forceCutoutAlpha = 0.5`, `hairCardTextures`, opacity micromaps heavily budgeted, per-map `triangle_cull_on/off.conf` |
+| `Ekozmaster/NFSU2-RTX-Remix` | turns the runtime's layered water **off** (`opaqueMaterial.layeredWaterNormalEnable = False`) and uses a negative normal strength (-0.108) |
+
+The runtime side of the same story, from the 1.6.1 source: `translucent_surface_material_interaction.slangh:62`
+gates the whole water path on `animatedWaterEnable && surface.isAnimatedWater`, and lines 73-83 show
+the two mechanisms — the sprite-sheet cell's UV scrolled by `animatedWaterPrimaryNormalMotion`, and a
+second normal sample at `animatedWaterSecondaryNormalLodBias` ("blurred, resulting in lower frequency
+waves"). A water surface that is not in `rtx.animatedWaterTextures` gets none of it: the sea hash
+`0x59296793798A7318` was in the list, the game's other water texture `waterclear256`
+(`0xA75A0B41F2454F04`) was not.
+
+### Foliage: what the research says we do not need, and what it says to pin
+
+Two-sided foliage needs no key: `rtx_options.h:933` — "Enable front/backface culling for opaque
+objects. Objects with alpha blend or alpha test are not culled" — and the hair-card category itself
+disables backface culling. `rtx.forceCutoutAlpha` is real in 1.6.1 but only drives the
+`remix_category:alpha_blend_to_cutout` USD category, which has no rtx.conf hash list in this build.
+NVIDIA's Minecraft leaf-shimmer block (`spatiallyHashedRadianceCache.queryForThinOpaquePrimaryView`,
+`subsurface.*`) is **not** in our runtime's strings, so it cannot be copied. What both xoxor4d
+profiles do carry, and what both our profiles now pin, is the opacity-micromap budget and tap guard
+(`cache.maxVidmemSizePercentage 0.15`,
+`building.conservativeEstimation.maxTexelTapsPerMicroTriangle 64` — NVIDIA's comment: "Set to 64 as a
+safer cap. 512 has been found to cause a timeout. Any micro triangles requiring more texel taps will
+be tagged as Opaque Unknown"), `buildRequests.enableAnimatedInstances = False` and
+`building.splitBillboardGeometry = True` ("splits billboard geometry … to quads for higher reuse",
+which is exactly what procobj grass is). Measured against the 1.6.1 source those are also the
+defaults, so the change is a pin: the caps our own "Out of memory budget" device loss refers to are
+now written down where they cannot drift.
