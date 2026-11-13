@@ -314,7 +314,7 @@ waiting on is [docs/STATUS.md](docs/STATUS.md).
   `normalIntensity` assignment, a pristine rtx.conf backup, and `--water pack` / `--no-water` /
   an unknown `--water` value all honoured.
 
-### Traffic signals (s30, n02, n02b) (`bd7fdf4`, `ee59b87`, `ba4c2c3`)
+### Traffic signals (s30, n02, n02b) (`bd7fdf4`, `ee59b87`, `ba4c2c3`; the s19 hook work is `e3d57a3`)
 
 - **Added (n02b): a lit signal is two lights again — the bulb at the lens AND the glow around it.**
   rhY, 2026-11-12 08:50: *"We wanted the glow from the traffic light and the bulb. It should be both
@@ -632,7 +632,13 @@ waiting on is [docs/STATUS.md](docs/STATUS.md).
   all, which is the thing the sandbox guard is there to protect and which the stub starter in the
   test cannot bring back.
 
-### Tools (s18, s22, s23) (`67c6e70`)
+### Tools (s18, s22, s23) (`e3d57a3`, `67c6e70`)
+
+- **Named by the n15 sweep:** `e3d57a3` ("Strata s18-s20", 2026-11-11 22:23) is the commit that
+  carries s18 (`tools/remix_texhash.py`, `config/mirror-hashes.txt`), s19 (the `signalhook.cpp` /
+  `signalheads.cpp` hardening and `tests/signals_check.cpp`) and s20 (the first big CHANGELOG
+  rewrite). `tests/test_changelog_coverage.py` had been failing on it since n14 - it was the one
+  commit on main that no section named; naming it here is the whole fix.
 
 - **Added:** `tools/remix_texhash.py` — decodes a `.txd` / `gta3.img` raster the way D3D9 receives
   it and prints the Remix texture hash. The hash is `XXH3_64bits(mip-0 raster bytes)` (xxHash 0.8.0
@@ -848,6 +854,46 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
   summary and a test-flow section; `docs/notes/` lost the personal/session material (the local model
   setup, the queue runners, the memory-graph frontmatter) — the repo is public.
 - **Undo:** `git revert` this commit; nothing outside the docs and one new test file changes.
+
+### Look target (n15) — what the reference video actually is, and how big the gap is (on top of `555c23c`)
+
+- **Added:** [docs/TARGET.md](docs/TARGET.md) — the reference (DubStepZz,
+  https://www.youtube.com/watch?v=BjWhv_gfjAk, 2026-11-12), what it does and does not tell us
+  (its "4 products" are YouTube's shopping shelf: a PS5 on StockX, an Xbox bundle, a DualSense on
+  Dell, an Elite controller on GameStop — **no mod list, ever, on that channel**), why the base is
+  classic SA + RTX Remix + the same Hemry81 pack we already run, and the measured gap table.
+- **Added:** `tools/target-gap.py` (+ `tests/test_target_gap.py`) — six look families measured the
+  same way on a YouTube frame and on our own lossless tour shots: histogram, highlight roll-off,
+  saturation/warmth, local contrast, haze (far/near local contrast), specular share. Everything is
+  resized to 640x360 and JPEG-round-tripped first, because compression moves those numbers more than
+  most lighting changes do.
+- **Measured (the gap, 5 reference frames vs our 4 daytime tour shots of 2026-11-12 10:22):**
+  headroom p99.9/p50 **1.41–1.81 ours vs 1.79–3.49 theirs**; ceiling pixels (luma ≥ 252)
+  0.003–0.027 % vs 0.01–3.95 %; mid-tone anchor p50 ≈ 147 vs ≈ 108; warmth mean(R−B)
+  −67…+10 vs **+18.7…+48.3 in every reference frame**; sky 92–128 luma at saturation 0.28–0.61 vs
+  160–199 at 0.13–0.26; haze far/near 1.22–3.67 vs 0.46–1.18. Local contrast is **not** the gap.
+- **Measured (why):** DLSS 5 is not an upscaler — it is a one-step pixel-space diffusion stage that
+  *generates the final displayed appearance* (https://research.nvidia.com/labs/adlr/DLSS5/), it is
+  integrated in **RTX Remix 1.6** (our runtime: `rtx.dlssNeuralRendering`, `intensity`,
+  `structuralStrength`, `toneStrength`, `model` A/B/C, `enableHighlightRecovery`,
+  `enableVolumetricControlMask` — all present in the 1.6.1 option table), and it is **RTX 50-series
+  only**: this box is an RTX 4070 Ti SUPER on driver 610.57.04 and the runtime already answers
+  `NVIDIA DLSS-NR support query failed (0xbad00010)`. The reference's biggest advantage is hardware
+  we do not have, so the plan wins T1/T3/T4 with materials, fog and grading instead.
+- **Measured (the pack):** the GTASA-Remix install is **2334** `mat_<HASH>` materials with only
+  315 `_normal` / 280 `_rough` / 185 `_height` / **32 `_metal`** maps — one material in seven has a
+  roughness map, metallic barely exists. That is the mechanical cause of the flat matte look (T1).
+- **Added:** four task files `.strata/n16-tonemap-highlights.md`, `n17-fog-aerial-perspective.md`,
+  `n18-legacy-material-brdf.md`, `n19-dlss5-neural-probe.md`, queued in `.strata/night-queue.txt`
+  immediately after `n15-target-research`.
+- **Changed:** `deps/manifest.json` gained `proper-shaders` (MixMods/Junior_Djjr: deferred rendering,
+  volumetric PBR clouds, PBR dynamic water, PBR shadermaps — the best public description of what T1+T3
+  done properly means for SA; **proprietary supporter tiers, `redistribute: no`, a reference and not a
+  dependency**, because it rewrites the same D3D9 path our Remix bridge owns), and the `gtasa-remix-pack`
+  entry now records what GitHub says (MIT, last pushed 2025-09-20, 10.3 GB).
+- **Undo:** delete `docs/TARGET.md`, `tools/target-gap.py`, `tests/test_target_gap.py` and the four
+  `.strata/n1[6-9]-*.md` files, drop the four queue lines and the two manifest changes; no behaviour,
+  config or plugin code changed in this task.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

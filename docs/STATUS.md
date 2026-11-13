@@ -63,6 +63,20 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 
 ---
 
+## The quality target (n15, 2026-11-12) — "look better than the DLSS 5 showcase"
+
+| gap | what the measurement says | status | owner |
+|---|---|---|---|
+| **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **open** | n16 (`tonemappingMode = 0` + an exposure anchor); the mechanism is already measured in FINDINGS (n05/n10) |
+| **T3 atmosphere** | haze far/near local contrast 1.22–3.67 vs 0.46–1.18; sky 92–128 luma at saturation 0.28–0.61 vs 160–199 at 0.13–0.26 | **open** | n17 (`rtx.volumetrics.enableFogRemap` and its bounds — we ship volumetrics but no fog remap at all) |
+| **T1 materials** | the pack has 2334 materials and only 315 `_normal` / 280 `_rough` / **32 `_metal`** maps: ~1 in 7 gets a real BRDF | **open** | n18 (the runtime's `rtx.legacyMaterial` / `rtx.opaqueMaterial` numbers), then an offline PBR-ify pass |
+| **T2 HD assets** | pack albedo is mostly 2048 px; the "8K pack" claim is the channel's, not verifiable | **measured** | census in FINDINGS; the asset work is upstream (MIT pack) |
+| **DLSS 5 itself** | the keys exist in our 1.6.1 runtime (`rtx.dlssNeuralRendering` + artistic controls), but DLSS 5 is RTX 50-series only and this box is an RTX 4070 Ti SUPER on 610.57.04, already logging `NVIDIA DLSS-NR support query failed (0xbad00010)` | **open** (probe) | n19 — the answer goes in the docs either way; nothing here depends on it |
+
+The reference, what it publishes (nothing) and the full table are in
+[TARGET.md](TARGET.md); the evidence is in [FINDINGS.md](FINDINGS.md), "The reference video we are
+told to beat".
+
 ## Parked and aborted work
 
 | branch | task | why it is not in the tree |

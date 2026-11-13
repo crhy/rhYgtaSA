@@ -1,3 +1,84 @@
+## The reference video we are told to beat: what it is, and the measured gap (2026-11-12, n15)
+
+rhY's quality target (2026-11-12): *"We want our GTA to look better than this one."* The video is
+**"GTA San Andreas DLSS 5 2026 Graphics Are INSANE! RTX 5090 DLSS 5 4K Max"** by DubStepZz,
+https://www.youtube.com/watch?v=BjWhv_gfjAk, published 2026-11-12 09:15 PT, 56:29. The plan lives in
+[TARGET.md](TARGET.md); this section is the evidence.
+
+**It publishes nothing about its setup.** The description is SEO boilerplate (game / GPU /
+resolution / "Technology: DLSS 5") with GTA 6 keywords. The "**4 products**" under it are YouTube's
+automatic shopping shelf, read out of the page's own `productListRenderer`: a PS5 Slim (StockX), an
+Xbox Series X bundle (rock30games), a DualSense (Dell) and an Xbox Elite controller (GameStop). The
+channel's About and Posts pages have no links and no mod list, and its comments are full of
+"Please share the mod list you've been using" / "Is this a mod?" / "How did you make this??".
+One commenter describes the defect we measured, in Russian: *"terrible that there is no haze and the
+whole map is laid out like the palm of your hand ... this DLSS5 only hurts San Andreas"*.
+
+**The base is ours.** A sibling upload names the Definitive Edition
+(https://www.youtube.com/watch?v=Ijm1NFWOvnE), but the reference says plain "Grand Theft Auto: San
+Andreas" and its sibling https://www.youtube.com/watch?v=2PIZWpuepKA promises "8K Texture Pack /
+Ray Tracing Lighting ... while keeping the classic San Andreas experience". Classic SA + RTX Remix is
+the only combination with texture packs *and* ray tracing *and* DLSS 5, and the SA Remix community is
+one pack: **https://github.com/Hemry81/GTASA-Remix** (MIT, 10,329,625 KB, last pushed 2025-09-20) —
+the two benchmark channels that made the well-known SA path-tracing videos link that pack and nothing
+else (https://www.youtube.com/watch?v=o91lq7tVS0c, https://www.youtube.com/watch?v=EhRw1uSoG1c).
+We already run it.
+
+**DLSS 5 is a generative rendering stage, and we cannot have it.** NVIDIA
+(https://www.nvidia.com/en-us/geforce/news/dlss5-breakthrough-in-visual-fidelity-for-games/,
+2026-03-16; https://research.nvidia.com/labs/adlr/DLSS5/): "a one-step pixel-space diffusion model ...
+conditioned on the current rendered frame, engine motion vectors, carried temporal state, and
+artistic-direction values ... the first DLSS technology to generate the final displayed appearance ...
+on GeForce RTX 50 Series GPUs", supplying exactly the things a game cannot author — "subsurface
+scattering in skin and light scattering through foliage". **RTX Remix 1.6 integrates it**
+(https://github.com/NVIDIAGameWorks/rtx-remix/releases, `remix-1.6.1`, 2026-10-23) and our runtime is
+1.6.1, so the keys are in the option table (`strings` on `<game>/.trex/d3d9.dll`, 282,883,696 B):
+`rtx.dlssNeuralRendering`, `intensity`, `structuralStrength`, `toneStrength`, `model` (0 A / 1 B /
+2 C), `useAutoMask`, `skinStructureStrength`, `enableHighlightRecovery` ("recover highlights
+compressed by ... **LDR-domain processing**"), `highlightRecoveryThresholds`,
+`enableVolumetricControlMask`, `showVramUsage`. But this box is an **RTX 4070 Ti SUPER, driver
+610.57.04** (`nvidia-smi`), Remix 1.6 raised the driver baseline to 616.92, and our own perf profile
+already carries the runtime's answer: `NVIDIA DLSS-NR support query failed (0xbad00010)`. Task n19
+probes it; the plan does not depend on the answer.
+
+**The numbers** (`tools/target-gap.py`, everything at 640x360 after a JPEG q72 round-trip, because
+the reference is a compressed 1280x720 YouTube frame and our shots are lossless 1920x1080 PNGs;
+5 reference frames vs the 4 daytime stops of the 2026-11-12 10:22 tour, `build/tmp/n15/gap.json`):
+
+| | reference | ours | |
+|---|---|---|---|
+| headroom p99.9/p50 | 1.79 / 2.32 / 2.37 / 2.51 / 3.49 | 1.41 / 1.60 / 1.64 / 1.81 | the biggest gap |
+| ceiling % (luma ≥ 252) | 0.010 – 3.95 | 0.003 – 0.027 | 100–1000× fewer bright pixels |
+| p50 | 65 – 142 | 123 – 170 | our anchor is ~40 luma too high |
+| warmth mean(R−B) mid-tones | +18.7 … +48.3 | −67.2 … +10.2 | they are warm in every frame; three of our four are blue |
+| warm-hue share | 81 – 95 % | 6 – 53 % | |
+| sky luma / sat | 160–199 / 0.13–0.26 | 92–128 / 0.28–0.61 | bright pale sky vs dark deep-blue sky |
+| haze far/near local contrast | 0.46 – 1.18 | 1.22 – 3.67 | our near field has 2–4× less detail than the skyline |
+| local contrast (norm) | 0.137 – 0.294 | 0.131 – 0.214 | **not** the gap |
+| specular ‰ (luma ≥ p95) | 2.9 – 12.9 | 4.0 – 27.6 | we score higher while having no real highlights |
+
+The flat bright end is the same mechanism n05/n10 measured at night (section above): `tonemappingMode`
+defaults to **Local**, and the 1.6.1 tooltip says so — "The tonemapping type to use, 0 for Global,
+1 for Local (Default) ... Local tonemapping ... uses spatially-local parameters determined by regions
+of the rendered image". n15 shows it is costing us the daytime frame too.
+
+**The pack census** (read-only, `rtx-remix/mods/gameReadyAssets`): 5211 files, 2111 `.dds`,
+**2334 unique `mat_<HASH>` materials**, suffix census 345 `_albedo` / 315 `_normal` / 280 `_rough` /
+185 `_height` / **32 `_metal`**; albedo 164×2048 px, 85×1024, 37×4096. One material in seven has a
+roughness map and metallic almost does not exist, which is why most of San Andreas renders with the
+runtime's default legacy BRDF (task n18).
+
+**Also recorded so nobody re-does it:** `html.duckduckgo.com` answers 0 results for GTA queries;
+Bing answers GTA V spam; `libertycity.net/search` needs JS; YouTube storyboard sheets
+(`i.ytimg.com/sb/<id>/storyboard3_L4/M0.jpg?sqp=rs\|…`) return **403** from this box, so the only
+extra reference frames are `i.ytimg.com/vi/<id>/maxresdefault.jpg` and `maxres1..3.jpg`.
+And the other way to get this look on classic SA, **https://www.mixmods.com.br/2026/11/sa-proper-shaders/**
+(Junior_Djjr): full deferred rendering, per-pixel dynamic lights, volumetric PBR clouds, PBR dynamic
+water with caustics/god rays, volumetric fog + SSGI/GTAO AO, and PBR shadermaps (normal/roughness/
+metallic) with a bundled pack for hundreds of common textures — **proprietary supporter tiers**, still
+on RenderWare/DX9, ~90 FPS on an RTX 3060. It is the best public spec for T1+T3, and it is a reference
+only: it rewrites the same D3D9 path our Remix bridge owns.
+
 # Findings: GTA SA + RTX Remix on Linux (2026-11-09)
 
 Working log from getting GTASA-Remix running under Proton. Paths refer to the author's machine.

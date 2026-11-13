@@ -40,6 +40,12 @@ install and test it. What is in the box today:
 What is still rough is written down, not hidden: [docs/STATUS.md](docs/STATUS.md) lists every
 reported finding with its status and the commit or task that owns it.
 
+We also keep a quality target rather than a vibe: [docs/TARGET.md](docs/TARGET.md) names the reference
+video we want to beat, measures the gap with `tools/target-gap.py` (histogram, highlight roll-off,
+warmth, local contrast, haze, specular share), and says plainly which parts of that look come from
+hardware we do not own - so the plan is about materials, fog and grading instead of a switch that
+cannot run here.
+
 ## Requirements
 
 | | |

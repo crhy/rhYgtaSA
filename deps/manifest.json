@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updated": "2026-11-11",
+  "updated": "2026-11-13",
   "title": "Everything a rhYgtaSA user would otherwise download by hand",
   "readme": [
     "rhY's rule: anything a user would fetch by hand is hosted by us (https mirror + torrent), so the",
@@ -36,10 +36,10 @@
       "group": "base",
       "name": "GTASA-Remix.zip",
       "upstream_name": "TBD",
-      "version": "TBD",
-      "date": "TBD",
+      "version": "main branch as of 2025-09-20 (GitHub API, checked 2026-11-13: no GitHub releases - the pack is cloned)",
+      "date": "2025-09-20",
       "size": null,
-      "size_mb_reported": null,
+      "size_mb_reported": 10087,
       "sha256": "TBD",
       "source_page": "https://github.com/Hemry81/GTASA-Remix",
       "author": "Hemry (Hemry81) and contributors",
@@ -54,7 +54,7 @@
         { "kind": "torrent", "url": "TBD" },
         { "kind": "source", "url": "https://github.com/Hemry81/GTASA-Remix" }
       ],
-      "notes": "apply.sh patches this pack in place (patches/gtasa-remix-linux.patch), so the pack must already be in the game folder; listed here because the user downloads it by hand. target '' = the installer does not unpack it."
+      "notes": "apply.sh patches this pack in place (patches/gtasa-remix-linux.patch), so the pack must already be in the game folder; listed here because the user downloads it by hand. target '' = the installer does not unpack it. n15 census of our live install (docs/TARGET.md, docs/FINDINGS.md): 5211 files, 2111 .dds, 2334 unique mat_<HASH> materials, and by suffix 345 _albedo / 315 _normal / 280 _rough / 185 _height / 32 _metal - about one material in seven has a roughness map and metallic almost does not exist, which is the T1 gap. MIT: we may patch it and re-host it with credit."
     },
     {
       "id": "rtx-remix-runtime",
@@ -627,6 +627,30 @@
         { "kind": "source", "url": "https://www.mixmods.com.br/2026/06/sa-proper-fixes/" }
       ],
       "notes": "ships LODvegetation.txd, which the vegetation pack's IDEs need (docs/VEGETATION.md cause 1). Careful: the Proper Fixes/Proper Shaders deadlock history in GTAmods/.strata/PLAN.md is why RoSA is parked - under Remix the shader half is irrelevant, the textures are not (docs/CHARACTERS.md P9)."
+    },
+    {
+      "id": "proper-shaders",
+      "group": "reference",
+      "name": "sa-proper-shaders.zip",
+      "upstream_name": "TBD",
+      "version": "2026-11 build (supporter alpha); public builds lag the supporter ones by about two months",
+      "date": "2026-11",
+      "size": null,
+      "size_mb_reported": null,
+      "sha256": "TBD",
+      "source_page": "https://www.mixmods.com.br/2026/11/sa-proper-shaders/",
+      "author": "Junior_Djjr (MixMods.com.br); features by Jéssica Natália; colour filter and snippets from SkyGfx Extended",
+      "license": "proprietary: supporter tiers (alpha/beta), older builds released to the public later; explicitly not an ENB/RenderHook/ReShade preset",
+      "redistribute": "no",
+      "target": "",
+      "unpack": "none",
+      "requires": [],
+      "urls": [
+        { "kind": "mirror", "url": "TBD" },
+        { "kind": "torrent", "url": "TBD" },
+        { "kind": "source", "url": "https://www.mixmods.com.br/2026/11/sa-proper-shaders/" }
+      ],
+      "notes": "REFERENCE, NOT A DEPENDENCY - we do not install it and must not combine it with RTX Remix (it rewrites the same D3D9/RenderWare path the Remix bridge owns). Listed because docs/TARGET.md T1+T3 is modelled on what it proves is possible on classic SA: full deferred rendering, per-pixel dynamic lights, volumetric PBR clouds, PBR dynamic water (caustics, god rays, wake), volumetric fog with SSGI/GTAO, and PBR shadermaps (normal/roughness/metallic) with a bundled pack for hundreds of common textures. Read 2026-11-13."
     }
   ]
 }
