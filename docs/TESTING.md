@@ -357,6 +357,38 @@ back again. `scripts/rhyremix.log` from a tour run is the interesting one, becau
 `SARemix_Tour.lua` writes the clock twice per stop - `jitter=` climbing while `elev=`
 keeps moving one way is exactly what s29 is for.
 
+### n12: the car's own lamps (findings V5, V6, V7)
+
+The plugin now lights a car's head, tail and brake lamps from the light dummies the game itself
+publishes. Once a second:
+
+```
+vehiclelights: coronas=41/64 head_tex=4DBD066761A29F5B lamps=6 vehicles=3 live=6 creates=18 budget_skips=0
+```
+
+| field | what "correct" looks like |
+|---|---|
+| `coronas=N/M` | N entries read from the game's corona store this frame, M the store's capacity (64). `coronas=0/0` means the store was not where this build puts it, so the module is reading nothing |
+| `head_tex=` | the sprite pointer the game resolved for its headlamp slot. `head_tex=00000000` = not resolved, so no headlamp will appear (the red lenses still will) |
+| `lamps=` / `vehicles=` | lamps created over the cars in range - a head pair and a tail pair per car. A lit shopfront should never show up here; that is what the 6 m `max_spread` rule is for |
+| `budget_skips=` | rebuilds the frame's create budget refused. Climbing at speed is normal |
+
+What to look at: at night a car with its headlights on should throw a **cone with a visible edge**
+onto the road 20-30 m ahead (the shipped cone is 50 degrees across), and its tail lamps should
+colour the ground within a metre or two - not a 30 m red blob. Braking should read **brighter, not
+wider**.
+
+Knobs, in `[vehiclelights]` in `rhyremix.ini`: `enabled`, `max_distance`, `max_lights`,
+`cadence_ms` (120 - how often a moving lamp may be rebuilt, because a Remix light's position and
+aim are baked at create time), `move_step` (0.8 m) and `brake_red_min` (220; brake detection is a
+hue threshold because the corona store carries no brake flag - `0` turns it off).
+
+The two renderer halves, for an A/B in `rtx.conf`: `rtx.emissiveBlendOverrideEmissiveIntensity`
+(shipped **0.06**, runtime default 0.2) is the exhaust plume's self-glow - put it back to 0.2 and
+the puffs light themselves again; `[sky] emissive_day / emissive_night` (shipped **0.5 / 0.8**) is
+the flat-white window cap - 1.0 / 1.0 is the old behaviour. None of the three has been seen in game
+yet: rows V5-V7 of [STATUS.md](STATUS.md) are what the next session decides.
+
 ## Step 3 - what to photograph, and what each one proves
 
 Take shots with **F12** in game (fixed 2026-11-11: before that every F12 failed silently, see below); they land in

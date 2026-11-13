@@ -230,7 +230,9 @@ see the old glowing puffs).
 
 ## What to test
 
-The short version: **run the tour, then send the shots and the log.**
+The short version: **run the tour, then send the shots and the log.** The step-by-step session
+order, one variable per step with a rollback for each, is [docs/NEXT-TEST.md](NEXT-TEST.md); what
+each reported problem is still waiting on is [docs/STATUS.md](STATUS.md).
 
 ```
 bash scripts/test-session.sh --tour          # or: start the game and press F12 where you like
@@ -307,6 +309,23 @@ What each shot should prove, and the knobs to A/B if it does not, are in
 - **Signals are unshaped on purpose.** A real signal module beams down the approach, but our signal
   list carries no heading; a wrongly-aimed cone would put a dark face on every signal seen from the
   cross street, which is worse than an unshaped point.
+- **Some lamp heads are still dark.** The boardwalk and pier lamps (the white double-globe posts by
+  the motel, the lamp row along the pier rail) have no glowing bulb and no pool under them, and the
+  bulbs above the highway signs do not light at all. Those lamps are not in the lamp table this
+  plugin reads, and the task that was going to build the list from the game's own 2dfx data was
+  parked twice; the sign text also renders as separate textures that cast shadows, which it should
+  not. Nothing is fixed there yet - it is the largest remaining gap in the night picture.
+- **Facing the sun at sunset still goes gray, and night is still too evenly lit.** Both causes are
+  measured (the renderer's *local* tonemapper: three synthetic exposures, a per-tile grey multiplier
+  applied over a mip pyramid, which removes the bright end of the frame and re-solves as you turn),
+  and the fixes are written down, but the two tasks that carried them were parked on an unrelated
+  gate failure and their `rtx.conf` changes are **not** in this build. If you see it, photograph it:
+  a shot into the sun and one away from it, at the same second, is exactly the evidence that would
+  finish the job.
+- **Frame pacing got a little worse between two builds on 2026-11-12** (76.9 → 137.2 frame spikes
+  per minute over the two long runs), and it is not our light updates: the spikes do not line up with
+  the plugin's create/destroy traffic. Keep `logs/perf/*.csv` after each run - that is what makes the
+  next round of this measurable.
 - **Some lamp posts are dark by design.** The lamp table the pack ships has no entry for a dozen
   one-off airport / roof / strip props; `python3 tools/lamp_list.py --report-missing` lists them. If
   a lamp post near a `lamppost1` / `lamppost2` instance is dark, that is the reason.

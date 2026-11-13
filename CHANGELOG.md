@@ -11,8 +11,9 @@ Two things to know before reading:
 
 - **The version numbers are a reading aid, not git tags.** Nothing in this repository is tagged yet;
   every heading names the commit(s) that carry it, and `git log --oneline` is the authoritative
-  record. The phase names in the text (`p01`…`p08`, `s01`…`s19`) are the work items recorded in
-  `.strata/notes-*.md`.
+  record. The phase names in the text (`p01`…`p08`, `s01`…`s32`, `n01`…`n14`) are the work items
+  recorded in `.strata/notes-*.md`; `tests/test_changelog_coverage.py` fails if a commit on any branch
+  since 2026-11-11 is not named here.
 - **"Fixed" usually means "measured first".** Most entries name the number or the log line that
   settled the question; [docs/FINDINGS.md](docs/FINDINGS.md) has the evidence and the dead ends,
   [docs/DEVELOPING.md](docs/DEVELOPING.md) the fix-by-fix table.
@@ -20,9 +21,46 @@ Two things to know before reading:
 ## [Unreleased] — 2026-11-12
 
 Work in the tree, **not yet run in game**. Player-facing consequences are in
-[docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md).
+[docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md); what each of rhY's reported findings is
+waiting on is [docs/STATUS.md](docs/STATUS.md).
 
-### Street lamps and signal heads (n04) — lights stopped coming and going with the camera
+### Lighting (s28) — the whole world changed its lighting at once (`129f2aa`)
+
+- **Fixed (s28): every lighting change was one frame wide, whatever the cause.** Measured over the
+  2026-11-12 00:48 run (`rhyremix.log` lines 3543-5350, 1470 s): the active street set went
+  `1→360` and `381→1` twenty times over the run, `rtx.skyBrightness` stepped `0.02 → 1.00` nine
+  times, a signal colour change was a destroy plus a create at full radiance (766 of them), and the
+  sun handle was rebuilt the moment its direction moved a degree. One mechanism explains all of it:
+  a Remix light's radiance is fixed at `CreateLight`, so "fade" only exists if someone sequences the
+  creates — and no path did. `plugin/src/smooth.{h,cpp}` is that someone: fade envelopes
+  (`rhyFade*`), a distance gain that ramps 1 → 0 across the hysteresis band, a per-frame handle-change
+  budget, and rate limiters (`RhyRate`, `rhyDirLimit`) for the ambient, the exposure and the sun.
+  **Undo:** every floor is an ini key in `[fade]` (`in_ms`, `out_ms`, `step`, `creates_per_frame`,
+  `player_grace_ms`, `sky_rel_per_sec`, `sun_rel_per_sec`, `sun_deg_per_sec`); `check-all` asserts
+  they cannot be talked out of.
+- **Fixed (s28): the biggest destroy of all was a ped pointer that read 0.** `rhyPlayerPos()` was
+  false whenever `*0xB7CD98 == 0`, which happened for 13 s at 01:09:20 (and at every wasted/busted
+  moment), and "no player" used to mean "destroy every light". `rhyPlayerPosGrace()`
+  (`plugin/src/game.cpp`) holds the last known position for `player_grace_ms` (8000) and then *fades*
+  the layers out instead; `player_gone_frames=` in the 10 s line is the counter.
+- **Fixed (s28): the distance cut-off, the 30-frame re-selection and the destroy-before-create.**
+  Lamps at `max_distance` used to lose their light at full radiance; the band to `exit_distance` is
+  now the fade band. Re-selecting everything every 30 frames made streamed-in lamps arrive at once;
+  creation is nearest-first inside the frame budget. A re-create destroyed the old handle before the
+  create could fail, so a cap or budget refusal left the lamp dark with a stale handle being drawn —
+  `rhyCanCreateLight()` pre-checks room and a failed create clears the handle.
+- **Fixed (s28): the signal phase change is a cross-fade now** (`phase_fade_ms`): the old colour
+  ramps down while the new one ramps up, instead of one frame of green replacing one frame of red.
+- **Changed (s28): the selection scan.** "Is this lamp already lit?" was a linear scan of the active
+  list per candidate — 7002 × 320 comparisons per pass on the render thread. `active` is documented
+  as sorted and searched with `std::binary_search`: **184 µs** for a 7002-lamp pass (asserted < 5 ms).
+- **Tests (s28):** `tests/smooth_check.cpp`, run by `scripts/check-all.sh` as `nat-smooth` — the
+  sequences the 2026-11-12 log actually recorded (a 50× ambient step, a 104° clock jump, a whole
+  street appearing in one frame, a ped pointer at 0 for 13 s) with the bounds: street off → dark
+  1.07 s, back on → steady 0.88 s, ambient 0.02 → 1.00 in ≥ 0.5 s with ≤ 0.014 per frame, sun ≤
+  0.202 deg/frame after a 110° jump, aggregate step ≤ 5 %, creates/frame ≤ budget.
+
+### Street lamps and signal heads (n04) — lights stopped coming and going with the camera (`8c6a198`)
 
 - **Fixed (n04): the light-count cap was a distance rule wearing a count, and it was switching off
   lamps that were still in front of the player.** `rhySelectLights` sorted every candidate by
@@ -93,7 +131,51 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   handle (60 s standing: 175 creates, 0 changes in the last 55 s) and the head rule (stale+near kept,
   stale+far dropped, cap 20 over 200 heads inside the radius keeps all 200).
 
-### Water and vegetation (n07) — the water setup the other RTX Remix projects actually use
+### Vehicle lamps, particles and window glow (n12) — a car's lamp was a 30 m billboard (`404f2cd`)
+
+- **Added (n12): the car's own lamps, read from the game's corona store.** Nothing in this plugin lit
+  a vehicle: the front lamps were the game's `coronaheadlightline` sprite (which `rtx.ignoreTextures`
+  removes from the raytraced scene, so the road in front of the car had no light at all) and the rear
+  lamps were `coronamoon` in no category at all — a 4 cm bulb reaching the renderer as a 30 m red
+  ball. `plugin/src/vehiclecorona.{h,cpp}` reads the store the game itself fills (base `0xC3E058`,
+  stride `0x3C`, count `0xC3E038`, max 64: position, key, sprite, strength, range, radius, rgba,
+  linked entity) page-validated and read-only — nothing is patched; `plugin/src/vehiclelights.{h,cpp}`
+  is the pure-C++ decision core: classify head (the sprite pointer the game resolved for slot 4) vs
+  tail (red-dominant), group by key proximity (the key is `entity + head index`, and the index reaches
+  7, so `key & ~3` splits one car in two), aim the beam along the car's own front-to-rear axis, and
+  create a **0.09 m reflector in a 50° cone (flux 950, ≈5000 cd)** plus **0.05 m red lenses (tail 20,
+  brake 100)**. **Undo:** `[vehiclelights]` in the ini (`enabled`, `max_distance`, `max_lights`,
+  `cadence_ms`, `move_step`, `brake_red_min`, the fluxes) — `enabled=0` removes the layer.
+- **Measured (n12): the numbers behind V5/V6/V7** (`tools/frame_light_measure.py`, on a high-pass
+  image, because the whole frame carried an ambient floor): red ground spill 6.9k-17.5k px at an
+  equivalent radius of 47-75 px = **1.5-2.5 m per bulb**; the headlight pool 35k-119k px with no
+  compact core; exhaust puffs mean RGB **[172, 57, 80]**, `min(R,B)-G = 21.4`, 31-96 luma above the
+  road under a street lamp; clipped-white windows 0.30-0.40 % of the ground band, biggest block
+  ~963 px, **chroma 1.7/255** — neutral white, no texture, no lamp colour, i.e. an emissive term and
+  not a lit room. A tool bug was found on the way: `box_blur` divided the border window by the full
+  window width, so a flat field darkened at the edges and the high-pass reported a bright band along
+  every frame edge, bigger than the effects being measured.
+- **Changed (n12, V6): exhaust stopped being a light source.** `rtx_instance_manager.cpp:1132-1138`
+  forces the emissive intensity of any emissive-blended sprite to
+  `rtx.emissiveBlendOverrideEmissiveIntensity` (default **0.2**) with the sprite's own colour as the
+  emissive — which is exactly the pink of the report. Shipped: **0.06** in `config/rtx.conf`,
+  `.perf`, `.experimental` and (generated) `.nopops`, plus the three smoke sprites that were in no
+  category at all added to `rtx.particleTextures` (`smoke5 0xC70DC799C5BFFE65`,
+  `smoke4 0x3F66C5D5F91C3708`, `bullethitsmoke1 0x2D558BC31F67FD1D`). **Undo:** the value back to
+  `0.2`, or delete the three hashes; `enableEmissiveBlendEmissiveOverride = False` was rejected
+  because it also turns off the glow of every corona, beam and UI sprite in the game.
+- **Changed (n12, V7): the emissive cap follows the sun.** `rtx.emissiveIntensity` is the only
+  emissive scale in 1.6.1 (`rtx_scene_manager.cpp:1771/1870/1913`) and there is no per-texture
+  radiometry category, so the cap is the global dial the sky module already pushes: `emissive_day`
+  **1.0 → 0.5**, `emissive_night` **1.0 → 0.8** (day cut harder, because that is where the clipping
+  is measured). **Undo:** the two `[sky]` keys back to 1.0.
+- **Tests (n12):** `tests/vehicle_lights_check.cpp` (42 checks: fixtures, the cone's geometric
+  concentration `2/(1-cos θ)`, classification, pairing, aim, radiometry, brake, distance gate, cap,
+  hash stability), `tests/test_vehicle_profile_keys.py` (9: every new key exists in the runtime's own
+  option vocabulary, the category hashes are 16-hex tokens, no duplicates, the ini block equals the
+  compiled defaults), `tests/test_frame_light_measure.py` (10: synthetic ground truth per metric).
+
+### Water and vegetation (n07) — the water setup the other RTX Remix projects actually use (`913b7e4`)
 
 - **Added (n07): `tools/water.sh remix-ref`, a water variant built from other projects' shipped
   numbers rather than from guessing.** `AperturePBR_Translucent` with transmittance (0.62, 0.8, 0.8)
@@ -138,7 +220,32 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   `--dry-run`; every rtx.conf key `water.sh` prints passes the runtime key audit; both profiles carry
   the water and OMM keys and both water hashes; and no fork-only key is shipped (negative control).
 
-### Water (n13) — the research variant is now the default everywhere
+### Water and vegetation (s32) — the pack's wave sheet, and 119 foliage cards that were in no category (`1769fa1`)
+
+- **Added (s32): `tools/water.sh soft`, a regenerated wave sheet instead of the pack's.** The pack's
+  `Water_materials.usda` normal sheet measures a **44° median facet tilt** with a 21.3 deg/texel
+  gradient, decorrelated after 10 px of a 512 px frame — which is the 2 px speckle period on screen
+  (rhY's "white/black speckled sheet"). The mdl has no normal-strength, roughness or UV input to turn
+  down, so `tools/water_normal_soft.py` regenerates the sheet: **12° median tilt, 2.2 deg/texel,
+  ~7 facets per frame**, BC5, mip chain and frame layout kept. `realistic` / `calm` / `pack` stay as
+  the A/B, and `pack` restores the original bytes.
+- **Added (s32): the foliage cards are tagged as cutouts.** None of the grass/bush card textures was
+  in any `rtx.conf` category list, so Remix blended them into the "scribbled lines" of the report.
+  `tools/vegetation_hashes.py` walks the procobj/vegepart dictionaries the game's vegetation actually
+  references (an allow-list on purpose: `veg.*` also matches the Las Vegas building dictionaries and
+  `.*grass.*` matches `tikigrass`, which is pool and concrete-wall textures) and tags only the ones
+  with real cutout content (≥ 5 % fully transparent or ≥ 5 % mid-alpha texels): **119 of 190**.
+  `config/rtx.conf` and `config/rtx.conf.perf` now carry them as `rtx.hairCardTextures`, plus the
+  `rtx.opacityMicromap.*` keys the live file had and the shipped profile did not (so
+  `rtxprofile.sh current` used to drop them). **Undo:** delete that one line; the risk of a long line
+  (2402 chars) is "nothing changed", not corruption, and the tool prints a 45-hash fallback.
+- **Tests (s32):** `tests/test_water_soft.py` (octahedral round-trip — which caught a real bug: the
+  map needs the `s = 1/(|x|+|y|+z)` scale, without it a 30° normal comes back as 45° — strength and
+  decimate monotonicity, a synthetic BC5 sheet through an independent BC4 encoder and back, the
+  `water.sh` round-trip on a fake tree) and `tests/test_vegetation_hashes.py` (the allow-list, an
+  in-memory `.txd` where only the DXT3 card is tagged, and the two profiles' lists being equal).
+
+### Water (n13) — the research variant is now the default everywhere (`1af994f`)
 
 - **Fixed (n13): nothing installed the water we had built.** n07 shipped `remix-ref`, s32 shipped
   `soft`, and the live install was still on `soft` with an `rtx.conf` that carried **none** of the
@@ -207,7 +314,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   `normalIntensity` assignment, a pristine rtx.conf backup, and `--water pack` / `--no-water` /
   an unknown `--water` value all honoured.
 
-### Traffic signals
+### Traffic signals (s30, n02, n02b) (`bd7fdf4`, `ee59b87`, `ba4c2c3`)
 
 - **Added (n02b): a lit signal is two lights again — the bulb at the lens AND the glow around it.**
   rhY, 2026-11-12 08:50: *"We wanted the glow from the traffic light and the bulb. It should be both
@@ -353,7 +460,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   fake memory, page cache) and `tests/test_signal_hook.py` 25 checks (stub encoding at every stack
   alignment, the real exe's bytes, no-throw discipline).
 
-### Sun and sky (s29) — time of day stopped flickering
+### Sun and sky (s29) — time of day stopped flickering (`9e67d91`)
 
 - **Fixed:** the sun no longer swings tens of degrees and back. The two bytes next to the game clock
   (`month@0xB70158`, `day@0xB70154`) are not a calendar — the month byte is a counter walking +16 —
@@ -387,7 +494,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   with 2881 season changes and 186 lamp flips in a day; now **0.21** (the real sky is 0.25), with 0,
   0 and 2.
 
-### Lighting (n01) — the steps that survived s28, and the renderer's own time knobs
+### Lighting (n01) — the steps that survived s28, and the renderer's own time knobs (`ad323a9`)
 
 - **Fixed (s29 note T7): the sun and moon handles are replaced on a clock now, not on a
   threshold.** The rule was `movedDeg > [sun] step_deg || 5% luminance`, which fires exactly when
@@ -436,7 +543,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   `kIniDefaults` agrees with both); `scripts/rtxprofile-selftest.sh` 37 → 73 checks (the nopops
   round-trip byte-for-byte, the nine-key diff pinned, the look keys and texture lists hashed).
 
-### Shutdown (n09) — the game hung for two minutes after Quit
+### Shutdown (n09) — the game hung for two minutes after Quit (`cb0aac8`; the first attempt is parked as `08dc373`)
 
 - **Fixed (n09): the plugin now notices the game is ending, and stops touching a dead Remix bridge.**
   rhY, 2026-11-12 10:39: quit from the menu, `NvRemixBridge.exe` exited, the window disappeared, and
@@ -489,7 +596,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   that exits normally although its bridge died first (must NOT be called a hang), and a window that
   vanishes while the bridge lives.
 
-### Exit hang, part 2 (n09b) — the launcher now ends the wine tree
+### Exit hang, part 2 (n09b) — the launcher now ends the wine tree (`cb0aac8`)
 
 - **Fixed (n09b): `launcher/launch-rtx.sh` ends `NvRemixBridge.exe` and the prefix's `wineserver`,
   during the run and after it.** The second hang, 11:48 the same day (`build/tmp/exit-hang-20261112-b.txt`,
@@ -525,7 +632,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   all, which is the thing the sandbox guard is there to protect and which the stub starter in the
   test cannot bring back.
 
-### Tools
+### Tools (s18, s22, s23) (`67c6e70`)
 
 - **Added:** `tools/remix_texhash.py` — decodes a `.txd` / `gta3.img` raster the way D3D9 receives
   it and prints the Remix texture hash. The hash is `XXH3_64bits(mip-0 raster bytes)` (xxHash 0.8.0
@@ -587,7 +694,7 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   and one end-to-end run: report-dir naming from the `tour start` event, `ceil(n/4)` sheets of the
   right pixel size, and the markdown rows.
 
-### Mirrors (s21) — the two "mirror hashes" were never mirror-only
+### Mirrors (s21) — the two "mirror hashes" were never mirror-only (`67c6e70`)
 
 - **Fixed:** `config/mirror-hashes.txt` is **empty on purpose**. s21 parsed every stock vehicle
   `.dff` (209 models of `models/gta3.img`, i.e. everything named in `data/vehicles.ide`, plus the 50
@@ -615,7 +722,45 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   config carries no hash and that the three texture hashes in the s21 table still compute to the
   documented values. Method, parsers and the full usage tables: `.strata/notes-s21-mirror-hash-check.md`.
 
-### Testing (s26) — one page for the next in-game session
+### Photo tour (s31) — five stops that photographed nothing (`295b2ac`)
+
+- **Fixed (s31): the tour stops rhY could not judge.** All five were re-placed from the game's own
+  IPL data rather than by eye: `05-burger-shot` had its camera inside the `burggrnd1_law` wall; the
+  `10/11-water-santa-maria` stops dropped CJ **into** the sea (shot 11 is underwater and black) and
+  now stand on the pier deck at the bench (378.46, -1963.88, z 7.21); `12-car-mirror` had no car, so
+  it now spawns a `sadler` (543) at the Grove Street kerb; `13-ped-crowd` looks along the bench
+  walkway with a 25 s settle and creates no ped on purpose (`create_char` is one of the opcodes that
+  crash this build); `14-vegetation` moved to the densest green spot in the hills (1300, -920):
+  20 trees + 8 lawns within 45 m. **Undo:** `git revert 295b2ac`, or keep the previous
+  `$G/moonloader/SARemix_Tour.lua`.
+- **Fixed (s31): `tools/tour-report.py --since` re-reported yesterday's run.** A bare `HH:MM` took
+  its date from the first manifest line and the report directory from the first `tour start`, so on
+  2026-11-12 it printed the 2026-11-11 section again. `split_sections()` / `pick_section()` now cut
+  the manifest at its `tour start` lines and report the run the cut asks for; the old tail semantics
+  are kept. `tests/test_tour_report.py` 29 → 36 checks (two runs in one manifest, bare clock, full
+  timestamp, older run, no `--since`).
+- **Measured (s31): the 2026-11-12 tour, all 16 stops** (`--since 00:48` → 16 of 29 entries paired,
+  4 sheets, 7 unclaimed manual shots): mean luma / % black — 00-baseline 128.6/0.0, 01-under-lamp
+  75.4/6.5, 03-sodium 26.3/6.6, 06-signals-close 76.7/1.5 (green 33.4 %), 08a-sunset-east 107.6,
+  08b-sunset-west 78.2, 10-water-noon 144.2, **11-water-2100 6.8/29.2 (the only flagged shot)**,
+  12-car-mirror 145.1 (sat 0.166), 13-ped 134.2 (0.264), 14-vegetation 168.1 (0.262). Those are the
+  numbers `docs/NEXT-TEST.md` asks the next run to beat.
+
+### Character packs (s27) — one of the six packs is actually fetchable (`d4706b9`)
+
+- **Changed (s27): `deps/manifest.json` now says what is and is not obtainable.** `criminal-peds-vary`
+  filled in (sha256 `9b267df95116bfc4…`, 205,557,524 B, 2026-08-10 build, with the licence caveat
+  spelled out: the gtainside copy is an unauthorised re-upload, recorded for reproducibility,
+  `redistribute` stays `no`); `upstream_name` and the exact download-button URLs recorded for all six,
+  so a human can finish what a bot cannot. **Undo:** the manifest is data only — `git revert d4706b9`.
+- **Measured (s27): why the other five are not fetched.** Four MixMods packs are behind a Cloudflare
+  Turnstile on sharemods, one behind a LibertyCity login/queue; the GitHub mirror of PedFuncs has
+  source only (MIT, no release). The gtainside "Original Peds in HD" parts were measured and rejected
+  in favour of Proper Characters Retex HD (547 MB of mesh+texture replacements vs 22 MB of textures
+  only), and Criminal Peds Vary turns out to need ModelVariations + PedFuncs, which one manifest
+  target cannot carry. `docs/CHARACTERS.md` §7/§12 carry the table and the hand-download URLs.
+
+### Testing (s26) — one page for the next in-game session (`2f67e4a`)
 
 - **Added:** [docs/NEXT-TEST.md](docs/NEXT-TEST.md), the run order for the session that has been
   waiting since the handoff: preflight (LAA check, `rtxprofile.sh status`, install the current tour
@@ -644,6 +789,65 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   therefore produces no numbers for the mirror, pedestrian or vegetation stops. The doc carries a
   one-line `cp` as the preflight; the durable fix (a deploy step for the tour script) belongs in the
   queue.
+
+### Parked and aborted work — tried, measured, **not** in the shipped tree
+
+Four attempts did not pass `scripts/check-all.sh` and were parked on their own branch; two more never
+started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and their status in
+[docs/STATUS.md](docs/STATUS.md); none of their config or plugin changes is live.
+
+- **Parked (n09, `08dc373` on `failed/n09-exit-hang-114604`): the first exit-hang fix.** The shutdown
+  state machine and the watchdog were right — 45 of 46 selftest checks passed — and the one failure
+  was `scripts/test-session-selftest.sh`'s *real-Strata* guard losing a race (a real Strata pid died
+  mid-run because the game session was about to start). Re-tried as n09b (`cb0aac8`), where that check
+  was rewritten to fail only if no Strata is running afterwards at all.
+- **Parked (n05, `6eafd4d` on `failed/n05-night-brightness-185753`): nights darker, lamps down, sunset
+  gray.** The work is complete and its numbers are recorded (lamps `radiance_scale 1.0 → 0.4`, bulb
+  `1200 → 840` with a new `[trafficlights] radiance_scale` so the street knob stopped reaching the
+  signals, `rtx.localtonemap.highlights = 1.5`, a night ramp of `rtx.localtonemap.shadows` 2.5 → 1.0,
+  `tools/night-brightness.py`); the gate failed on `scripts/test-session-selftest.sh` **timing out**
+  (exit 124), not on any of these. Nothing shipped.
+- **Parked (n10, `30a1a43` on `failed/n10-night-ambient-realism-172920`): the fake night ambient.**
+  Same story: the analysis stands (the local tonemapper, the sky probe's ambient ceiling, the fallback
+  light welded to the camera and a distant light pointing up out of the ground), the plugin gained
+  `solarClampLightDir()` and `skyAmbientCap()`, and the gate failed on the same selftest (exit 1).
+  Nothing shipped.
+- **Aborted (n06, `48d93d5` on `wip/n06-pier-and-sign-lights-1922`): pier lamp heads and highway-sign
+  bulbs.** Interrupted by a reboot mid-task; the commit is a WIP snapshot, never gated, and its
+  findings (D and E) are still open.
+- **Stopped with no commit (n11): every lamp in the world lit (V2, findings D/E).** The plan and the
+  reading are in `.strata/notes-n11-every-lamp-lit.md`; the queue recorded `rc=2: no changes`. The
+  2dfx reader, the world inventory and the coverage tool were never written, so the boardwalk and pier
+  lamps are still dark.
+- **Never started (n03, n08).** `n03-next-session-ready` (deploy the tour script, bound the logs,
+  rewrite NEXT-TEST) and `n08-fps-steadiness` (frame pacing, finding G) are still in the queue with no
+  notes file. The measurement half of n08 was done during the n14 documentation sweep and is recorded
+  in [docs/FINDINGS.md](docs/FINDINGS.md), "Frame pacing: what the 2026-11-12 MangoHud logs say"; the
+  fix is still nobody's.
+
+### Docs and handoff (`df0ec29`, `50f6583`, `35e5d8d`)
+
+- **Added:** the 2026-11-12 handoff note (state, queue, what was waiting on an in-game test), the
+  self-hosted-deps product rule, and a queue update for s24-s26. These three commits touch
+  `docs/notes/` only; the handoff has since been replaced by [docs/STATUS.md](docs/STATUS.md) and the
+  personal/session material moved out of the public tree (n14).
+
+### Documentation (n14) — everything since 2026-11-11 is now in the repo (this commit)
+
+- **Added:** [docs/STATUS.md](docs/STATUS.md) — every finding rhY reported in the three 2026-11-12
+  test sessions with a status (done / partly / open), the commit or task that owns it, the parked
+  tasks with their failure reasons, and what to test next.
+- **Added:** the gaps this sweep found and closed in [CHANGELOG.md](CHANGELOG.md): s28, s31, s32, s27
+  and n12 had **no entry at all**, and no commit after `e19fde6` was named by hash. Every section
+  above now names its commit(s), and `tests/test_changelog_coverage.py` (new, in
+  `scripts/check-all.sh`) fails if a commit on any branch since 2026-11-11 is not named here.
+- **Added:** [docs/FINDINGS.md](docs/FINDINGS.md) "Frame pacing" (the MangoHud numbers behind finding
+  G, and the fact that our light churn does not correlate with the spikes) and "Night realism: what
+  n05 and n10 measured and did not ship".
+- **Changed:** [README.md](README.md) gained a feature list, the water-variant table, a lighting-model
+  summary and a test-flow section; `docs/notes/` lost the personal/session material (the local model
+  setup, the queue runners, the memory-graph frontmatter) — the repo is public.
+- **Undo:** `git revert` this commit; nothing outside the docs and one new test file changes.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

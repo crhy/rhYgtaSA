@@ -5,6 +5,7 @@ two-step user guide; this file is what you read **after** the game runs, when yo
 lighting numbers or the install itself.
 
 Related: [FINDINGS.md](FINDINGS.md) (logs, dead ends, measurements),
+[STATUS.md](STATUS.md) (every reported finding: done / partly / measured / open, and who owns it),
 [TESTING.md](TESTING.md) (what to photograph and which knob to turn),
 [MODS-REPLACED.md](MODS-REPLACED.md) (what is installed, what replaces what, `rtx.conf` knobs),
 [VEGETATION.md](VEGETATION.md) (streaming memory / Large Address Aware),
@@ -690,6 +691,45 @@ same colour in all three phases, flux 304 under a luminaire's 3473) and the
 wiring in `tests/test_signal_glow.py` (both paths, both halves, drawn and
 destroyed together, no hash collision, the ini keys and the test doc).
 
+## A car's lamps come from the game's corona store (n12)
+
+`plugin/src/vehiclecorona.{h,cpp}` (game-facing) and `plugin/src/vehiclelights.{h,cpp}` (pure C++,
+the whole decision, tested by `tests/vehicle_lights_check.cpp`).
+
+`CVehicle` keeps no lamp list. What the game does every frame is call `CCoronas::RegisterCorona`
+(thunk `0x6FC580`), and the store it fills is the only place the vehicle's light dummies are
+published in world space:
+
+```
+0xC3E038  dword   live corona count, 0..64
+0xC3E000  11 sprite pointers, indexed by the sprite slot handed to the thunk (4 = coronaheadlightline,
+                  2 = coronamoon, the rear lamps' sprite)
+0xC3E058  entry 0, stride 0x3C, 64 entries:
+    +0x00 x,y,z   +0x0C key (entity + head index)   +0x10 texture pointer
+    +0x14 strength +0x1C range                      +0x28 radius
+    +0x2C r,g,b,a                                   +0x38 linked entity
+```
+
+Reading it (page-validated, read-only — nothing is patched here, unlike the signal hook) beats
+re-deriving the dummies from the vehicle pool. Three details that are not obvious from the data:
+
+- the key is `entity + head index` and the index reaches **7**, so `key & ~3` splits one car into
+  two groups; the rule is "keys within 16 bytes of each other", and a group whose lamps do not fit
+  in `max_spread` (6 m) is refused — without that, a red shopfront becomes a parked car's tail lamp;
+- front lamps are identifiable by sprite pointer, rear lamps only by hue, and "braking" only by a
+  brighter red (`brake_red_min`), because the game writes the 2dFx colour per light state and the
+  store carries no brake flag;
+- a headlamp with no axis is **dropped**, not aimed at nothing: `forward` comes from the car's own
+  head-centroid minus tail-centroid, falling back to the entity matrix's `at` column.
+
+Radiometry follows the plugin's flux convention (flux = 4·π·r²·L, one street luminaire = 3473
+units) with the beam's geometric concentration `2/(1-cos θ)` applied, because
+`light_shaping.slangh`'s shaping is a 0..1 **mask** and nothing renormalises it — a cone-cut light
+without that factor is 21x dimmer than the same lamp unshaped. A Remix light's position, direction
+and radiance are baked at `CreateLight`, so a moving lamp is rebuilt only when it drifted more than
+`move_step`, turned more than 10 degrees, changed filament, or has a fade step due — and never more
+often than `cadence_ms`.
+
 ## Shutdown: noticing the game is ending (n09)
 
 `plugin/src/shutdown.{h,cpp}` owns one question — *is the Remix bridge still worth calling?* — and
@@ -747,3 +787,11 @@ cannot be measured must not be guessed at, and the cleanup after the wait return
 - `scripts/check.sh` is the gate and is not to be edited. `bash scripts/check-readme.sh` is the
   s11 gate for the user guide: every repo path mentioned in README exists, every link answers
   200/30x, no personal paths.
+- `tests/test_changelog_coverage.py` (n14) walks `git log --all --since=2026-11-11` and fails if a
+  commit — including the ones parked on `failed/*` and `wip/*` — is not named in
+  [../CHANGELOG.md](../CHANGELOG.md), or if [STATUS.md](STATUS.md) stops naming the parked branches
+  and the test sessions it summarises. When you park, abort or land a task, the changelog and that
+  page are part of the change, not an afterthought.
+- `coneAngleDegrees` in the Remix API is the **half** angle (`rtx_remix_api.cpp:544` takes its
+  cosine). The street lamps' `cone_angle=120` is therefore a 240-degree flood, which is only
+  sensible for a luminaire aimed at the road; a car's 50-degree beam is `cone=25`.

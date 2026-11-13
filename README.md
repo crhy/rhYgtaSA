@@ -19,6 +19,27 @@ original sources. Our code is MIT; see [THIRD_PARTY.md](THIRD_PARTY.md) and
 What changed over time is in [CHANGELOG.md](CHANGELOG.md), release by release; what the newest build
 means for you as a player is [docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md).
 
+## What it does
+
+One native plugin (`rhyremix.asi`, 32-bit, cross-compiled with MinGW-w64) plus the scripts that
+install and test it. What is in the box today:
+
+| area | what you get | how it is decided |
+|---|---|---|
+| **Sun, moon, sky** | a sun and a moon that are where San Andreas' latitude, season and the game's clock put them, with the sky's ambient following them | `plugin/src/solar.cpp` (physics) + `plugin/src/tod.cpp` (one continuous, never-backwards game minute) |
+| **Street lamps** | every lamp in the game's own lamp table and IPL files - 7002 of them - lit at its real fixture size, in sodium or mercury colour, switching at twilight instead of at a clock time | `plugin/src/lamps.cpp`, `tools/lamp_list.py`, generated per install from your own game files |
+| **Traffic signals** | a bulb on the lens **and** a few metres of its colour around the head, taking the colour from the game's own signal corona records | `plugin/src/signalhook.cpp` (read-only hook) + `signalheads.cpp`, with the generated `rhyremix_traffic.txt` as the fallback |
+| **Vehicle lamps** | a car's head, tail and brake lamps as real lamps - a 0.09 m reflector in a 50-degree cone and 0.05 m red lenses - aimed along the car's own axis | `plugin/src/vehiclecorona.cpp` reads the game's corona store; `vehiclelights.cpp` sizes it |
+| **Never a pop** | no lighting change is one frame wide: lamps fade in and out, the ambient and the sun are rate-limited, and a handle change is budgeted per frame | `plugin/src/smooth.cpp`, floors in `[fade]`, asserted in `tests/smooth_check.cpp` |
+| **Water** | five variants, `remix-ref` by default, installed by the installer and re-ensured on every start, with the `rtx.conf` keys each variant needs | `tools/water.sh`, `tools/rtx_water_keys.py`, `config/water/*.usda` |
+| **Vegetation** | 119 foliage card textures tagged as cutouts (`rtx.hairCardTextures`) instead of being blended into scribbled lines | `tools/vegetation_hashes.py`, `tools/vegetation.sh` for the pack itself |
+| **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf` | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops` |
+| **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
+| **Safety** | every install step reversible, the plugin stops touching a dead Remix bridge, and the launcher ends the Wine tree if the game hangs on Quit | `apply.sh` backups, `plugin/src/shutdown.cpp`, `launcher/launch-rtx.sh` |
+
+What is still rough is written down, not hidden: [docs/STATUS.md](docs/STATUS.md) lists every
+reported finding with its status and the commit or task that owns it.
+
 ## Requirements
 
 | | |
@@ -176,6 +197,73 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   weight), and not one look key or texture list changed. Use it when the lighting still changes
   all at once while the plugin's own log says it faded: run `scripts/lighting-test.sh` once each
   way and compare the transitions, not the still shots.
+
+## The lighting model, in one screen
+
+Four rules, and they are the reason the pictures look the way they do:
+
+1. **A light's radiance is fixed when it is created.** Remix has no "set brightness": a fade is a
+   sequence of destroy + create. So the plugin sequences them - `plugin/src/smooth.cpp` owns the
+   envelopes, the rate limiters and the per-frame budget for handle changes, and every floor is an
+   ini key in `[fade]`.
+2. **Distance decides which lamps exist; the camera never does.** There is no frustum test, no
+   screen-size sort and no "N most visible lamps" anywhere in the plugin. The count cap may only
+   trim the fade band beyond `max_distance`, and a traffic signal keeps its light by player
+   distance because the game only reports the signals it is drawing. The other half of that is in
+   the renderer: which lights a pixel is allowed to draw out of a ~400-light pool is
+   `rtx.di.initialSampleCount`, `rtx.di.maxHistoryLength`, `rtx.di.permutationSamplingNthFrame`
+   and the `rtx.antiCulling.*` keys in `config/rtx.conf`.
+3. **Time runs on one clock.** The game's clock bytes offer a new minute every ~2000 ms and the
+   sun moves 0.25 degrees per game minute, so reading them directly makes the sun a staircase; the
+   two bytes next to them that look like a date are not one. `tod.cpp` publishes one continuous,
+   self-calibrated game minute, and the sun and moon are recomputed every frame at it.
+4. **Every light has a source you could point at.** No ambient fill, no fake glow: the ambient is
+   the sky probe scaled by the daylight factor, the moon is one distant light, a signal's glow is
+   solved for flux so it keeps its strength through the colour cycle, and a car's lamps come from
+   the car's own light dummies. Where a renderer effect cannot be attributed to a source (the local
+   tonemapper's view-dependent exposure, the fallback light, transmission through the sea) it is
+   measured and written up in [docs/FINDINGS.md](docs/FINDINGS.md).
+
+## Water variants
+
+`bash tools/water.sh status "<game>"` says what is live, who asked for it and which `rtx.conf`
+keys are missing. The default is **`remix-ref`**, installed by `apply.sh` and re-ensured by the
+launcher; a variant you choose on purpose is recorded in `<game>/.rhys-water/state` and never
+overwritten by a later default run.
+
+| variant | what it is | when to use it |
+|---|---|---|
+| `remix-ref` | **the default.** The number set the other Remix projects ship (transmittance (0.62, 0.8, 0.8) @ 4 m, IOR 1.33, a 12 fps flipbook) over a regenerated wave sheet: median facet tilt 44° → 6° | unless you are A/B-testing |
+| `soft` | the pack's material with a regenerated sheet at 12° - the least change that stops the speckle | if `remix-ref` reads too transparent |
+| `realistic` | the pack's material, sheet softened to 20° | the old default |
+| `calm` | sheet decimated further, for a flat sea | screenshot work |
+| `pack` | the pack's own bytes, byte for byte | the rollback; also records an explicit choice so the default will not undo it |
+
+The `rtx.conf` half of a variant - the animated-water keys and the two water texture hashes - is
+installed with it by `tools/rtx_water_keys.py`, with `rtx.conf.pristine` and `rtx.conf.prev` kept
+in `<game>/.rhys-water/`. Why the sea still flickers on some edges (307 exactly-butted coplanar
+polygons, ~6000 seams, no hit tolerance in 1.6.1) is in [docs/FINDINGS.md](docs/FINDINGS.md).
+
+## Test flow
+
+For a player, "test" means one command and one report:
+
+```
+bash scripts/test-session.sh --tour          # frees the card, runs the game and the 16-stop tour, then puts things back
+python3 tools/tour-report.py "<game>" --since 21:30
+bash scripts/diagnose.sh "<game>"            # reads the logs, changes nothing
+```
+
+That writes `<game>/screenshots/report-<start>/report.md` plus labelled contact sheets: mean luma,
+p05/p50/p95, % clipped white, % black, saturation, and for the signal stops the red/amber/green
+pixel fractions - each shot followed by the plugin log line nearest it. The step-by-step session
+order, with what to look at and the rollback for each step, is
+[docs/NEXT-TEST.md](docs/NEXT-TEST.md); what each open finding is waiting on is
+[docs/STATUS.md](docs/STATUS.md). Everything the repo itself considers a gate is one command:
+
+```
+bash scripts/check-all.sh                    # build + native tests + python tests + every self-test
+```
 
 ## Troubleshooting
 

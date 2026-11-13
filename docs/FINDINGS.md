@@ -1731,3 +1731,139 @@ spectrum (chroma 10-40 for the pack's warm interiors) and shows its mullions.
   emissive term, so it would be a wide change with no measured benefit.
 * `emissive_day 1.0 → 0.5`, `emissive_night 1.0 → 0.8` in the shipped ini — day cut harder,
   because that is where the clipping is measured.
+
+## Frame pacing: what the 2026-11-12 MangoHud logs actually say (2026-11-12, measured during the n14 docs sweep; finding G, task n08 never ran)
+
+rhY, 2026-11-12 10:45 (finding G): *"FPS a little less steady than previous builds; stabilised a
+bit as he played."* Both runs' MangoHud CSVs are still in `<game>/logs/perf/`, so the sentence can
+be measured instead of remembered. Numbers from
+`NvRemixBridge_2026-11-12_{00-48-44,10-22-54,11-45-15,11-48-17}.csv` (script kept in
+`build/tmp/n14/fps.py`, throwaway):
+
+| run | build | samples | wall | fps mean / p01 / p05 / p50 / p95 | frametime mean ± sd | frametime p01 / p50 / p95 / max | > 25 ms | > 50 ms |
+|---|---|---|---|---|---|---|---|---|
+| 00:48:44 | s21-s23 + NEXT-TEST | 82 305 | 1459 s | 57.9 / 36.1 / 41.9 / 60.0 / 63.2 | 17.72 ± 4.21 ms | 12.54 / 16.68 / 23.85 / **786.8** | 1869 = **76.9/min** | 40 |
+| 10:22:54 | `ba4c2c3` (n02b) + `water.sh soft` + 119 hair cards | 56 041 | 980 s | 58.7 / 36.3 / 41.2 / 60.0 / 64.0 | 17.50 ± 4.67 ms | 12.23 / 16.68 / 24.30 / **787.0** | 2242 = **137.2/min** | 35 |
+| 11:45:15 | n09 test run | 8 342 | 144 s | 60.8 / 32.4 / 45.5 / 60.0 / 72.4 | 17.26 ± 9.93 ms | 9.74 / 16.67 / 21.98 / 803.8 | 211 = 87.9/min | 12 |
+| 11:48:17 | n09b test run | 9 764 | 173 s | 59.7 / 28.8 / 40.2 / 60.0 / 73.9 | 17.69 ± 9.37 ms | 9.46 / 16.68 / 24.90 / 807.4 | 477 = 165.7/min | 15 |
+
+What the table says:
+
+* **The mean is not the complaint; the tail is.** Both long runs sit at 60.0 fps median (the
+  present is capped) and both have a p01 of ~36 fps. The difference rhY felt is the spike
+  population: **76.9 → 137.2 spikes per minute**, 1.78x, between the 00:48 and the 10:22 build.
+* **"Stabilised as he played" is real.** Split each run at its first 5 minutes: 00:48 goes
+  sd 6.80 → 3.14 ms, 10:22 goes 6.70 → 3.30 ms. The first five minutes of a session - streaming,
+  shader and asset warm-up, the Remix cache filling - carry most of the variance.
+* **Every run has exactly one enormous stall: 787-807 ms.** One frame, at the start. That is the
+  first presented frame of a Remix session (bridge handshake plus the first frame of geometry
+  processing), not a gameplay hitch, and it is why "worst frametime" is a useless number here.
+* **The spikes are not our light churn.** Bucketing the 10:22 run into 98 bins of 10 s (the time
+  axis rebuilt by summing frametime - see the caveat below) and taking the deltas of the plugin's
+  own cumulative counters: `corr(spikes, new lamps) = -0.041`, `corr(spikes, retired) = -0.075`,
+  `corr(spikes, fade steps) = -0.047`. The worst window, 320-360 s into the run
+  (10:28:10-10:28:50, 227-355 spikes per 10 s, mean frametime 25.4-26.0 ms) has
+  `created=0 steps=0` in `rhyremix.log`; the busiest churn windows (418 and 423 retires at 170 s
+  and 260 s) have 2 and 3 spikes. Whatever the hitching is, it is not the plugin spending its
+  create budget.
+* **The card is not the limit at these settings.** `logs/perf/gpu-20261112-102247.csv`
+  (nvidia-smi, 1 s): VRAM max **4418 MiB** of 16 376, GPU utilisation mean **48 %**, power max
+  **194 W** of a 285 W card. A 4070 Ti SUPER idling at half utilisation while the game holds 60
+  fps is waiting on something other than tracing throughput - which is consistent with the spike
+  distribution being CPU/streaming-side.
+* **Two logging gotchas for whoever writes `tools/perf-report.py` (n08).** (1) MangoHud's
+  `gpu_vram_used` column reads ~0.02 for these runs: it is sampled for `NvRemixBridge`, and the
+  memory is held by the bridge client in the game process - VRAM has to come from the
+  `gpu-*.csv` nvidia-smi file. (2) The `elapsed` column is **not monotonic** (values up to
+  980 501 in a 980 s run), so any per-minute bucketing built on it is garbage; sum the frametime
+  column instead. The 00:47 pre-flight `gpu-*.csv` also shows why the launcher refuses to start
+  and `scripts/test-session.sh` stops the local model first: **15 825 MiB** was already in use.
+
+**Not measured here:** which change between the two builds costs the spikes. n08's plan (bisect
+s28-n02b, the hair cards, the water by reading diffs, then spread our updates and propose
+`config/rtx.conf.perf` keys) is still open; this section only settles what the symptom is and
+rules our light churn out.
+
+## Night realism: what n05 and n10 measured and did **not** ship (2026-11-12, parked as `6eafd4d` and `30a1a43`)
+
+Both tasks failed the gate on `scripts/test-session-selftest.sh` (exit 124 and exit 1 - see
+"Gate" in `.strata/notes-n05-night-brightness.md` and `.strata/notes-n10-night-ambient-realism.md`),
+not on their analysis. Their measurements are the best evidence in this repo for findings B, C,
+V1, V3 and V4, so they are recorded here; **none of their config or plugin changes is live.**
+
+### Facing the sun at sunset turns the frame gray (B)
+
+Which tour stop faces the sun, from the tour script's own camera/target pairs: `08a` looks
+azimuth 94° (due east), `08b` 266°; `rhyremix.log` at those seconds says
+`sun elev=+10.4 az=290.6` - so **08b is into the sun**, 25° off its axis, and 08a has its back to
+it. Same two shots, both runs, 1920x1080:
+
+| measure | 08a away | 08b into the sun | 00:49 run away / into |
+|---|---|---|---|
+| whole-frame mean luma | 102.8 | **75.5** | 107.6 / 78.2 |
+| p01 / p05 (the black floor) | 19.9 / 33.7 | **10.7 / 15.8** | 16.7 / 36.4 |
+| sky band p95-p05 (structure) | 102.2 | **47.7** | 102.8 / 47.5 |
+| sky band mean gradient | 5.10 | **1.54** | 5.08 / 1.50 |
+| % pixels at luma >= 191 | 4.48 % | **0.03 %** | 5.11 % / 0.16 % |
+| p99.9 luma | 224.8 | 182.8 | 228.4 / 194.4 |
+
+The frame loses its **bright end and its structure**, and its black floor falls too - which is
+what rules out an additive veil (bloom halos, in-scattering) and auto-exposure
+(`rtx.autoExposure.enabled = False` in the shipped file, the live file and the bridge's own
+"Effective RtxOption values" dump). What is left is the **local tonemapper**: `rtx.tonemappingMode`
+is never written by any profile we ship and defaults to 1 = Local (`rtx_options.h:1181`), in which
+mode the global tonemapper never runs (`rtx_context.cpp:1951`) so every `rtx.tonemap.*` key we set
+- including `finalizeWithACES` - is inert. `DxvkLocalToneMapping` renders three synthetic
+exposures (`shadows = 2^rtx.localtonemap.shadows`, ours 2.5 = x5.66; `highlights =
+2^-rtx.localtonemap.highlights`, never set = 4.0 = x0.0625, a 90:1 spread), weights them per pixel
+through a mip pyramid to `rtx.localtonemap.mip = 3`, fits a straight line per tile and applies it
+as **one multiplier on R, G and B** - their own source comment calls this "a crude multiplier on
+all RGB channels. This is... generally pretty wrong" - then runs ACES over it. Put the sun in the
+frame and the crushed branch wins over the tiles it touches, the pyramid carries that fit across
+the frame, and a grey multiplier is exactly the reported symptom.
+
+n05's shipped change would have been `rtx.localtonemap.highlights = 1.5` (spread 90:1 → 16:1) in
+`config/rtx.conf`, `.perf` and `.nopops`. It is not in the tree.
+
+### The night was not too bright because of an ambient light (V1, V3)
+
+n10 measured the scene, not the screenshot: sand 150 units from any lamp is at **1.8 %** of the
+sand under a lamp head in scene-linear radiance - the light budget was already right. The video
+(build `ba4c2c3`, 23:42-23:56, 30 frames at 1920x1080) showed 25-72 %, i.e. the renderer was
+throwing the ratio away four ways:
+
+1. **The local tonemapper again** - a 90x squeeze of exactly the shadow/highlight pair, and a
+   mip-pyramid fit that is re-solved around whatever is in frame, which is the view-dependent
+   exposure of V3: the ground band of the video goes 88.6 → 146.6 → 96.2 luma in about three
+   seconds of turning with no light changing at all.
+2. **The sky probe's ceiling.** `rtx.skyBrightness` multiplies a probe rasterized in the game's
+   colour format (`rtx.skyForceHDR = False`), so the key *is* an ambient ceiling: profile 1.0
+   against a moon publishing **0.065** (`rhyremix.log` 11:50:17 `published: ... sky=0.046`) - an
+   ambient 15x the only real source at night.
+3. **The fallback light.** `rtx_light_manager.cpp:249-330`: mode 1 (the default) creates it when
+   no lights are present, and `rtx.fallbackLightType = 1` makes it a **sphere of
+   `rtx.fallbackLightRadius` at the camera position** - our profile carried `type=1, radius=3`,
+   which at 6 m out-lights the moon 8:1 in menus and in the first seconds of a run.
+4. **A distant light pointing up.** `rhyremix.log` 11:48:30: the sun handle
+   `radiance=0.0376 dir=0.2206,-0.8386,+0.4981` with the sun at **-31.6°** - dir z > 0 is light
+   coming up through the ground, because the radiance ramp-down keeps the handle alive tens of
+   seconds after the body sets. n10's fix was two pure-C++ guards, `solarClampLightDir()` and
+   `skyAmbientCap()`, neither of which is in the tree.
+
+Cleared as causes, with the evidence: **vertex colour** cannot add light
+(`opaque_surface_material_interaction.slangh:703-718` divides the vertex colour by its own maximum
+first, so the albedo multiplier is in `[vertexColorStrength, 1]`) - what survives of it is the hue
+of SA's baked July prelighting; **emissive** - `grep -c -i emissive` is 0 in the pack's wood,
+ground and sand material USDs; **auto exposure** - already off, and the view-dependence was the
+pyramid, not a follower.
+
+V4 (the sea and the pier underside glowing teal by themselves) has one cheap mechanism in 1.6.1:
+`rtx.enableTransmissionApproximationInIndirectRays = True` lets indirect rays keep their direction
+through the sea, so the sky and the lamp pools arrive under the pier; bloom's default
+`luminanceThreshold = 0.25` adds the halo.
+
+**What a retry has to decide** is one taste number, not an unknown: n10's sim puts moon-lit sand at
+~10/255 with `rtx.tonemap.shadowContrast = 0.25`, ~20/255 at 0.0 and ~4/255 at 0.5, and n05's
+linear model puts the under-lamp night frame at 10.6-30.0 % of noon with the lamps at 40 % of their
+flux (measured today: 57.3 %). Both branches carry the tools (`tools/night-brightness.py`,
+`tools/night_ambient.py`, `tools/night-report.py`); neither is in the tree.
