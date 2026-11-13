@@ -90,17 +90,27 @@ cd rhYgtaSA
 Linux, sets **Large Address Aware** on `gta-sa.exe` (the downgrader's exe is not LAA, and that one
 32-bit process also carries the Remix bridge client — see
 [docs/VEGETATION.md](docs/VEGETATION.md)), removes the pack's duplicate lamp lights, installs the
-helper Lua modules, the Proton bridge setting and `launch-rtx.sh` into the game folder, and turns off
+researched water material (n13: `remix-ref`, together with the `rtx.conf` keys it needs), the helper
+Lua modules, the Proton bridge setting and `launch-rtx.sh` into the game folder, and turns off
 MixSets' real-time ped shadow (a gray square under CJ under Remix).
 
 - Re-running it is a **no-op**: every patched file is dry-run forward and in reverse first, so a file
   is applied, skipped as already present, or — if you edited it — left alone with a warning that
   names it.
+- **Water comes installed** (n13, rhY: "make sure we get the new water by default"). The default is
+  `remix-ref` — the n07 research variant: transmittance (0.62, 0.8, 0.8) @ 4 m and a regenerated
+  normal sheet (44° → 6° median facet tilt) — and the `rtx.conf` keys that go with it are written for
+  you, with the previous bytes kept in `<game>/.rhys-water/`. Opt out with
+  `./apply.sh "<game>" --water soft|realistic|calm|pack` or `--no-water`. Whatever you pick is
+  recorded in `<game>/.rhys-water/state`, and a variant you chose on purpose is never overwritten by
+  a later default run. `bash tools/water.sh status "<game>"` says which variant is live, who asked
+  for it and which `rtx.conf` keys are still missing; `bash tools/water.sh pack "<game>"` is the
+  byte-for-byte rollback.
 - `./apply.sh "<game>" --with-deps` also fetches the mods you would otherwise download by hand
   (the character packs in [deps/manifest.json](deps/manifest.json), each with its sha256, author and
   licence). Our own hosts are not up yet, so today it prints the author's page for each pack instead
   of downloading it; nothing unverified ever reaches the game folder.
-- What we host ourselves is built by `tools/make-release.sh build/release`: one folder of archives,
+- What we host ourselves is built by `tools/make-release.sh` into `build/release`: one folder of archives,
   `SHA256SUMS`, one torrent for the whole folder and its magnet link — the info hash is re-derived from
   the bytes on disk before the magnet is printed, and only packs whose licence allows re-upload are ever
   collected. Nothing is staged yet, so it currently reports every pack as not staged
@@ -115,7 +125,8 @@ MixSets' real-time ped shadow (a gray square under CJ under Remix).
 That is the copy `apply.sh` installed in your game folder. On every start it builds the current
 plugin and installs it (`build/rhyremix.asi` → `<game>/scripts/`, and on a fresh clone it generates
 the lamp and traffic-signal lists from your own `gta3.img`, `.ide`, `.ipl` and the pack's lamp
-table), checks free VRAM, starts Proton inside the Steam runtime with the settings Remix and a
+table), checks free VRAM, makes sure the default water variant is installed (a variant you chose
+explicitly is left alone), starts Proton inside the Steam runtime with the settings Remix and a
 DualShock need, and starts the F12 screenshot watcher. Then start a new game.
 
 It finds the checkout it was installed from in `<game>/rhys-asi-repo` (a one-line file `apply.sh`
@@ -133,8 +144,12 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   and a failure still reaches you as a desktop notification instead of a silent old build.
 - Knobs, all optional, set before the command: `GTASA_RTX_DIR` (which install to run),
   `RHYS_ASI_REPO` (which checkout to build from), `GTASA_RTX_NO_DEPLOY=1` (run what is already
-  installed), `RHYS_DRY_RUN=1` (deploy and report, do not start the game), `RHYS_WATER=calm|realistic|pack`,
-  `RHYS_RTX_KNOBS=1` (add the measured `rtx.conf` water line, backing it up first),
+  installed), `RHYS_DRY_RUN=1` (deploy and report, do not start the game),
+  `RHYS_WATER=remix-ref|soft|realistic|calm|pack` (install that water variant and record it as an
+  explicit choice; **with it unset the launcher makes sure the default, `remix-ref`, is installed**,
+  which is a no-op when it already is and never overwrites a variant you picked on purpose),
+  `RHYS_RTX_KNOBS=1` (add the measured `rtx.conf` water line, with the value the live variant needs,
+  backing the file up first),
   `RHY_SKIP_VRAM_CHECK=1`, `RHYS_SHOT_WATCH=0`, `RHYS_EXIT_GRACE=N` (seconds a game may outlive its
   window before the launcher ends the Wine prefix; `0` = watch off), `RHYS_BRIDGE_TIMEOUTS=1` (ask
   `.trex/bridge.conf` to keep the bridge's client timeouts on; see `docs/FINDINGS.md`).
@@ -176,7 +191,7 @@ looks like a mod bug. The launcher names the processes holding the VRAM; close t
 |---|---|
 | white window that never initialises | VRAM (see above), or Proton started outside the Steam runtime — the launcher runs it inside `SteamLinuxRuntime_4`, which is also why there is audio |
 | white window right after the first frame | Remix's new GUI input method under Wine; the patch sets `rtx.useNewGuiInputMethod = False` |
-| sea renders as flat black/white | the pack's water normal sheet; `RHYS_RTX_KNOBS=1` adds the measured `rtx.translucentMaterial.normalIntensity = 0.35` |
+| sea renders as flat black/white | the pack's water normal sheet (44° median facet tilt). The default `remix-ref` variant replaces it with a regenerated one and installs the `rtx.conf` keys with it; `bash tools/water.sh status "<game>"` says what is live, `RHYS_RTX_KNOBS=1` adds `rtx.translucentMaterial.normalIntensity` with the value that variant needs (1.0 for a regenerated sheet, 0.35 for the pack's own) |
 | game freezes on start, controller dead | the Wine `xinput` deadlock with a DualShock over hidraw; the launcher sets `PROTON_PREFER_SDL=1 PROTON_ENABLE_HIDRAW=0` |
 | DLSS missing | NGX needs NVAPI; the launcher sets `PROTON_ENABLE_NVAPI=1`. Leave DLSS **frame generation** off — it hangs the bridge under Proton. |
 

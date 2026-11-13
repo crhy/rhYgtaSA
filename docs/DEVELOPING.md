@@ -57,11 +57,16 @@ Before calling anything done, run the whole sweep in one command:
 bash scripts/check-all.sh          # ends "ALL GATES PASSED", or lists the failures
 ```
 
-It runs `plugin/build.sh`, the three native test binaries (`tests/lamps_check.cpp` with
+It runs `plugin/build.sh`, the native test binaries (`tests/lamps_check.cpp` with
 `lamps.cpp`+`solar.cpp`, `tests/solar_check.cpp` alone because it `#include`s `solar.cpp`,
-`tests/signals_check.cpp` with `signalheads.cpp`+`lamps.cpp`+`solar.cpp`, all host `g++ -std=c++17
--Wall -Wextra -Iplugin/src` into `build/tmp/`), every `tests/test_*.py`, `scripts/installer-selftest.sh`,
-`scripts/vegetation-selftest.sh`, `scripts/test-session-selftest.sh` and `bash -n` on every `*.sh` in the tree except `build/`. One
+`tests/signals_check.cpp`, `tests/smooth_check.cpp`, `tests/always_on_check.cpp`,
+`tests/tod_check.cpp`, `tests/handle_check.cpp`, `tests/vehicle_lights_check.cpp`,
+`tests/shutdown_check.cpp`, all host `g++ -std=c++17 -Wall -Wextra -Iplugin/src` into
+`build/tmp/`), every `tests/test_*.py`, `scripts/installer-selftest.sh`,
+`scripts/vegetation-selftest.sh`, `scripts/characters-selftest.sh`, `scripts/test-session-selftest.sh`,
+`scripts/launch-cleanup-selftest.sh`, `scripts/rtxprofile-selftest.sh`,
+`scripts/water-default-selftest.sh` (n13: the water default through `apply.sh` and a `RHYS_DRY_RUN=1`
+launcher run, against a fake install) and `bash -n` on every `*.sh` in the tree except `build/`. One
 PASS/FAIL line per check, logs under `build/tmp/check-all/`. It is not a replacement for
 `check.sh <phase>`, which asserts the per-phase invariants (imports, ini keys, which files are
 compiled in); check-all.sh is the "nothing regressed anywhere" pass, and it never touches the
@@ -163,6 +168,7 @@ plugin sources is clean too; it is the stand-in for cppcheck, which is not insta
 | Game launches to a white window that never initialises, logs look like a mod bug | VRAM already held by another process (a local LLM server pinned 15.5 of 16.4 GiB) | `launch-rtx.sh` preflights free VRAM and names the process holding it |
 | `Ctrl+PrintScreen` kills the Remix server (CPU crash `0xe06d7363`) | the game's `SetGammaRamp` is the last bridge command queued before the server dies | ASI swallows `SetGammaRamp` (vtable entry 21), `block_gamma=1` |
 | Vehicle toolkit can't load | missing `SARemix_DebugPrinter` module; old `SARemiv_VTK.lua` uses wrong ids | stub module; use `SARemix_VTK.lua` |
+| Sea renders as flat black/white speckle, and the water never animates | the pack's normal sheet has a 44° median facet tilt, and the runtime's water path is gated on `animatedWaterEnable && surface.isAnimatedWater` — no installer ever wrote those keys | the `remix-ref` variant (regenerated 6° sheet) is installed by `apply.sh` and by every launcher start, and `tools/rtx_water_keys.py` writes its `rtx.conf` block in place with a backup (n13); `tools/water.sh status` says what is live |
 | Gray square under CJ | game's real-time ped shadow render target | MixSets `UseHighPedShadows = 0` |
 | Dim lamp heads | emissive material scaled to 0 | brighter emissive plate under the lamp housing |
 

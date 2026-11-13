@@ -9,7 +9,9 @@ None of this needs the game folder. Four layers:
   2. tools/water.sh `remix-ref` against a fake game tree: it generates its own sheet at the
      research tilt (not the 'soft' one), installs the USD, `status` names it, `pack` restores byte
      for byte, `--dry-run` writes nothing;
-  3. the rtx.conf lines water.sh prints for the variant are keys the runtime actually has
+  3. the rtx.conf keys water.sh WRITES for the variant (n13 - it used to print them) are keys the
+     runtime actually has, no fork-only key is among them, and the write really lands in a live
+     rtx.conf: in place, exactly once, with a pristine backup, and idempotent on a second run;
      (tools/rtxkeycheck.py against config/rtx-runtime-keys.txt) - a printed key that the runtime
      does not know is a silent no-op, which is the failure mode that audit exists for;
   4. the shipped profiles carry the n07 water keys and the opacity-micromap guard rails, carry
@@ -179,18 +181,84 @@ class TestWaterShVariant(unittest.TestCase):
         self.assertEqual(rb(os.path.join(self.wdir, "Water_materials.usda")), self.orig)
 
 
-class TestPrintedRtxConfKeysAreReal(unittest.TestCase):
-    """The rtx.conf lines water.sh prints for remix-ref must be keys the runtime knows."""
+class TestWrittenRtxConfKeysAreReal(unittest.TestCase):
+    """n13: water.sh no longer PRINTS the rtx.conf lines that go with a variant, it WRITES them.
 
-    def test_printed_keys_pass_the_runtime_audit(self):
-        # the block water.sh prints is what rhY pastes into rtx.conf, so that is the thing to audit
+    So the thing to audit is what it writes: every key in its `key_table()` and every hash in its
+    `hash_require()` must be a key this runtime actually has, no fork-only key may appear, and the
+    write must really land in a live rtx.conf - in place, once, with a backup, and idempotently.
+    """
+
+    def written(self):
         src = open(os.path.join(REPO, "tools", "water.sh"), encoding="utf-8").read()
-        block = src.split("case \"$1\" in", 2)[-1]
-        keys = set(re.findall(r"echo\s+\"\s*(rtx\.[A-Za-z0-9_.]+)", block))
-        self.assertGreaterEqual(len(keys), 5, "no rtx.conf block found in water.sh")
+        tbl = re.search(r"key_table\(\) \{(.*?)\n\}\n", src, re.S)
+        self.assertTrue(tbl, "no key_table() in tools/water.sh - what writes the rtx.conf keys now?")
+        keys = set(re.findall(r"^(rtx\.[A-Za-z0-9_.]+)\t", tbl.group(1), re.M))
+        hr = re.search(r"hash_require\(\) \{(.*?)\n\}\n", src, re.S)
+        self.assertTrue(hr, "no hash_require() in tools/water.sh")
+        hashes = set(re.findall(r"(0x[0-9A-Fa-f]{16})", hr.group(1)))
+        return keys, hashes
+
+    def test_written_keys_pass_the_runtime_audit(self):
+        keys, hashes = self.written()
+        self.assertGreaterEqual(len(keys), 6, "key_table() names too few keys: %s" % sorted(keys))
         dotted, leaves = rtxkeycheck.load_keys(os.path.join(REPO, "config", "rtx-runtime-keys.txt"))
         unknown = [k for k in sorted(keys) if rtxkeycheck.verdict(k, dotted, leaves)[0] is None]
-        self.assertEqual(unknown, [], "water.sh prints keys this runtime does not have: %s" % unknown)
+        self.assertEqual(unknown, [], "water.sh writes keys this runtime does not have: %s" % unknown)
+        self.assertEqual(hashes, {SEA_HASH, CLEAR_HASH},
+                         "the required hashes must be exactly the two water surfaces")
+
+    def test_no_fork_only_key_is_written(self):
+        keys, _ = self.written()
+        src = open(os.path.join(REPO, "tools", "water.sh"), encoding="utf-8").read()
+        for k in FORK_ONLY:
+            self.assertNotIn(k, keys, "key_table() writes %s, which our 1.6.1 does not know" % k)
+            self.assertNotIn(k, src, "tools/water.sh mentions the fork-only key %s" % k)
+
+    def test_the_keys_really_are_written_to_a_live_rtx_conf(self):
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            g = tmp.name
+            wdir = os.path.join(g, "rtx-remix", "mods", "gameReadyAssets", "texture", "Water")
+            os.makedirs(wdir)
+            for name in ("Water_materials.usda", "Water_materials.usda.orig"):
+                with open(os.path.join(wdir, name), "wb") as fh:
+                    fh.write(rb(os.path.join(REPO, "config", "water", "realistic.usda")))
+            R, G = synthetic_planes()
+            bc5_dds(os.path.join(wdir, "water_normal.dds"), R, G)
+            # a live-looking rtx.conf: the list WITHOUT the second water hash, no animated-water keys,
+            # and one key present with the wrong value plus a trailing comment to be kept
+            conf = os.path.join(g, "rtx.conf")
+            with open(conf, "w", encoding="utf-8", newline="") as fh:
+                fh.write("rtx.animatedWaterTextures = %s, 0x00FAD6ECF37BFBDB\r\n" % SEA_HASH)
+                fh.write("rtx.translucentMaterial.normalIntensity = 0.35  # s02, hand-tuned\r\n")
+            before = open(conf, "rb").read()
+            r = subprocess.run(["bash", os.path.join(REPO, "tools", "water.sh"), "remix-ref", g],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            text = open(conf, encoding="utf-8", newline="").read()
+            keys, hashes = self.written()
+            for k in keys:
+                self.assertIn("%s = " % k, text, "water.sh did not write %s" % k)
+            for h in hashes:
+                self.assertEqual(len(re.findall(re.escape(h), text)), 1, "%s listed twice" % h)
+            self.assertEqual(len(re.findall(r"(?m)^rtx\.animatedWaterTextures = ", text)), 1,
+                             "the hash list must stay ONE line, extended, never duplicated")
+            self.assertIn("normalIntensity = 1.0  # s02, hand-tuned", text,
+                          "a rewritten value must keep the rest of its line")
+            self.assertTrue(os.path.exists(os.path.join(g, ".rhys-water", "rtx.conf.pristine")),
+                            "the pre-change rtx.conf must be kept")
+            self.assertEqual(open(os.path.join(g, ".rhys-water", "rtx.conf.pristine"), "rb").read(),
+                             before, "the pristine backup must hold the bytes we replaced")
+            r2 = subprocess.run(["bash", os.path.join(REPO, "tools", "water.sh"), "remix-ref", g],
+                                capture_output=True, text=True)
+            self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+            self.assertEqual(open(conf, encoding="utf-8", newline="").read(), text,
+                             "a second run must change nothing")
+            self.assertIn("already carries every requested water key", r2.stdout)
+        finally:
+            tmp.cleanup()
 
 
 class TestShippedProfiles(unittest.TestCase):

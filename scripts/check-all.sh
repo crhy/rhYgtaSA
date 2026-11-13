@@ -14,8 +14,12 @@
 # Strata/game/nvidia-smi under build/tmp, never the real ones), the rtx profile audit +
 # switch round-trip (s22: every key of config/rtx.conf.perf looked up in the option-name
 # vocabulary generated from `strings` on the runtime's d3d9.dll, then perf/current/orig/restore
-# against a fake game tree, hashing the whole file back) and a syntax check of every
-# shell script we ship. One PASS/FAIL line per check,
+# against a fake game tree, hashing the whole file back), the water-by-default round-trip (n13:
+# a fresh fake install - the pack's own water material, an rtx.conf with every water key removed -
+# must end up on the remix-ref variant after one RHYS_DRY_RUN=1 launcher run, must stay
+# byte-identical on the next run, and must never lose a variant that was chosen explicitly; the
+# installer half of the same feature is inside the installer self-test) and a syntax check of
+# every shell script we ship. One PASS/FAIL line per check,
 # then either the list of failures or "ALL GATES PASSED".
 #
 # Since s13 the C++ also has to compile without a single warning: the plugin carries
@@ -187,6 +191,14 @@ run launchcleanup "scripts/launch-cleanup-selftest.sh" 300 bash scripts/launch-c
 
 echo "== rtx profiles (config/rtx.conf.perf keys audited against the runtime's own option names; tools/rtxprofile.sh round-trip on a fake tree) =="
 run rtxprofile "scripts/rtxprofile-selftest.sh" 300 bash scripts/rtxprofile-selftest.sh
+
+echo "== water by default (tools/water.sh + apply.sh + a launcher dry run against a fake install; no game, no GPU, no wine) =="
+# n13 (rhY: "make sure we get the new water by default"). The installer half lives inside
+# scripts/installer-selftest.sh (remix-ref installed by apply.sh, its rtx.conf keys applied with a
+# backup, --water pack / --no-water honoured). This is the launcher half: one RHYS_DRY_RUN=1 start
+# on a fresh fake install must produce remix-ref + its rtx.conf keys, the next start must change no
+# byte, and a variant someone chose explicitly must survive every later default run.
+run waterdefault "scripts/water-default-selftest.sh" 300 bash scripts/water-default-selftest.sh
 
 echo "== shell syntax (bash -n) =="
 # Every .sh in the tree except generated output (build/, rule 2) and git internals. A

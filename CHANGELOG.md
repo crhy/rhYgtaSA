@@ -138,6 +138,75 @@ Work in the tree, **not yet run in game**. Player-facing consequences are in
   `--dry-run`; every rtx.conf key `water.sh` prints passes the runtime key audit; both profiles carry
   the water and OMM keys and both water hashes; and no fork-only key is shipped (negative control).
 
+### Water (n13) — the research variant is now the default everywhere
+
+- **Fixed (n13): nothing installed the water we had built.** n07 shipped `remix-ref`, s32 shipped
+  `soft`, and the live install was still on `soft` with an `rtx.conf` that carried **none** of the
+  animated-water keys: measured before this change, `G/rtx.conf` (72 lines, hand-tuned) had only
+  `rtx.animatedWaterTextures` (61 hashes, `0xA75A0B41F2454F04` missing) and
+  `rtx.translucentMaterial.normalIntensity = 1.0`. `apply.sh` never called `tools/water.sh`,
+  `launcher/launch-rtx.sh` called it only when `RHYS_WATER` was set, and `water.sh` **printed** the
+  rtx.conf lines that go with a variant instead of writing them. So the runtime's own water path —
+  gated on `animatedWaterEnable && surface.isAnimatedWater` — had never run on rhY's install, on any
+  variant. rhY 2026-11-12: "make sure we get the new water by default".
+- **Added (n13): `tools/water.sh default`, and a state file that records who chose what.**
+  `apply.sh` and the launcher now call `default`, which installs `$RHYS_WATER_DEFAULT`
+  (default: `remix-ref`), is a no-op when it is already live, and **never overwrites a variant a
+  person picked**: the choice lives in `<game>/.rhys-water/state`
+  (`variant=… mode=default|explicit requested_by=… material_sha256=… rtx_conf_sha256=… when=…`).
+  `water.sh soft`, `RHYS_WATER=soft`, `apply.sh --water soft` and `water.sh pack` all record
+  `mode=explicit`, and every later default run says so and leaves it alone;
+  `water.sh default <game> --force` overrides it once. Variants are now identified by **sha256**,
+  not by grepping texture names — the old heuristic reported the pack's own material as "unknown"
+  as soon as the `.orig` snapshot was missing.
+- **Added (n13): `tools/rtx_water_keys.py` — the rtx.conf half of a variant is installed, not suggested.**
+  Absent keys are appended under one marked block; a present key has its **value rewritten in place**
+  (indentation, a trailing `# comment` and the line's own CRLF/LF kept — the shipped profiles are
+  CRLF, the live file is mixed); required hashes are appended to the **end of the existing**
+  `rtx.animatedWaterTextures` line, never as a second list line and never removing one. It writes
+  nothing when nothing differs, and keeps `<game>/.rhys-water/rtx.conf.pristine` (once) and
+  `.prev` (every change). `--check` reports the state without writing; `water.sh status` now prints
+  which keys are missing and what the default variant would add.
+- **Added (n13): `apply.sh --water remix-ref|soft|realistic|calm|pack` and `--no-water`** (default:
+  `remix-ref`, run after the pack is patched in; an unknown variant is refused before anything is
+  written). `RHYS_RTX_KNOBS=1` in the launcher stopped being a 0.35 machine: it now writes the value
+  the **live variant** needs (1.0 for a regenerated sheet, 0.35 only for the pack's own 44 deg one).
+- **Fixed (n13): the launcher's water report had been silently empty since n07** — it grepped
+  `installed: ` while `water.sh status` had renamed the label to `installed variant: `. It now reads
+  the exact-bytes line. Added the `RHYREMIX_INSTALLER_SANDBOX` guard to `launch-rtx.sh`: the script
+  falls back to `/media/rhy/data/Gamez/GTASA-RTX` when its own folder has no `gta-sa.exe`, so without
+  that guard a broken dry-run test could have installed water into a real game folder.
+- **Applied (n13): the live install now has it.** `G/rtx.conf` was backed up as
+  `rtx.conf.bak-before-n13` first; one `water.sh default $G` run installed `remix-ref`
+  (`sha256 2a6b13e8…`), generated `water_normal_ref.dds` (44 → 6 deg median facet tilt, 21.3 →
+  1.0 deg/texel, 0.7 s), added the five missing keys and the missing hash, and left the rest of the
+  hand-tuned file alone: `diff rtx.conf.bak-before-n13 rtx.conf` is one extended list line plus one
+  12-line block, and the runtime key audit still reports the same **2** pre-existing legacy keys
+  (`rtx.enableVolumetricLighting`, `rtx.minReplacementTextureMipMapLevel`) before and after.
+  A second run changed nothing. `config/rtx.conf`, `.perf` and `.nopops` were checked to already carry
+  all six water keys and both hashes, so a profile switch keeps the water setup. One thing this task
+  deliberately did **not** do: `<game>/launch-rtx.sh` in the live install is the copy an older
+  `apply.sh` put there (before n09b and n13), so a desktop click there does not yet re-ensure the
+  default water. One `./apply.sh "$G"` updates it (it is a no-op for everything else); step 5 only
+  authorised the water path.
+- **Undo:** `bash tools/water.sh pack "$G"` restores the pack's material byte for byte
+  (`28560263…`) and records the rollback as an explicit choice, so the default path will not undo it
+  again; the config half is `bash tools/rtxprofile.sh restore "$G"`, `cp "$G/rtx.conf.bak-before-n13"
+  "$G/rtx.conf"`, or the copies in `<game>/.rhys-water/`. Nothing else about the install changed.
+- **Tests (n13):** `scripts/water-default-selftest.sh` (new, in `scripts/check-all.sh`) builds a fresh
+  fake install — the pack's own material, and an `rtx.conf` generated from `config/rtx.conf` with all
+  six water keys deleted and both hashes pulled out of the list — and proves that one
+  `RHYS_DRY_RUN=1` launcher run produces `remix-ref` + the keys + the backups, that the next run
+  changes no byte (material, rtx.conf, state, sheet all re-hashed), that `RHYS_WATER=soft` is
+  recorded as explicit and survives every later default run, that `--force` and `water.sh pack`
+  behave, and that the sandbox guard refuses a marker-less folder. 47 checks, 0 failed.
+  `scripts/installer-selftest.sh` grew a real `Water/` directory in its fake tree (pack material +
+  the pack's 7 MB BC5 sheet, copied read-only) and went from **44 to 78 checks**: remix-ref installed
+  by `apply.sh`, the `.orig` snapshot taken automatically and equal to `config/water/pack.usda`, the
+  sheet generated, the state file naming `apply.sh`, exactly one `animatedWaterTextures` line and one
+  `normalIntensity` assignment, a pristine rtx.conf backup, and `--water pack` / `--no-water` /
+  an unknown `--water` value all honoured.
+
 ### Traffic signals
 
 - **Added (n02b): a lit signal is two lights again — the bulb at the lens AND the glow around it.**

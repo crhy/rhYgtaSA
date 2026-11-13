@@ -167,13 +167,22 @@ see the old glowing puffs).
 
 ### Water
 
-- Three switchable water materials instead of the pack's one: `tools/water.sh realistic` (open
-  coast, real seawater absorption), `calm` (bay / harbour, gentle), `pack` (the pack's original,
-  always a safe way back). `tools/water.sh status` says which is live.
-- Measured, not guessed: the pack's water normal sheet has a **median facet tilt of 46°**, which is
-  why the sea reads as binary black/white. The USD variants help; the change that actually kills it
-  is one line in `rtx.conf`, and `RHYS_RTX_KNOBS=1` adds it (backed up first):
-  `rtx.translucentMaterial.normalIntensity = 0.35`.
+- **The good water is now the default, and you do not have to install it** (n13): `apply.sh` and every
+  game start put the researched `remix-ref` material in place and write the `rtx.conf` keys that go
+  with it, backing the file up first. `tools/water.sh --water pack` at install time, `--no-water`, or
+  `RHYS_WATER=<variant>` at any start picks something else, and a variant you chose on purpose is
+  remembered (`<game>/.rhys-water/state`) and never quietly switched back.
+- Four switchable water materials instead of the pack's one: `remix-ref` (the default: the numbers the
+  other RTX Remix projects ship, plus a regenerated wave sheet), `realistic` (open coast, real
+  seawater absorption), `calm` (bay / harbour, gentle), `pack` (the pack's original, always a safe way
+  back). `tools/water.sh status "<game>"` says which is live, who asked for it, and which `rtx.conf`
+  keys are still missing.
+- Measured, not guessed: the pack's water normal sheet has a **median facet tilt of 44-46°**, which is
+  why the sea reads as binary black/white. The USD variants help; the change that actually kills it is
+  the map plus one `rtx.conf` line, and the installer now writes it with the value the live variant
+  needs: `rtx.translucentMaterial.normalIntensity = 1.0` when the sheet was regenerated (44° → 6°),
+  `0.35` when the pack's own sheet is in place. `RHYS_RTX_KNOBS=1` still adds it by hand if you prefer
+  (backed up first).
 
 ### Mirrors, characters, vegetation
 
@@ -262,7 +271,9 @@ What each shot should prove, and the knobs to A/B if it does not, are in
    [docs/MIRRORS.md](docs/MIRRORS.md) section 7 is done. What this shot is for is the framing: if the
    mirror frames an empty curb, that stop's coordinates are the ones to nudge — parked cars are placed
    by the compiled script, so their position is not readable from the game's data files.
-6. **Water**: try `tools/water.sh realistic` first, then `calm`, then `pack`.
+6. **Water**: the default (`remix-ref`) is already installed — look at the open sea first and say
+   whether the speckle is gone. For the A/B, `tools/water.sh realistic "<game>"` then
+   `tools/water.sh default "<game>" --force`; `pack` is the way back to the pack's own material.
 7. **Transitions, not still shots.** The tour photographs a standstill, so it cannot see a lighting
    change. For that, run `bash scripts/lighting-test.sh` — a drive through lit streets at dusk — once
    with the shipped profile and once with `tools/rtxprofile.sh nopops "<game>"`, and say whether the
@@ -347,7 +358,8 @@ bash scripts/abtest-lights.sh lights off "<game>" # our lights off: a blowout th
 
 ```
 cp -a "<game>/rhYgtaSA-backup/." "<game>/"        # pristine pre-patch copies back
-tools/water.sh pack "<game>"                      # the pack's water material
+tools/water.sh pack "<game>"                      # the pack's water material (and it stays: recorded as your choice)
+cp "<game>/.rhys-water/rtx.conf.pristine" "<game>/rtx.conf"   # the rtx.conf from before the water keys were added
 tools/characters.sh off "<game>"                  # character packs out again
 tools/vegetation.sh off "<game>"                  # vegetation pack out, every edited byte back
 tools/mirrors.py --remove "<game>"                # mirror material layer out (none exists by default)

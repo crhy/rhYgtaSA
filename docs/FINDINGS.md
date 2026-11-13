@@ -1553,6 +1553,88 @@ which is exactly what procobj grass is). Measured against the 1.6.1 source those
 defaults, so the change is a pin: the caps our own "Out of memory budget" device loss refers to are
 now written down where they cannot drift.
 
+## The water we had already built had never reached the install (2026-11-12, n13)
+
+rhY's ask was one line: "make sure we get the new water by default". The answer was not a material -
+n07 had shipped `remix-ref` and s32 had shipped `soft` - it was a hole in the pipeline, and measuring
+the live install is what showed it.
+
+### The before state, measured on `/media/rhy/data/Gamez/GTASA-RTX`
+
+| what | measured |
+|---|---|
+| live water material | `soft` (`sha256 961a4d9a…`, equal to `config/water/soft.usda`); `Water_materials.usda.orig` = `28560263…` = `config/water/pack.usda`, so the pack's file was still recoverable |
+| `water_normal_ref.dds` | **absent** - the sheet `remix-ref` points at had never been generated there |
+| `G/rtx.conf` | 72 lines, hand-tuned, 8588 B. Water lines present: `rtx.animatedWaterTextures` with **61** hashes (`0x59296793798A7318` yes, **`0xA75A0B41F2454F04` no**) and `rtx.translucentMaterial.normalIntensity = 1.0` |
+| the animated-water keys | `animatedWaterEnable`, `animatedWaterSecondaryNormalLodBias`, `layeredWaterNormalEnable`, `rayreconstruction.invalidateHistoryForAnimatedWater`, `rayreconstruction.combineSpecularAlbedo`: **all five absent** |
+| who installs a variant | `apply.sh`: never called `water.sh`. `launcher/launch-rtx.sh`: only when `RHYS_WATER` was set. `water.sh`: printed the rtx.conf lines and wrote none of them |
+
+Consequence, straight from the 1.6.1 source quoted in the n07 section above: the whole water path is
+gated on `animatedWaterEnable && surface.isAnimatedWater`, and `animatedWaterEnable` was never written
+to that install's `rtx.conf`. So the UV scroll and the second, LOD-blurred normal sample had never run
+there **on any variant** - not `pack`, not `realistic`, not `calm`, not `soft`, not `remix-ref`. The
+speckle work (s32, n07) had been reaching the material and not the renderer.
+
+### The three places the default had to be installed, and the one that had to be remembered
+
+`apply.sh` (with `--water <variant>` / `--no-water` as the opt-out), `launcher/launch-rtx.sh` (with
+`RHYS_WATER` as the explicit override), and `water.sh default` as the shared path. The part that was
+easy to get wrong is the second half of rhY's sentence: a default that overwrites a choice the user
+made is just a new kind of surprise. So the choice is data, not behaviour:
+`<game>/.rhys-water/state` holds `variant=… mode=default|explicit requested_by=…
+material_sha256=… rtx_conf_sha256=… when=…`, and `default` refuses to touch anything recorded as
+`mode=explicit` (`--force` once, and `water.sh pack` counts as an explicit choice, which is what makes
+the rollback stick). Writing the state file only when the record actually differs is what keeps a
+second `apply.sh` a byte-identical no-op - a `when=` timestamp written every run would have broken the
+installer's own idempotence check.
+
+Identifying the live variant by **sha256** instead of by grepping `normalmap_texture` also fixed a
+measurement bug: the old heuristic reported the pack's own material as `unknown` as soon as the `.orig`
+snapshot was missing, and `water.sh` refused to install anything at all in that state (it demanded the
+snapshot). A fresh install has no snapshot, so the installer path could not have worked; it is now
+taken automatically **only** when the live bytes equal `config/water/pack.usda`, which is provable, and
+refused otherwise.
+
+### The live run (the one write this task was allowed to make to the game folder)
+
+`G/rtx.conf` was copied to `G/rtx.conf.bak-before-n13` first, then one `water.sh default $G`:
+
+* `water_normal_ref.dds` generated from the pack's 10240x512 BC5 sheet in **0.7 s**: median facet tilt
+  **44.0 → 6.0 deg**, p95 **90.0 → 9.3 deg**, texels over 60 deg **32.01 % → 0.00 %**, gradient
+  **21.34 → 1.00 deg/texel**, u-decorrelation **10 px of 512 → 17 px of 128**, sheet
+  10240x512 BC5 → 2560x128 RGBA8 with 13 mips.
+* material → `remix-ref` (`2a6b13e8…`), transmittance distance 20 → 4 m, transmittance colour →
+  (0.62, 0.8, 0.8), `normalmap_texture` → `./water_normal_ref.dds`.
+* `rtx.conf`: five keys appended under one marked block, `0xA75A0B41F2454F04` appended to the end of
+  the existing 61-hash list line (still **one** line), `normalIntensity` untouched because it already
+  read 1.0. `diff rtx.conf.bak-before-n13 rtx.conf` = one changed line + 12 added lines, nothing else.
+* runtime key audit (`tools/rtxkeycheck.py` against `config/rtx-runtime-keys.txt`): **2 unknown keys
+  before and 2 after** - the same two pre-existing legacy spellings
+  (`rtx.enableVolumetricLighting`, `rtx.minReplacementTextureMipMapLevel`); every key n13 wrote is
+  `leaf+category` or `dotted` in the runtime's own strings. Key count **64 → 69** (the five appended
+  keys; extending the hash list adds none). For reference the shipped profiles audit as
+  `config/rtx.conf` 84 keys / 2 unknown, `rtx.conf.perf` 87 / **0**, `rtx.conf.nopops` 90 / 2.
+* A second `water.sh default $G` changed nothing: material, `rtx.conf`, the sheet and the state file
+  all re-hashed identical.
+
+### What the shipped profiles already had
+
+`config/rtx.conf`, `config/rtx.conf.perf` and `config/rtx.conf.nopops` were checked key by key: all
+six water keys are present with the values the variant table uses (`normalIntensity 1.0`,
+`animatedWaterEnable True`, `animatedWaterSecondaryNormalLodBias 2.0`, `layeredWaterNormalEnable True`,
+`invalidateHistoryForAnimatedWater False`, `combineSpecularAlbedo True`) and both hashes are in all
+three list lines. So `tools/rtxprofile.sh perf|nopops|current` keeps a `remix-ref` install working -
+the water setup does not live only in the live file. `rtx.enableDirectTranslucentShadows` is
+deliberately not in `perf` (its tooltip is quoted in that file) and is not part of the water table.
+
+### Tests, as a count
+
+`scripts/installer-selftest.sh` **44 → 78 checks** (its fake tree now carries a real `Water/`: the
+pack's material and the pack's 7 MB BC5 sheet, copied read-only, so sheet generation runs for real);
+`scripts/water-default-selftest.sh` **47 checks**, new and in `scripts/check-all.sh`, whose fake
+install starts from an `rtx.conf` with all six water keys deleted and both hashes pulled out of the
+list - so "the keys are there afterwards" is a result, not a given.
+
 ## A car's lamp is a 30 m billboard: the corona store, and the one runtime path behind V5, V6 and V7 (2026-11-12, n12)
 
 `.strata/test-2026-11-12c.md` lists three complaints that look unrelated — tail lights throwing

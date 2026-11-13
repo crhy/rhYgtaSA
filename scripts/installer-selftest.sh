@@ -10,8 +10,11 @@
 # folder (read-only: nothing here ever writes to /media/rhy/data/Gamez/GTASA-RTX),
 # runs apply.sh and deploy.sh against it twice, and checks the result:
 # patch applied, Large Address Aware set on a fake 32-bit PE, the pack's lamp
-# lights stripped, launcher installed, backups made once, second run a no-op.
-# Ends with "ALL PASS" or "N FAILED".
+# lights stripped, launcher installed, backups made once, second run a no-op,
+# and (n13) the water default: remix-ref installed by the installer, its regenerated normal sheet
+# generated, its rtx.conf keys applied in place with a backup, the pack's material snapshotted, and
+# the --water pack / --no-water opt-outs honoured by every later run. Ends with "ALL PASS" or
+# "N FAILED".
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 GAME="${RHYS_GAME_DIR:-/media/rhy/data/Gamez/GTASA-RTX}"
@@ -73,6 +76,20 @@ build_fake() {
   # other files the installers read or rename
   cp -p "$GAME/modloader/MixSets/MixSets.ini" "$FAKE/modloader/MixSets/" 2>/dev/null
   cp -p "$GAME/moonloader/SARemix_Real_Sun.dat" "$FAKE/moonloader/" 2>/dev/null
+  # n13: the water material. A fresh GTASA-Remix install has the pack's own USD (the live folder's
+  # Water_materials.usda is a variant we installed, so the source here is the .orig snapshot) plus
+  # the pack's 7 MB normal sheet, and NO .orig snapshot of its own: tools/water.sh takes that
+  # snapshot itself, and only when the live bytes prove it is the pack's material. That whole path
+  # is what the water checks below exercise, sheet generation included (it takes ~1 s).
+  SRCW="$GAME/rtx-remix/mods/gameReadyAssets/texture/Water"
+  DSTW="$FAKE/rtx-remix/mods/gameReadyAssets/texture/Water"
+  mkdir -p "$DSTW"
+  if [ -f "$SRCW/Water_materials.usda.orig" ]; then
+    cp -p "$SRCW/Water_materials.usda.orig" "$DSTW/Water_materials.usda"
+  else
+    echo "   no source for the water material ($SRCW)"
+  fi
+  [ -f "$SRCW/water_normal.dds" ] && cp -p "$SRCW/water_normal.dds" "$DSTW/"
   # a fresh GTASA-Remix copy still ships the stale VTK script (wrong model ids);
   # apply.sh moves it out of moonloader/
   printf -- '-- stale upstream copy: pre-cloud model ids, replaced by SARemix_VTK.lua\n' > "$FAKE/moonloader/SARemiv_VTK.lua"
@@ -116,6 +133,7 @@ PY
 # ------------------------------------------------------------------- checks --
 nfiles() { find "$FAKE" -name "$1" | wc -l; }
 manifest() { (cd "$FAKE" && find . -type f -print0 | sort -z | xargs -0 sha256sum); }
+sha() { sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 sphere() { local n; n=$(grep -c 'def SphereLight' "$1" 2>/dev/null); echo "${n:-0}"; }
 # deploy.sh renames the Lua mods it disables to .dat, so a check that wants the
 # patched text has to look at whichever name it has now
@@ -156,7 +174,11 @@ grep -q 'id = 15897' <<<"$(lua SARemiv_LightMan.lua)"; chk $? "the stale lamp mo
 grep -q 'isPlayerPlaying(PLAYER_HANDLE)' <<<"$(lua SARemix_Sun.lua)"; chk $? "moonloader/SARemix_Sun.lua carries the patch (waits for CJ)"
 grep -q 'rtx.useNewGuiInputMethod = False' "$FAKE/rtx.conf"; chk $? "rtx.conf got the patch (useNewGuiInputMethod = False)"
 grep -q 'inputs:shaping:focus = 0' "$FAKE/rtx-remix/mods/gameReadyAssets/Light/StreetLight.usda"; chk $? "a Light/*.usda from the patch was rewritten"
-[ -z "$(find "$FAKE" \( -name '*.rej' -o -name '*.orig' \) -print -quit)" ]; chk $? "no .rej / .orig garbage left in the game folder"
+# Water_materials.usda.orig is not patch garbage: it is tools/water.sh's snapshot of the pack's
+# material (n13 takes it automatically on a fresh install), which is what makes `water.sh pack` a
+# byte-for-byte rollback. Everything else with a .rej/.orig name IS a failed patch.
+[ -z "$(find "$FAKE" \( -name '*.rej' -o -name '*.orig' \) ! -name 'Water_materials.usda.orig' -print -quit)" ]
+chk $? "no .rej / .orig garbage left in the game folder (tools/water.sh's .orig snapshot excepted)"
 grep -q 'WARN.*SARemix/SARemix_StreetLights.usda' "$OUT/apply1.log"; chk $? "the one drifted file is reported as a warning, not an abort"
 
 echo "== Large Address Aware"
@@ -172,6 +194,54 @@ s="$FAKE/rtx-remix/mods/gameReadyAssets/SARemix/SARemix_StreetLights.usda"
 [ "$(sphere "$s.orig-with-lights")" = 18 ]; chk $? "the pre-strip copy keeps all 18 SphereLights"
 [ "$(nfiles '*.orig-with-lights')" = 1 ]; chk $? "exactly one pre-strip backup after two runs"
 grep -q 'already removed' "$OUT/apply2.log"; chk $? "the second run reports the strip step as already done"
+
+echo "== water: the installer installs the n07 research variant by default (n13)"
+# Nothing installed any water variant before n13, which is how a live install ended up with 'soft'
+# and an rtx.conf that had none of the animated-water keys. These checks are the answer.
+W="$FAKE/rtx-remix/mods/gameReadyAssets/texture/Water"
+[ "$(sha "$W/Water_materials.usda")" = "$(sha "$REPO/config/water/remix-ref.usda")" ] \
+  && ok "apply.sh installed the remix-ref water material by default (byte-identical to config/water/remix-ref.usda)" \
+  || bad "the live water material is not remix-ref"
+[ "$(sha "$W/Water_materials.usda.orig")" = "$(sha "$REPO/config/water/pack.usda")" ] \
+  && ok "the .orig snapshot was taken automatically and is the pack's material byte for byte" \
+  || bad "no correct Water_materials.usda.orig snapshot"
+[ -s "$W/water_normal_ref.dds" ] && ok "remix-ref's regenerated normal sheet was generated (water_normal_ref.dds, $(stat -c%s "$W/water_normal_ref.dds" 2>/dev/null) bytes)" \
+  || bad "water_normal_ref.dds was not generated"
+[ ! -e "$W/water_normal_soft.dds" ] && ok "the sheet remix-ref does not use was not generated" \
+  || bad "water.sh generated a sheet the installed variant does not need"
+grep -qx 'variant=remix-ref' "$FAKE/.rhys-water/state" && grep -qx 'mode=default' "$FAKE/.rhys-water/state" \
+  && ok ".rhys-water/state records variant=remix-ref mode=default (the installer did not 'choose' for the user)" \
+  || bad "the water state file is missing or wrong: $(tr '\n' ' ' < "$FAKE/.rhys-water/state" 2>/dev/null)"
+grep -q 'requested_by=apply.sh' "$FAKE/.rhys-water/state" \
+  && ok "the state file says who asked (requested_by=$(sed -n 's/^requested_by=//p' "$FAKE/.rhys-water/state" | head -1))" \
+  || bad "the state file does not name the caller"
+for k in 'rtx.translucentMaterial.animatedWaterEnable = True' \
+         'rtx.translucentMaterial.animatedWaterSecondaryNormalLodBias = 2.0' \
+         'rtx.opaqueMaterial.layeredWaterNormalEnable = True' \
+         'rtx.rayreconstruction.invalidateHistoryForAnimatedWater = False' \
+         'rtx.rayreconstruction.combineSpecularAlbedo = True'; do
+  grep -qF "$k" "$FAKE/rtx.conf" && ok "rtx.conf carries $k" || bad "rtx.conf is missing $k"
+done
+for h in 0x59296793798A7318 0xA75A0B41F2454F04; do
+  n=$(grep -E '^[[:space:]]*rtx\.animatedWaterTextures[[:space:]]*=' "$FAKE/rtx.conf" | grep -o -- "$h" | wc -l)
+  [ "$n" = 1 ] && ok "rtx.animatedWaterTextures lists $h exactly once" || bad "$h appears $n times in the list line (a duplicated hash or a duplicated list line)"
+done
+[ "$(grep -cE '^[[:space:]]*rtx\.animatedWaterTextures[[:space:]]*=' "$FAKE/rtx.conf")" = 1 ] \
+  && ok "still exactly one rtx.animatedWaterTextures line (the pack's list was extended, not replaced)" \
+  || bad "the animatedWaterTextures list was duplicated"
+[ "$(grep -cE '^[[:space:]]*rtx\.translucentMaterial\.normalIntensity[[:space:]]*=' "$FAKE/rtx.conf")" = 1 ] \
+  && ok "exactly one rtx.translucentMaterial.normalIntensity assignment (values are rewritten in place, not appended)" \
+  || bad "normalIntensity was appended instead of rewritten"
+[ -f "$FAKE/.rhys-water/rtx.conf.pristine" ] && ! grep -q 'animatedWaterEnable' "$FAKE/.rhys-water/rtx.conf.pristine" \
+  && ok "the pre-change rtx.conf is kept in .rhys-water/rtx.conf.pristine (undo: tools/rtxprofile.sh restore)" \
+  || bad "no pristine rtx.conf backup in .rhys-water/"
+
+# the same command twice more: the second run must not touch a single byte of the water install
+bash "$REPO/tools/water.sh" default "$FAKE" > "$OUT/water-twice.log" 2>&1; yes $? "tools/water.sh default run 2 exits 0"
+grep -q 'already the live water material' "$OUT/water-twice.log"; yes $? "run 2 reports the variant as already installed"
+grep -q 'already carries every requested water key' "$OUT/water-twice.log"; yes $? "run 2 reports the rtx.conf keys as already set"
+grep -q 'left as it is' "$OUT/water-twice.log"; yes $? "run 2 does not rewrite the state file (no timestamp churn)"
+
 
 echo "== launcher and the rest of the install"
 [ -x "$FAKE/launch-rtx.sh" ]; chk $? "launch-rtx.sh installed and executable"
@@ -215,6 +285,33 @@ cmp -s "$OUT/manifest-1.txt" "$OUT/manifest-2.txt"; chk $? "run 2 changed no fil
 diff "$OUT/manifest-1.txt" "$OUT/manifest-2.txt" | head -5
 snap_game > "$OUT/game-after.txt"
 cmp -s "$OUT/game-before.txt" "$OUT/game-after.txt"; chk $? "$GAME untouched (sizes and mtimes identical)"
+
+echo "== the water opt-out (n13): --water pack is a real rollback, and the default never overwrites it"
+run apply3 bash "$REPO/apply.sh" "$FAKE" --water pack; yes $? "apply.sh --water pack exits 0"
+[ "$(sha "$W/Water_materials.usda")" = "$(sha "$REPO/config/water/pack.usda")" ] \
+  && ok "--water pack restored the pack's material byte for byte" || bad "--water pack did not restore the pack's material"
+grep -qx 'variant=pack' "$FAKE/.rhys-water/state" && grep -qx 'mode=explicit' "$FAKE/.rhys-water/state" \
+  && ok "the opt-out is recorded as an explicit choice (variant=pack mode=explicit)" \
+  || bad "the opt-out was not recorded as explicit: $(tr '\n' ' ' < "$FAKE/.rhys-water/state" 2>/dev/null)"
+grep -q 'requested_by=apply.sh --water pack' "$FAKE/.rhys-water/state" \
+  && ok "the state file names the flag that asked for it" || bad "the state file does not name --water"
+bash "$REPO/tools/water.sh" status "$FAKE" > "$OUT/water-status-pack.log" 2>&1; yes $? "tools/water.sh status exits 0"
+grep -q 'installed variant: pack' "$OUT/water-status-pack.log" \
+  && ok "status reports the pack's material as the live one" || bad "status does not report 'pack'"
+grep -q 'installed by exact bytes  : pack' "$OUT/water-status-pack.log" \
+  && ok "status also identifies it by sha256, not by grepping texture names" || bad "status has no exact-bytes line"
+run apply4 bash "$REPO/apply.sh" "$FAKE"; yes $? "apply.sh with no --water exits 0"
+[ "$(sha "$W/Water_materials.usda")" = "$(sha "$REPO/config/water/pack.usda")" ] \
+  && ok "the default path did NOT overwrite the explicit 'pack' choice" || bad "the default path overwrote an explicit choice"
+grep -q "keeping 'pack'" "$OUT/apply4.log" \
+  && ok "apply.sh says out loud that it is keeping the variant that was chosen" || bad "apply.sh did not say it kept the explicit choice"
+before="$(sha "$W/Water_materials.usda")"
+run apply5 bash "$REPO/apply.sh" "$FAKE" --no-water; yes $? "apply.sh --no-water exits 0"
+grep -q 'skipped (--no-water)' "$OUT/apply5.log" \
+  && ok "--no-water skips the water step out loud" || bad "--no-water did not report skipping"
+[ "$(sha "$W/Water_materials.usda")" = "$before" ] && ok "--no-water changed no water file" || bad "--no-water changed the water material"
+bash "$REPO/apply.sh" "$FAKE" --water watery >/dev/null 2>&1 \
+  && bad "--water accepted a variant that does not exist" || ok "--water refuses an unknown variant instead of guessing"
 
 [ "$KEEP" = 1 ] || rm -rf "$FAKE"
 echo

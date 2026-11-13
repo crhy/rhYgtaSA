@@ -6,7 +6,11 @@
 # never run yesterday's code. Environment knobs, all optional:
 #   GTASA_RTX_NO_DEPLOY=1   skip the build+install (run whatever is in the game folder)
 #   RHYS_DRY_RUN=1          do the deploy and the state report, then stop before the game
-#   RHYS_WATER=calm|realistic|pack   install that water variant (tools/water.sh) before launch
+#   RHYS_WATER=<variant>    install that water variant (tools/water.sh) before launch and record it
+#                           as an explicit choice: remix-ref|soft|realistic|calm|pack. With RHYS_WATER
+#                           UNSET the launcher makes sure the DEFAULT variant (n13: remix-ref) is
+#                           installed - a no-op when it already is, and it never overwrites a variant
+#                           you picked on purpose (that choice lives in <game>/.rhys-water/state).
 #   RHYS_RTX_KNOBS=1        add the measured rtx.conf lines that are still missing (backs up first)
 #   RHY_SKIP_VRAM_CHECK=1   launch even with the card full (see the preflight below)
 #   RHYS_SHOT_WATCH=0       do not start the F12 screenshot watcher
@@ -21,6 +25,13 @@
 #                           file up first; the runtime overrides this, it is an A/B switch)
 R="${GTASA_RTX_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 [ -f "$R/gta-sa.exe" ] || R="/media/rhy/data/Gamez/GTASA-RTX"  # script not living in the game folder
+# Selftest guard, same shape as the one in apply.sh/deploy.sh: scripts/water-default-selftest.sh
+# exports RHYREMIX_INSTALLER_SANDBOX=1 and puts a marker in its scratch install. Without this the
+# fallback above means a bug in that test would point the launcher - which installs water variants
+# and edits rtx.conf - at a REAL game folder.
+if [ "${RHYREMIX_INSTALLER_SANDBOX:-0}" = 1 ] && [ ! -f "$R/.fake-install-marker" ]; then
+  echo "refusing to run against $R: sandbox mode needs $R/.fake-install-marker"; exit 1
+fi
 # Where the plugin source lives. apply.sh writes <game>/rhys-asi-repo with the checkout it
 # installed from, so an installed game folder finds its own repo; RHYS_ASI_REPO wins over that,
 # and the hardcoded default is only the path this repo happened to be developed at.
@@ -155,23 +166,44 @@ if [ -f "$R/scripts/rhyremix.ini" ]; then
     echo "traffic: ini has no source= key -> plugin default source=game (s01 corona hook)"
   fi
 fi
+WVAR=""
 if [ -f "$REPO/tools/water.sh" ]; then
-  echo "water  : $(bash "$REPO/tools/water.sh" status "$R" 2>/dev/null | sed -n 's/^installed: //p')"
+  # 'installed variant:' is the label water.sh prints; n13 added 'installed by exact bytes', which is
+  # the one that cannot be fooled by an edited variant (the sha256 match, not a texture-name grep).
+  WSTATUS="$(bash "$REPO/tools/water.sh" status "$R" 2>/dev/null || true)"
+  WDESC="$(sed -n 's/^  installed variant: //p' <<<"$WSTATUS" | head -1)"
+  echo "water  : ${WDESC:-not found (no Water_materials.usda in this install?)}"
+  WVAR="$(sed -n 's/^  installed by exact bytes  : //p' <<<"$WSTATUS" | head -1)"
+  [ -n "$WVAR" ] || WVAR="$WDESC"
   grep -q 'translucentMaterial.normalIntensity' "$R/rtx.conf" \
-    || echo "water  : rtx.conf has no rtx.translucentMaterial.normalIntensity (s02: 0.35 is the
-           measured fix for the black/white sea; RHYS_RTX_KNOBS=1 adds it, or add it by hand)"
+    || echo "water  : rtx.conf has no rtx.translucentMaterial.normalIntensity - the water step below writes it (with the value the live variant needs) and backs the file up in $R/.rhys-water/"
+  if [ -n "${RHYS_WATER:-}" ]; then
+    echo "water  : RHYS_WATER=$RHYS_WATER is set -> installing it and recording it as an explicit choice"
+    RHYS_WHY="launcher RHYS_WATER=$RHYS_WATER" bash "$REPO/tools/water.sh" "$RHYS_WATER" "$R" \
+      || echo "WARN: water variant not installed"
+  else
+    echo "water  : RHYS_WATER unset -> making sure the default variant is installed (n13: remix-ref)."
+    echo "         No-op when it is already live; a variant recorded in .rhys-water/state as an"
+    echo "         explicit choice is never overwritten (tools/water.sh default $R --force does)."
+    RHYS_WHY="launcher default (n13)" bash "$REPO/tools/water.sh" default "$R" \
+      || echo "WARN: the default water variant was not installed"
+  fi
 fi
-if [ -n "${RHYS_WATER:-}" ] && [ -f "$REPO/tools/water.sh" ]; then
-  echo "water  : installing variant '$RHYS_WATER'"
-  bash "$REPO/tools/water.sh" "$RHYS_WATER" "$R" || echo "WARN: water variant not installed"
-fi
+# RHYS_RTX_KNOBS=1 predates n13: it used to be the only way the measured water line ever reached
+# rtx.conf. tools/water.sh now installs that line - and the rest of the animated-water block - with
+# the value the live variant needs, so this only fires when the key is still absent. It uses the
+# variant-aware value too: 0.35 only fits the pack's own 44 deg sheet, a regenerated sheet
+# (soft, remix-ref) needs 1.0 because the map already carries the softening.
 if [ "${RHYS_RTX_KNOBS:-0}" = 1 ] && [ -f "$R/rtx.conf" ] \
    && ! grep -q 'translucentMaterial.normalIntensity' "$R/rtx.conf"; then
+  knob=1.0
+  case " ${WVAR:-} " in *" realistic "*|*" calm "*) knob=0.35 ;; esac
   cp -n "$R/rtx.conf" "$R/rtx.conf.bak-before-rhy-knobs"
-  echo '# rhygtaSA s02: the pack water normal sheet has a 46 deg median facet tilt (measured),
-# which reads as binary black/white under path tracing. 0.35 brings it to ~12 deg.' >> "$R/rtx.conf"
-  echo 'rtx.translucentMaterial.normalIntensity = 0.35' >> "$R/rtx.conf"
-  echo "rtx.conf: added rtx.translucentMaterial.normalIntensity = 0.35 (backup: rtx.conf.bak-before-rhy-knobs)"
+  { echo '# rhygtaSA s02/n13: the pack water normal sheet has a 44-46 deg median facet tilt (measured),';
+    echo '# which reads as binary black/white under path tracing. 0.35 brings it to ~12 deg; a variant';
+    echo '# with a regenerated sheet (soft, remix-ref) needs 1.0 - the map carries the softening.';
+    echo "rtx.translucentMaterial.normalIntensity = $knob"; } >> "$R/rtx.conf"
+  echo "rtx.conf: added rtx.translucentMaterial.normalIntensity = $knob (live variant: ${WVAR:-unknown}; backup: rtx.conf.bak-before-rhy-knobs)"
 fi
 
 # What the bridge was configured with, reported every run (n09b). The bridge server turns its own

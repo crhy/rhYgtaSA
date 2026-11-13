@@ -1,25 +1,36 @@
 #!/bin/bash
 # Apply the rhYgtaSA Linux/Proton fixes to a GTA SA RTX install that already has GTASA-Remix (Hemry81) + RTX Remix 1.6.1 in it.
-# Usage: ./apply.sh /path/to/GTASA-RTX [--with-deps [--deps-group characters]]
+# Usage: ./apply.sh /path/to/GTASA-RTX [--with-deps [--deps-group characters]] [--water remix-ref]
 #   --with-deps     also fetch the mods a user would otherwise download by hand, from OUR hosts
 #                   (deps/manifest.json -> tools/fetch-deps.sh), and unpack the ones that verify into
 #                   <game>/modloader/<pack>/. Off by default until the hosts exist; flip WITH_DEPS=1
 #                   here once they do. --no-deps forces it off.
 #   --deps-group    which manifest group to install with --with-deps (default: characters)
+#   --water V       which water material to install (remix-ref|soft|realistic|calm|pack,
+#                   default remix-ref - the n07 research variant). --no-water leaves the pack's
+#                   material exactly as it is. n13: this used to be a step that did not exist,
+#                   which is why nobody ever got the new water.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-R=""; WITH_DEPS=0; DEPS_GROUP=characters
+R=""; WITH_DEPS=0; DEPS_GROUP=characters; WATER=remix-ref; WATER_SET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-deps)  WITH_DEPS=1; shift ;;
     --no-deps)    WITH_DEPS=0; shift ;;
+    --water)      [ $# -ge 2 ] || { echo "usage: apply.sh /path/to/GTASA-RTX [--water remix-ref|soft|realistic|calm|pack|--no-water]"; exit 1; }
+                  WATER="$2"; WATER_SET=1; shift 2 ;;
+    --no-water)   WATER=none; WATER_SET=1; shift ;;
     --deps-group) [ $# -ge 2 ] || { echo "usage: apply.sh /path/to/GTASA-RTX [--with-deps [--deps-group characters]]"; exit 1; }
                   DEPS_GROUP="$2"; shift 2 ;;
-    -h|--help)    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)            R="$1"; shift ;;
   esac
 done
-[ -n "$R" ] || { echo "usage: apply.sh /path/to/GTASA-RTX [--with-deps [--deps-group characters]]"; exit 1; }
+[ -n "$R" ] || { echo "usage: apply.sh /path/to/GTASA-RTX [--with-deps [--deps-group characters]] [--water remix-ref|--no-water]"; exit 1; }
+case " $WATER " in
+  " remix-ref "|" soft "|" realistic "|" calm "|" pack "|" none ") ;;
+  *) echo "apply.sh: --water must be remix-ref|soft|realistic|calm|pack (or --no-water), got '$WATER'"; exit 1 ;;
+esac
 [ -f "$R/rtx.conf" ] && [ -d "$R/rtx-remix/mods/gameReadyAssets" ] && [ -d "$R/moonloader" ] || { echo "not a GTASA-Remix install: $R"; exit 1; }
 # Selftest guard: scripts/installer-selftest.sh exports RHYREMIX_INSTALLER_SANDBOX=1
 # and puts a marker in its scratch install, so a bug in that test can never point
@@ -81,6 +92,27 @@ else
 fi
 echo "== street lamps: rhyremix.asi lights them, so the pack's duplicate lamp lights go"
 python3 "$HERE/tools/strip_pack_lamp_lights.py" "$R"
+echo "== water: the n07 research variant by default (n13); --water <variant> picks another, --no-water leaves the pack's"
+# Why this step did not exist until n13 (rhY: "make sure we get the new water by default"): n07 built
+# remix-ref and s32 built soft, but NOTHING installed either one - apply.sh never called water.sh,
+# the launcher only called it when RHYS_WATER was set, and water.sh printed the rtx.conf lines that
+# go with a variant instead of writing them. Measured on the live install: `soft` water, and an
+# rtx.conf with none of the animated-water keys, so the runtime's own water path never ran.
+# `default` is the same path launch-rtx.sh takes: install remix-ref, apply its rtx.conf keys (with
+# backups in <game>/.rhys-water/), and never overwrite a variant recorded in <game>/.rhys-water/state
+# as an explicit choice - so a re-run after you picked soft or pack on purpose changes nothing.
+if [ "$WATER" = none ]; then
+  echo "   skipped (--no-water): the pack's own water material stays as it is."
+  echo "   later: bash $HERE/tools/water.sh default \"$R\""
+elif [ ! -d "$R/rtx-remix/mods/gameReadyAssets/texture/Water" ]; then
+  echo "   WARN: no $R/rtx-remix/mods/gameReadyAssets/texture/Water - the pack's water material is not in this install; skipped"
+elif [ "$WATER_SET" = 1 ]; then
+  RHYS_WHY="apply.sh --water $WATER" bash "$HERE/tools/water.sh" "$WATER" "$R" \
+    || echo "WARN: water variant '$WATER' not installed - the rest of the install is valid; run: bash $HERE/tools/water.sh $WATER \"$R\""
+else
+  RHYS_WHY="apply.sh (n13 default)" bash "$HERE/tools/water.sh" default "$R" \
+    || echo "WARN: the default water variant was not installed - the rest of the install is valid; run: bash $HERE/tools/water.sh default \"$R\""
+fi
 echo "== new helper modules"
 mkdir -p "$R/moonloader/lib"; cp "$HERE"/moonloader/lib/*.lua "$R/moonloader/lib/"
 echo "== stale upstream script (SARemiv_VTK.lua uses pre-cloud model ids) -> backup"
