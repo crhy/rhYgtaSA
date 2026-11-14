@@ -104,10 +104,13 @@ is not running.
 | `rtx.zUp` | `True` | Remix treats GTA's Z as up; our plugin passes world coords through unchanged |
 | `rtx.ignoreGameDirectionalLights` | `True` | the game's sun is gone; only the asset pack's lights and our `[sun]`/`[moon]` remain |
 | `rtx.emissiveIntensity` | `10` | multiplies every emissive material in the 2174-file asset pack. First knob to turn down if the world is blown out. |
-| `rtx.skyBrightness` | `3` | ambient sky; raises the floor of every shadow |
+| `rtx.skyBrightness` | `1.0` in the file, **pushed by the plugin every 100 ms** | ambient sky; raises the floor of every shadow. Editing the file does nothing past the first push - at night the plugin publishes `[sky] night+moon`, capped since n24 at `[sky] ambient_cap_mult` (0.25) x the moon light's own radiance. See [TESTING.md](TESTING.md) |
 | `rtx.autoExposure.enabled` | `False` | nothing normalises the image; over-lit stays over-lit |
 | `rtx.localtonemap.shadows` | `2.5` | lifts shadow floors - a direct cause of "lights don't cast" |
-| `rtx.fallbackLightRadius` / `fallbackLightType` | `3` / `1` | what a light with no explicit radius becomes |
+| `rtx.fallbackLightMode` / `fallbackLightRadiance` | **`0` / `0, 0, 0`** (n24; the runtime's defaults are `1` = NoLightsPresent and `1.6, 1.8, 2`) | the light the runtime hangs on the camera when a scene has no lights - menus, the first seconds of a run. The old shape (`fallbackLightType = 1` sphere, `fallbackLightRadius = 3`, both now commented out in the profiles) delivers **0.4430** at 6 m against the moon's **0.0515**: it out-lights the night's only real source **8.6:1**. The runtime's own tooltip asks for `Never` in a production build |
+| `rtx.tonemap.shadowContrast` | **`0.4`** (n24; runtime default `0`) | the global curve's shadow push: moon-lit sand 150 units from any lamp goes 92/255 -> **19/255** and the night's away/under image ratio 36 % -> **7.5 %**. `shadowContrastEnd` stays at its default 0, which is what keeps noon out of it |
+| `rtx.bloom.luminanceThreshold` | **`1.0`** (n24; runtime default `0.25`) | what is bright enough to bloom. At 0.25, **10.31 %** of the sea/pier band of the 2026-11-12 frames bloomed at full weight - the V4 halo; at 1.0 only the 0.23 % that is genuinely clipped does |
+| `rtx.enableTransmissionApproximationInIndirectRays` | **`False`** (n24; the runtime default, and what `88e8cd1` had set to `True`) | `True` lets indirect rays keep their direction **through** the sea instead of bending - the sky and the lamp pools arrive under the pier |
 | `rtx.pathMaxBounces` | `2` | GI depth; shadows come from the direct-light pass, so a light that "doesn't cast" is usually radius/radiance, not bounces |
 | `rtx.enableVolumetricLighting` | `True` | light cones become visible; a too-large radius shows up as a fog wall |
 

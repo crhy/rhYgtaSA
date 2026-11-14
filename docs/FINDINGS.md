@@ -2524,6 +2524,112 @@ number to move is `[tonemap] night_ev`, and the number to move it **to** is **0.
 take-down, ≈×1.41 less at night, which the same model puts at ≈21 %); −0.5 would be the full 1 EV.
 `tools/night-brightness.py --target 25` is the gate that says which world we are in.
 
+### What n24 measured and shipped for V1/V3/V4 (2026-11-14)
+
+The retry of the parked `30a1a43`, on today's tree. Nothing was run in game (rule 1), so the
+"before" is the 2026-11-12c video and the sim, and the "after" is owed by the next live run. The
+four causes above are re-measured here one by one; **cause 1 is already shipped** (n16,
+`rtx.tonemappingMode = 0`, `config/rtx.conf:368`), which is also what kills V3's view-dependent
+pyramid fit.
+
+**The scene, today** (`python3 tools/night_ambient.py`, the pier layout of n10's sim, sand 150.3
+units from the nearest lamp head, n23's lamps at 0.4, n22's `night_ev +0.5` applied):
+
+| number | before n24 | after |
+|---|---|---|
+| moon light's published radiance (luminance, 31° elevation, full) | 0.0669 | 0.0669 |
+| published ambient (`[sky] night+moon`) | **0.0700 = 1.05× the moon** | 0.0163 (capped) |
+| share of open-sand radiance that is "sky" | **57.6 %** | 24 % |
+| fallback sphere (mode 1, type 1, radius 3) at 6 m, no lamps in world | **0.4430 = 8.6× the moon** | 0 |
+| scene ratio away/under | 7.12 % | **4.10 %** |
+| image ratio after the tone chain | **50.6 %** (away 129/255) | **7.4 %** (away 19/255) |
+
+Cause 1 being shipped did **not** fix the ratio: with the curve at its defaults the global tone
+curve plus n22's +0.5 EV night anchor still flattened a 7.1 % scene into a 50.6 % image. That is
+not the local pyramid coming back — it is the histogram fit lifting the dark end of a dark frame,
+and `rtx.tonemap.shadowContrast` is the key that owns it.
+
+**Cause 2, the ambient ceiling — shipped as a rule, not a constant.** `solar.cpp skyAmbientCap()`
+caps the pushed `rtx.skyBrightness` at `[sky] ambient_cap_mult = 0.25` × the moon light's published
+radiance once `daylight ≤ 0.05`; day and twilight pass through, `0` turns the rule off. Sweeping the
+multiple in the sim: M=1.0 → image 49.8 %, M=0.5 → 40.6 %, **M=0.25 → 36.3 %**, M=0.1 → 33.4 %,
+M=0 → 30.9 % — 0.25 captures 90 % of the available gain and leaves the sky band at 87/255 instead of
+black, which is what the denoiser reconstructs from. It is a **ceiling**, not a prediction: the probe
+is rasterized in the game's colour format (`rtx.skyForceHDR = False`) so its radiance is ≤ 1.0 and the
+real ambient is usually below the cap. The cap is applied to the **target**, before `rhyRateStep`, so
+the published value can only ramp: `tests/solar_check.cpp` feeds the shipped `[fade]` numbers
+(`sky_rel_per_sec 3.0`, `sky_abs_per_sec 0.25`) at a 60 fps frame and gets 0.0700 → 0.0166 in **11
+frames (0.18 s)** with no frame taking more than a quarter of it. A side effect worth knowing: the
+ambient stops following the clock and starts following the moon — over a July night the ceiling runs
+**0.0070 (18:00) … 0.0175 (midnight)** (`tests/solar_check.cpp`, at the test's turbidity 0.12; the
+shipped ini's 0.15 puts midnight at 0.0163, which is the number the sim and the tables above use), and with the moon below the horizon it is 0 (the 0.001 floor
+in `sun.cpp` is all that is left). A moonless, lampless night is dark; that is the finding, and
+`ambient_cap_mult=0` is the switch back.
+
+**Cause 3, the fallback light — shipped off.** `rtx.fallbackLightMode = 0` (the runtime's *Never*) and
+`rtx.fallbackLightRadiance = 0, 0, 0` in `config/rtx.conf`, `.perf`, `.nopops` (regenerated), `.dlss5`
+and `.experimental`; `fallbackLightType = 1` / `fallbackLightRadius = 3` are commented out with the
+measurement. The 8:1 in the task file is 8.6:1 measured: radiance 1.6,1.8,2.0 (luminance 1.786) as a
+3 m sphere at the camera, 6 m from the sand, is 0.4430 against the moon's 0.0515, and with it in the
+world the **scene** ratio alone goes 7.12 % → **26.3 %** with both metric points clipping to 255. The
+runtime's own tooltip for the mode says the same thing in one sentence ("this option should be set to
+Never for 'production' builds of Remix creations", `rtx-options-1.6.1.tsv:299`).
+
+**Cause 4, dir z > 0 — shipped as a clamp plus the existing retire path.** `solar.cpp
+solarClampLightDir()` flattens any light direction with z > 0 onto the horizon and renormalises; it
+runs on both bodies' `wantDir` and again on `pubDir` after `rhyDirLimit`, so the handle the bridge
+receives can never be the logged `dir=0.2206,-0.8386,+0.4981` at sun −31.6°. The radiance target is
+already 0 below −1° elevation (`relativeAirMass` returns 0), so the handle **dims through the existing
+ramp and `updateDistant`'s `!(pubLum > 1e-4f) && !(wantLum > 1e-4f)` branch retires it** — no change
+to `smooth.cpp`, so n01's cadence budgets and `tests/handle_check.cpp` are untouched. `tests/
+solar_check.cpp` asserts the invariant over all 1440 minutes of a day for both bodies, and that a body
+above the horizon is never touched.
+
+**V4, measured rather than tasted.** The 60 frames of `build/tmp/video-2026-11-12` (1920×1080, build
+`ba4c2c3`): a teal-chroma scan (B > R+12, G > R+4, luma ≥ 90) puts the glow in **y 841..941** of 1080
+at a median **0.30 %** of the frame and mean luma **132/255**; `tools/night-report.py --box
+0,841,1920,100`: p10 median **15.5/255** against p95 median **141/255**, so the band's own p10/p95
+ratio is **9.7 %** by median (range 2.2-53.3 % over the 60 frames) and 7.9 % of its pixels are at or
+above luma 120 - the glow is a bright minority of the band, not its floor. For the whole frame the
+same tool measures the bottom-38 % ground band at **21.1-42.4 %** (median 33.3 %) with **43 of 60**
+frames over the 10 % target: that is the V1 number the next live run has to move. In the display-referred **linear** space the bloom threshold is
+compared against (bloom runs after the tone curve, before the sRGB encode): **10.31 %** of the band is
+above the shipped 0.25 and blooms at full weight, **2.48 %** above 0.5, and only **0.23 %** is at or
+above 1.0; the band's mean linear luminance is 0.1005. So `rtx.bloom.luminanceThreshold = 1.0` cuts
+the fully-blooming area of that band **45×** while the clipped lamp heads and the sun disc still bloom.
+And `rtx.enableTransmissionApproximationInIndirectRays` goes back to the runtime's own **False**
+(`rtx-options-1.6.1.tsv:280`): the `True` came from `88e8cd1`, not from any measurement in this repo,
+and its tooltip — "Translucent objects hit by indirect rays will not alter ray direction, just change
+the ray throughput" — is exactly the mechanism that hands the sky and the lamp pools to the pier
+underside.
+
+**The taste number, decided with arithmetic.** `rtx.tonemap.shadowContrast = 0.4`, with
+`shadowContrastEnd` left at its default 0. The curve pass subtracts
+`shadowContrast × max(0, shadowContrastEnd − log2 L)` per bin (`tonemapping_tone_curve.comp.slang:198`;
+the `pow(...)` line in `tonemapping_apply_tonemapping.comp.slang:79` is inside
+`reinhardToneMapper`, which the dynamic tone mapper we use never reaches — worth knowing before
+someone reads it as a second shadow lever). With `end = 0`, "values above this are unaffected" means
+the noon ground at log2 **+0.36** (after n22's `day_ev −0.5`) is untouched by construction; only
+material below linear 1.0 gets the extra contrast, and a noon shadow at linear 0.3 pays 0.70 stops.
+On the sim's night metric points:
+
+| shadowContrast | away sand | sky band | image ratio |
+|---|---|---|---|
+| 0.00 (runtime default) | 92/255 | 87 | 36.3 % |
+| 0.20 | 45 | 41 | 17.7 % |
+| 0.30 | 30 | 27 | 11.8 % |
+| **0.40 (shipped)** | **19** | **17** | **7.5 %** |
+| 0.50 | 11 | 9 | 4.3 % |
+| 0.60 | 6 | 5 | 2.2 % |
+
+0.4 is the value because it is inside n10's ≤ 10 % target with margin **and** leaves the moon-lit sand
+at 19/255, which is what the denoiser and the eye need; 0.6 is not, at 6/255. `end = −1` instead of 0
+buys half a stop of noon shadow for 3 points of ratio (10.7 % at 0.40) — not worth two numbers where
+one has a measurement. What this still owes the live run: the sim's frame histogram is synthetic, so
+the *direction* of the key is source-derived and the *landing point* is the next tour's number. The
+A/B ladder is in the profile comment: 0.3, then 0.2, if the night comes back crushed; and if the night
+is still too bright overall, the number n23 named is still `[tonemap] night_ev → 0.0`, not this one.
+
 ## Aerial perspective: what the game's fog is, what the runtime does with it, and the six numbers between (2026-11-13, n17)
 
 docs/TARGET.md §4 **T3** ("distance must fade"). Nothing was run in the game — rule 1 — so this

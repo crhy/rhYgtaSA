@@ -326,6 +326,11 @@ static void updateDistant(DistantLight& which, float angular,
         rhyRateStep(which.rate[i], which.wantRgb[i], dt);
     }
     rhyDirLimit(which.pubDir, which.wantDir, c.sun_deg_per_sec * dt);
+    // n24 (cause 4): the invariant, enforced where it is published rather than only
+    // where the target is built. wantDir is already clamped in rhySunFrame; this is the
+    // guard that makes "a distant light may never shine up through the ground" true for
+    // the handle the bridge actually gets, whatever the slew did on the way here.
+    solarClampLightDir(which.pubDir);
 
     const float pub[3] = {which.rate[0].cur, which.rate[1].cur, which.rate[2].cur};
     const float pubLum = 0.2126f * pub[0] + 0.7152f * pub[1] + 0.0722f * pub[2];
@@ -481,6 +486,8 @@ static void updateDistant(DistantLight& which, float angular,
 static RhyRate g_skyRate = {1.0f, 3.0f, 0.25f, 0.002f};
 static RhyRate g_emissiveRate = {1.0f, 3.0f, 0.25f, 0.01f};
 static bool g_skyRateInit = false;
+static float g_skyCapSeen = 0.0f;  // n24: the last ambient the ini asked for and the
+                                   // moon ceiling refused, 0 = never capped this run
 
 static void applySkySettings(const RhyConfig& c, float dt, DWORD now) {
     if (!c.sky_apply) {
@@ -503,6 +510,30 @@ static void applySkySettings(const RhyConfig& c, float dt, DWORD now) {
     // into the whole sky, so the ambient gains part of it back. With cloud = 0, the
     // shipped default, this factor is exactly 1.0 and nothing about the look changes.
     sky *= rhyCloudAmbientGain(g_weather.cloud);
+    // n24 (cause 2): at night the ambient may not out-light the one real source in the
+    // sky. g_moon.wantRgb is what the moon light is AIMING at this frame (set in
+    // rhySunFrame above, before updateDistant ramps toward it): the ceiling has to come
+    // from the target, not from the ramped value, or the first frames of a run - when the
+    // moon's radiance is still climbing from 0 - would cap the ambient to about nothing
+    // and fade the world up from black, which is exactly what s28's "first run starts AT
+    // the target" exists to prevent. A bad rhyremix.ini edit or a day/night blend left
+    // over from dusk likewise cannot put more on the sand from "sky" than the moon disc
+    // itself delivers. Measured on today's ini: the target is 0.0700 against a moon
+    // publishing 0.0669 at 31 deg, i.e. an ambient ceiling above the source it is supposed
+    // to be the scatter of. Day and twilight pass through untouched, and the cap is applied
+    // to the TARGET, before rhyRateStep below, so the published value can only ramp to it -
+    // the s28 rule, asserted in tests/solar_check.cpp.
+    const float moonLum = 0.2126f * g_moon.wantRgb[0] +
+                          0.7152f * g_moon.wantRgb[1] +
+                          0.0722f * g_moon.wantRgb[2];
+    const float skyCapped = skyAmbientCap(sky, moonLum, g_daylight, g_moonElev,
+                                          c.sky_ambient_cap_mult);
+    if (skyCapped < sky) {
+        g_skyCapSeen = sky;   // what the uncapped target asked for, for the log line
+        sky = skyCapped;
+    } else {
+        g_skyCapSeen = 0.0f;  // not capped this frame: the ini's own value stands
+    }
     // Emissives are the asset pack's lamp housings, signs and tail lights. They
     // read far stronger at night than by day, and that is true physically as
     // well as perceptually, so the gain follows the same ramp.
@@ -737,6 +768,12 @@ void rhySunFrame() {
         float rgb[3];
         beamRadiance(sun, cfg->sun_radiance * cloudT, cfg->sun_color, ob.turbidity,
                      rgb);
+        // n24 (cause 4): a body under the horizon must not light the world from
+        // underneath it. The radiance is already ramping to zero (beamRadiance's
+        // transmittance is 0 below -1 deg), so the handle dims and the retire path in
+        // updateDistant takes it away; this stops the direction from swinging through
+        // the ground while that happens.
+        solarClampLightDir(d);
         g_sun.wantDir[0] = d[0];
         g_sun.wantDir[1] = d[1];
         g_sun.wantDir[2] = d[2];
@@ -749,13 +786,14 @@ void rhySunFrame() {
 
     // --- moon target ---
     if (cfg->moon_enabled && !g_moon.apiBroken) {
-        const float d[3] = {-moon.toX, -moon.toY, -moon.toZ};
+        float d[3] = {-moon.toX, -moon.toY, -moon.toZ};
         // Phase is why a crescent does not light the street like a full moon.
         // The old code had no phase at all: it was permanently full.
         const float phase = lunarPhaseFactor(cfg->moon_phase);
         float rgb[3];
         beamRadiance(moon, cfg->moon_radiance * phase * cloudT, cfg->moon_color,
                      ob.turbidity, rgb);
+        solarClampLightDir(d);  // n24, the same rule as the sun
         g_moon.wantDir[0] = d[0];
         g_moon.wantDir[1] = d[1];
         g_moon.wantDir[2] = d[2];
@@ -818,12 +856,22 @@ void rhySunFrame() {
         } else {
             std::snprintf(expo, sizeof expo, "off, rtx.conf's static anchor stands");
         }
+        // n24: the ambient line has to say whether the moon ceiling is what is holding
+        // it down, or the ini is. "capped from" is the target the ini asked for; the
+        // limiter is what makes the published value still a ramp, not that number.
+        char skyv[64];
+        if (g_skyCapSeen > 0.0f) {
+            std::snprintf(skyv, sizeof skyv, "%.4f (moon cap, asked %.4f)",
+                          g_skyRate.cur, g_skyCapSeen);
+        } else {
+            std::snprintf(skyv, sizeof skyv, "%.4f", g_skyRate.cur);
+        }
         rhyLog("sky: sun elev=%+.1f az=%.1f airMass=%.2f T=%.3f/%.3f/%.3f "
                "daylight=%.2f | moon elev=%+.1f az=%.1f phase=%.2f | lamps=%s "
                "(clock=%d:%02d tod=%.2f min ms/min=%.0f doy=%d month=%d day=%d) | "
                "tod: ticks=%u torn=%u jitter=%u reanchor=%u wraps=%u bad=%u | "
                "cal: stable=%d accepted=%u rejected=%u | cloud=%.2f | "
-               "published: sun %.2f,%.2f,%.2f sky=%.3f emissive=%.3f exposure=%s "
+               "published: sun %.2f,%.2f,%.2f sky=%s emissive=%.3f exposure=%s "
                "rebuilds=%d/%d "
                "cad=%d/%dms step<=%.2f/%.2f skip=%d/%d "
                "| rtx: set=%u unknown=%u badval=%u",
@@ -836,7 +884,7 @@ void rhySunFrame() {
                g_tod.wraps, g_tod.badSamples,
                g_cal.stable, g_cal.accepted, g_cal.rejected, g_weather.cloud,
                g_sun.rate[0].cur, g_sun.rate[1].cur, g_sun.rate[2].cur,
-               g_skyRate.cur, g_emissiveRate.cur, expo,
+               skyv, g_emissiveRate.cur, expo,
                g_sun.rebuilds, g_moon.rebuilds,
                g_sun.cad.intervalMs, g_moon.cad.intervalMs,
                g_sun.maxStepDegSeen, g_moon.maxStepDegSeen,

@@ -32,11 +32,32 @@ rtx.restirGI.validateVisibilityChange = True
 # changes nothing on its own - the fog block at the end of this file is what changes anything.
 rtx.volumetrics.enableFogMaxDistanceRemap = True
 rtx.dlfg.enable = False
-rtx.fallbackLightRadius = 3
+# n24 (cause 3, docs/FINDINGS.md "Night realism"): the fallback light is OFF, in every
+# profile we ship. rtx_light_manager.cpp:249-330 creates it when the mode says so, and the
+# runtime's own tooltip for the mode (config/rtx-options-1.6.1.tsv:299) says this outright:
+#   "this option should be set to Never for 'production' builds of Remix creations to avoid
+#    the fallback light from appearing in games unintentionally in cases where no lights
+#    exist (which is the default behavior when set to NoLightsPresent)"
+# The default is mode 1 = NoLightsPresent, and this file carried rtx.fallbackLightType = 1
+# (Sphere) with rtx.fallbackLightRadius = 3, which puts a 3 m sphere AT THE CAMERA
+# (mainCamera.getPosition() + fallbackLightPositionOffset). Measured with
+# tools/night_ambient.py: at the runtime's default radiance 1.6,1.8,2.0 (luminance 1.786)
+# and 6 m it delivers 0.4430 against the moon's 0.0515 - it out-lights the only real source
+# in the night sky 8.6:1 - and the scene's away/under ratio goes 7.1 % -> 26.3 % with both
+# ends clipping to white. It is off during gameplay (405+ external lights at the probe) and
+# ON in menus and in the first seconds of a run: that is the "lit by nothing" look.
+rtx.fallbackLightMode = 0
+#   0 = Never. The radiance is zeroed too: mode 0 never creates the light, but the runtime's
+#   default 1.6,1.8,2 stays armed for anyone who flips the mode in the Remix UI (which writes
+#   user.conf, and user.conf sits ABOVE this file). 0,0,0 is the option table's own minimum.
+rtx.fallbackLightRadiance = 0, 0, 0
+# The shape it used to have, commented out so the 8.6:1 above can be re-measured:
+#   rtx.fallbackLightRadius = 3
+#   rtx.fallbackLightType = 1
 rtx.ignoreTextures = 0x04931B9EC8F68722, 0x0748B4991EA9E481, 0x0801DDFEFD4AD85F, 0x12327A08E725DEE0, 0x188BFFED5020950B, 0x4DBD066761A29F5B, 0x63F56BAD1D42704D, 0x650AB0CEFBAFD10F, 0x6D2446E17BAC3050, 0x6F0AB36E2C7DB1A6, 0x72F44E5A77F84F90, 0x8CA564E68A98C4A7, 0x8F34BF39FA23F39D, 0x9D6A9F7B9355F09F, 0xB1B3C04B07B5ACEA, 0xB5C86BEE8E84357E, 0xBC9E2A1A5E437634, 0xBCCFDFAAE0F4E2AF, 0xE2D32425EB3234C0
 rtx.enableFirstBounceLobeProbabilityDithering = False
 rtx.restirGI.boilingFilterMinThreshold = 15
-rtx.fallbackLightType = 1
+# rtx.fallbackLightType = 1   n24: commented out with the radius above - mode 0 never creates the light, and leaving the shape armed re-arms a camera-welded sphere the moment anyone touches the mode
 rtx.allowFSE = True
 rtx.usePostFilter = False
 rtx.minOpaqueSpecularLobeSamplingProbability = 0.05
@@ -48,7 +69,13 @@ rtx.restirGI.virtualSampleMaxDistanceRatio = 0.5
 rtx.uiTextures = 0x02FB7ADBE915018A, 0x1D3D385E969C83FA, 0x3259CE3885F90642, 0x3781F525BBBD9FBD, 0x3FC78C823061BDB0, 0x5825FA46CF812787, 0x5970DA3808FA8128, 0x9D36811F7D6CB321, 0xC412E7D486FF9E5C, 0xEDAA7402F2B0E4BB
 rtx.restirGI.historyDiscardStrength = 10
 rtx.pathMaxBounces = 2
-rtx.enableTransmissionApproximationInIndirectRays = True
+# n24 (V4, docs/STATUS.md): back to the runtime's own default. The option table ships this
+# False (config/rtx-options-1.6.1.tsv:280); the True here came from 88e8cd1 with no
+# measurement behind it, and the tooltip is the mechanism of the complaint: "Translucent
+# objects hit by indirect rays will not alter ray direction, just change the ray throughput"
+# - indirect rays keep their direction THROUGH the sea, so the sky and the lamp pools arrive
+# under the pier and the sea glows with nothing under it.
+rtx.enableTransmissionApproximationInIndirectRays = False
 rtx.freeCameraSpeed = 50
 rtx.stochasticAlphaBlendOpacityThreshold = 0.2
 rtx.lightmapTextures = 0xB6E06CE024FE9111
@@ -430,3 +457,50 @@ rtx.legacyMaterial.roughnessConstant = 0.65
 #   rtx.legacyMaterial.anisotropy (uniform smear), rtx.terrainBaker.material.properties.* (the
 #   runtime's own second, per-class constant for blended terrain - needs rtx.terrainTextures hashes
 #   and bakes a texture per frame: a data + VRAM task, not a perf line).
+
+
+
+# ---------------------------------------------------------------------------
+# n24 (2026-11-14, docs/STATUS.md V1/V3/V4, docs/FINDINGS.md "Night realism"): at night
+# every photon comes from a real source. Two look keys here; the fallback light and the
+# transmission approximation were changed in place above, and the plugin half (the night
+# ceiling on rtx.skyBrightness, and a distant light's direction never pointing up) is in
+# plugin/src/solar.cpp + plugin/src/sun.cpp. Numbers: .strata/notes-n24-*.md and
+# `python3 tools/night_ambient.py`.
+#
+# WHY THESE TWO, WHEN CAUSE 1 IS ALREADY SHIPPED: n16 put the tonemapper in Global mode, and
+# the scene's night ratio is still flattened - tools/night_ambient.py measures sand 150 units
+# from any lamp at 4.1 % of the sand under a lamp head in scene-linear radiance (the ambient
+# cap and the fallback light off, n23's lamps at 0.4) and at 36 % of it in the image with the
+# curve at its defaults. The global curve fits one line to the frame's histogram and lifts the
+# dark end of it; rtx.tonemap.shadowContrast is the key that pushes that end back down.
+rtx.tonemap.shadowContrast = 0.4
+#   "Additional gamma power to apply to the tone of the tone curve below shadowContrastEnd"
+#   (config/rtx-options-1.6.1.tsv:904, default 0, never written by any profile of ours). The
+#   curve pass subtracts shadowContrast x max(0, shadowContrastEnd - log2 L) from every bin
+#   (tonemapping_tone_curve.comp.slang:198); shadowContrastEnd stays at its default 0, so
+#   "values above this are unaffected" (rtx-options-1.6.1.tsv:905) means the noon ground -
+#   log2 +0.36 after n22's day_ev -0.5 anchor - is untouched by construction and only material
+#   below linear 1.0 gets the extra contrast. Measured on the sim's night metric points:
+#     0.00 -> away sand 92/255, ratio 36.3 %   0.30 -> 30/255, 11.8 %
+#     0.40 -> 19/255,  7.5 %   (shipped)       0.50 -> 11/255,  4.3 %
+#     0.60 ->  6/255,  2.2 %   (the denoiser has nothing left to work with)
+#   0.4 is the value: inside the <= 10 % target of n10 with margin, the moon-lit sand still
+#   reads at 19/255, and the noon shadow penalty is 0.70 stops at linear 0.3 - under a stop,
+#   and n16's own ladder already names this key ("the frame goes muddy ... use
+#   rtx.tonemap.shadowContrast instead of the exposure"). A/B ladder if the live run says the
+#   night is crushed: 0.3 (11.8 %, 30/255), then 0.2 (17.7 %, 45/255). Undo: delete the line
+#   (the runtime default is 0).
+rtx.bloom.luminanceThreshold = 1.0
+#   "Adjust the bloom threshold to suppress blooming of the dim areas. Pixels with luminance
+#   lower than the threshold are multiplied by the weight value that smoothly transitions from
+#   1.0 (at luminance=threshold) to 0.0 (at luminance=0)" (rtx-options-1.6.1.tsv:67, default
+#   0.25, written by no profile of ours until now; rtx.bloom.enable is True by default). Bloom
+#   runs after the tone curve and before the sRGB encode, so the threshold is compared against
+#   display-referred LINEAR luminance. Measured on the 60 frames of the 2026-11-12c video, in
+#   the sea/pier band the teal-chroma scan puts the V4 glow in (y 841..941 of 1080, 11.52 M
+#   pixels): 10.31 % of it is above 0.25 and blooms at FULL weight, 2.48 % above 0.5, and only
+#   0.23 % is at or above 1.0; the band's mean linear luminance is 0.1005. So the shipped 0.25
+#   turns a tenth of the sea into a bloom source - the halo of V4 - while a threshold of 1.0
+#   cuts the fully-blooming area of that band 45x and still lets the clipped lamp heads and the
+#   sun disc bloom. Undo: delete the line (back to 0.25).

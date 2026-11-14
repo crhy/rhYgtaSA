@@ -298,6 +298,58 @@ float solarDeclinationDeg(int dayOfYear) {
     return dec;
 }
 
+// ---------------------------------------------------------------- n24 guards
+
+// The daylight level below which the moon, not the sun, is the only real source in
+// the sky. skyDaylightFactor() is a smoothstep over [dusk_deg, dawn_deg]; 0.05 is the
+// point where it has effectively reached 0 (over the shipped -10..+4 band smoothstep
+// reaches 0.05 at t=0.136, i.e. a sun elevation of -8.1 deg, well past civil
+// twilight), and it is the number tests/solar_check.cpp asserts the rule on.
+static const float kNightDaylight = 0.05f;
+
+void solarClampLightDir(float dir[3]) {
+    // Game axes: x east, y north, z up, and dir points where the photons travel, so
+    // a body above the horizon has dir[2] < 0. Anything else is a light coming out of
+    // the ground (see the header: the 2026-11-12 sun handle at dir z=+0.4981).
+    if (dir[2] <= 0.0f) {
+        return;
+    }
+    dir[2] = 0.0f;
+    const float n = sqrtf(dir[0] * dir[0] + dir[1] * dir[1]);
+    if (n < 1e-6f) {
+        // The body was at the nadir: no horizontal direction survives. Due east.
+        dir[0] = 1.0f;
+        dir[1] = 0.0f;
+        dir[2] = 0.0f;
+        return;
+    }
+    dir[0] /= n;
+    dir[1] /= n;
+    // dir[2] stays 0: the body grazes the horizon from here on, and the radiance
+    // ramp-down in smooth.cpp takes the handle away while it does.
+}
+
+float skyAmbientCap(float skyAmbient, float moonRadianceLum, float daylight,
+                    float moonElevationDeg, float capMultiple) {
+    if (!(capMultiple > 0.0f)) {
+        return skyAmbient;  // [sky] ambient_cap_mult = 0: the pre-n24 behaviour
+    }
+    // Day and twilight: the sun owns the ambient and the comparison is meaningless
+    // (the moon is a dim disc in a bright sky). Only once the sun is properly down
+    // does the moon become the one real source, and the ambient has to answer to it.
+    if (daylight > kNightDaylight) {
+        return skyAmbient;
+    }
+    // A body that is not above the horizon publishes no light (beamRadiance()
+    // multiplies by a transmittance that is 0 below -1 deg), so it sets no ceiling:
+    // at night with the moon down there is nothing in the sky to be an ambient.
+    float cap = 0.0f;
+    if (moonElevationDeg > 0.0f && moonRadianceLum > 0.0f) {
+        cap = capMultiple * moonRadianceLum;
+    }
+    return skyAmbient < cap ? skyAmbient : cap;
+}
+
 float skyDaylightFactor(float sunElevationDeg, float duskElevationDeg,
                         float dawnElevationDeg) {
     // One smoothstep across the twilight band. Real twilight runs to about -18

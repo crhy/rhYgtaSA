@@ -162,6 +162,10 @@ struct RhyConfig {
     float sky_day;            // rtx.skyBrightness in full daylight
     float sky_night;          // rtx.skyBrightness at night, before moonlight
     float sky_moon;           // extra skyBrightness at full moon, moon at zenith
+    // n24: the night ceiling on that ambient, as a multiple of the moon light's own
+    // published radiance. 0.25 ships; 0 switches the rule off (the pre-n24 behaviour,
+    // where [sky] night+moon was the whole story). See solar.h skyAmbientCap().
+    float sky_ambient_cap_mult;
     float sky_dusk_deg;       // sun elevation where twilight starts (downward)
     float sky_dawn_deg;       // ... and where daylight is back (upward)
     float sky_emissive_day;   // rtx.emissiveIntensity by day

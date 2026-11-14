@@ -144,6 +144,38 @@ If something in the update looks wrong, everything is reversible
   (`fogRemapTransmittanceMeasurementDistanceMaxMeters`, 6 → 12 → 20 to back it off, 4 → 3 → 2 to
   lean in), not a colour key. `python3 tools/fog-budget.py config/rtx.conf` prints exactly what a
   number does before you try it.
+- **At night, the light now comes from somewhere.** Three things were lighting the night with no
+  source in the world, and all three are gone:
+  - **The sky could not be brighter than the moon.** The ambient light of the whole scene used to be a
+    fixed night value plus a moon bonus - 0.0700 - sitting *above* the light the moon itself was
+    giving out (0.0669), so more than half of what fell on open ground came from a black sky. The
+    ambient is now capped at a quarter of the moon's own light, which means it follows the moon: higher
+    moon, brighter street; moon below the horizon, dark. A full moon at 30 degrees puts **0.017** on the
+    ground instead of 0.070.
+  - **No invisible lamp follows the camera.** The renderer has a "fallback" light that appears whenever
+    a scene has no lamps in it - the menus, and the first seconds of a run - and ours was a three-metre
+    sphere welded to the camera, throwing **eight times** the light the moon did. It is off, which is
+    also what the renderer's own documentation asks for in a finished build.
+  - **A set sun or moon can no longer shine up through the ground.** When the sun goes down its light
+    fades out over several seconds (so that nothing pops), and while it does, its direction used to swing
+    under the horizon - the log caught it lighting the world from 31 degrees *below* the ground. The
+    direction is now held at the horizon while the light fades, and then the lamp is taken away.
+- **The sea and the pier's underside no longer glow by themselves.** Two causes: the renderer was told to
+  let bounced light pass straight through water instead of bending around it (which is how the sky and
+  the lamp pools were arriving under the pier), and the bloom threshold was low enough that a tenth of
+  the sea was bright enough to glow. Both are back to sane values, and the clipped lamp heads still
+  bloom.
+- **The night keeps a dark end.** With the renderer's own tone mapping (the change that stopped the
+  exposure changing as you turn) a dark frame gets its shadows lifted back up, so a scene whose bright
+  parts were 14x its dark parts arrived as 2x. One grading key - shadow contrast, at 0.4 - puts that
+  back: moon-lit sand 150 units from any lamp goes from **129/255 to 19/255** while the pool under a
+  lamp head stays where it was. Noon is untouched by construction (the key only applies below a fixed
+  brightness, and the noon pavement sits above it). If the night comes back too crushed, the number to
+  lower is `rtx.tonemap.shadowContrast` in `rtx.conf` (0.4 → 0.3 → 0.2), not the lamps - the lamps are a
+  different knob and were already taken down in the last build.
+- **We have not seen any of this in game yet.** Every number above is measured off the 2026-11-12 night
+  video and off a lighting model of the Columbus pier; the first live run is what tells us whether the
+  night finally looks like night.
 
 ### Materials
 

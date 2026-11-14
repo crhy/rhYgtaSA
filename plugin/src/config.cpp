@@ -149,6 +149,7 @@ static const char* const kIniDefaults =
     "day=1.0\r\n"
     "night=0.02\r\n"
     "moon=0.05\r\n"
+    "ambient_cap_mult=0.25\r\n"
     "dusk_deg=-10\r\n"
     "dawn_deg=4\r\n"
     "emissive_day=1.0\r\n"
@@ -692,6 +693,7 @@ static void loadConfig() {
     c.sky_day = iniFloatSec("sky", "day", 1.0f);
     c.sky_night = iniFloatSec("sky", "night", 0.02f);
     c.sky_moon = iniFloatSec("sky", "moon", 0.05f);
+    c.sky_ambient_cap_mult = iniFloatSec("sky", "ambient_cap_mult", 0.25f);
     c.sky_dusk_deg = iniFloatSec("sky", "dusk_deg", -10.0f);
     c.sky_dawn_deg = iniFloatSec("sky", "dawn_deg", 4.0f);
     c.sky_emissive_day = iniFloatSec("sky", "emissive_day", 1.0f);
@@ -715,6 +717,12 @@ static void loadConfig() {
     }
     if (c.sky_moon < 0.0f) {
         c.sky_moon = 0.0f;
+    }
+    if (c.sky_ambient_cap_mult < 0.0f) {
+        c.sky_ambient_cap_mult = 0.0f;  // 0 = the cap is off, not inverted
+    }
+    if (c.sky_ambient_cap_mult > 4.0f) {
+        c.sky_ambient_cap_mult = 4.0f;  // above 4 the "ceiling" is not a ceiling
     }
     if (!(c.sky_dusk_deg < c.sky_dawn_deg)) {
         // Twilight has to run upward. Reversed, the daylight factor is stuck at
@@ -1400,10 +1408,12 @@ static void loadConfig() {
            c.sky_day_of_year, c.sky_track_date, c.sky_turbidity,
            c.sun_force_hour, c.sun_force_minute, c.moon_phase,
            c.lamp_mode ? "twilight" : "hours", c.lamp_dusk_deg, c.lamp_dawn_deg);
-    rhyLog("config: sky_apply=%d day=%.3f night=%.3f moon=%.3f twilight=%.1f..%.1f "
+    rhyLog("config: sky_apply=%d day=%.3f night=%.3f moon=%.3f ambient_cap_mult=%.2f "
+           "twilight=%.1f..%.1f "
            "emissive=%.2f(day)/%.2f(night) cloud=%.2f weather=%.3f/%.3f per s "
            "settings=%s probe=%d",
-           c.sky_apply, c.sky_day, c.sky_night, c.sky_moon, c.sky_dusk_deg,
+           c.sky_apply, c.sky_day, c.sky_night, c.sky_moon, c.sky_ambient_cap_mult,
+           c.sky_dusk_deg,
            c.sky_dawn_deg, c.sky_emissive_day, c.sky_emissive_night, c.sky_cloud,
            c.weather_turbidity_per_sec, c.weather_cloud_per_sec,
            c.sky_settings.c_str(), c.sky_probe);

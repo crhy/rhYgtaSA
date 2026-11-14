@@ -12,6 +12,10 @@
 #include <cstdlib>
 
 #include "../plugin/src/solar.cpp"
+// n24 asserts the sky ambient cap going through the REAL rate limiter, not a copy of
+// it, so smooth.cpp is compiled into this file too. It is pure arithmetic (no windows.h,
+// no Remix), same reason solar.cpp is here at all.
+#include "../plugin/src/smooth.cpp"
 
 static int g_fail = 0;
 static int g_checks = 0;
@@ -69,6 +73,26 @@ static float crossTime(const SkyObserver& ob, float target, bool rising) {
         prev = b.elevationDeg;
     }
     return -1.0f;
+}
+
+// n24: the moon light's published radiance, the same arithmetic as sun.cpp
+// beamRadiance(): base * tint[c] * transmit[c] / zenithT[c]. The extinction constants are
+// solar.cpp's own (this file includes it), so the test cannot drift from the plugin, and
+// the base/tint are the shipped ini's [moon] radiance and color.
+static float moonRadianceLum(const SkyBody& b, float turbidity, float phase) {
+    const float tint[3] = {0.78f, 0.85f, 1.00f};
+    const float luma[3] = {0.2126f, 0.7152f, 0.0722f};
+    const float base = 0.10f * lunarPhaseFactor(phase);
+    float lum = 0.0f;
+    for (int c = 0; c < 3; ++c) {
+        const float tau = kRayleigh[c] + kOzone[c] + turbidity * kAerosolExp[c];
+        const float zenithT = expf(-tau);
+        if (zenithT <= 1e-4f) {
+            continue;
+        }
+        lum += luma[c] * base * tint[c] * b.transmit[c] / zenithT;
+    }
+    return lum;
 }
 
 int main() {
@@ -234,6 +258,173 @@ int main() {
     std::printf(" %.3f, %.3f, %.3f   4000 K ->", rgb[0], rgb[1], rgb[2]);
     colorTemperatureToRgb(4000.0f, rgb);
     std::printf(" %.3f, %.3f, %.3f\n", rgb[0], rgb[1], rgb[2]);
+
+    // ---- n24: a distant light may never shine up through the ground ----
+    // The 2026-11-12 log, 11:48:30: a sun handle with radiance 0.0376 and
+    // dir=0.2206,-0.8386,+0.4981 while the sun sat at -31.6 deg. dir z > 0 is light
+    // coming up through the ground, and it happens because the radiance ramp-down keeps
+    // the handle alive tens of seconds after the body sets.
+    float up[3] = {0.2206f, -0.8386f, 0.4981f};
+    solarClampLightDir(up);
+    check("clamped log vector: z", up[2], 0.0f, 1e-6f);
+    check("clamped log vector: still unit length",
+          sqrtf(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]), 1.0f, 1e-5f);
+    check("clamped log vector: x", up[0], 0.2544f, 1e-3f);
+    check("clamped log vector: y", up[1], -0.9672f, 1e-3f);
+    float down[3] = {0.0f, 0.0f, -1.0f};
+    solarClampLightDir(down);
+    check("a body at the zenith is untouched", down[2], -1.0f, 1e-6f);
+    float grazing[3] = {0.7071f, 0.0f, -0.7071f};
+    solarClampLightDir(grazing);
+    check("a 45 deg body is untouched", grazing[2], -0.7071f, 1e-5f);
+    float nadir[3] = {0.0f, 0.0f, 1.0f};
+    solarClampLightDir(nadir);
+    checkTrue("a body at the nadir becomes horizontal, not left pointing up",
+              nadir[2] == 0.0f && nadir[0] == 1.0f);
+    // Idempotent, and true for every minute of a real day for both bodies: the sun and
+    // the moon spend half the day under the horizon, and that is exactly when the ramp
+    // is still carrying a handle.
+    float again[3] = {up[0], up[1], up[2]};
+    solarClampLightDir(again);
+    checkTrue("clamping twice changes nothing", fabsf(again[0] - up[0]) < 1e-6f &&
+              fabsf(again[1] - up[1]) < 1e-6f && fabsf(again[2] - up[2]) < 1e-6f);
+    int badDir = 0;
+    for (int m = 0; m < 1440; ++m) {
+        solarPositionF(la, static_cast<float>(m), &s);
+        float d[3] = {-s.toX, -s.toY, -s.toZ};
+        solarClampLightDir(d);
+        if (d[2] > 0.0f) {
+            ++badDir;
+        }
+        lunarPositionF(la, static_cast<float>(m), 0.5f, &moon);
+        float md[3] = {-moon.toX, -moon.toY, -moon.toZ};
+        solarClampLightDir(md);
+        if (md[2] > 0.0f) {
+            ++badDir;
+        }
+    }
+    checkTrue("no minute of a whole day publishes dir z > 0 after the clamp", badDir == 0);
+    // And the clamp does not invent movement for a body that is up: at 30 degrees the
+    // direction it publishes is the geometry's own, to the float.
+    int movedWhileUp = 0;
+    for (int m = 0; m < 1440; ++m) {
+        solarPositionF(la, static_cast<float>(m), &s);
+        if (s.elevationDeg < 5.0f) {
+            continue;
+        }
+        float d[3] = {-s.toX, -s.toY, -s.toZ};
+        const float before = d[2];
+        solarClampLightDir(d);
+        if (fabsf(d[2] - before) > 1e-6f) {
+            ++movedWhileUp;
+        }
+    }
+    checkTrue("a body above the horizon is never touched by the clamp", movedWhileUp == 0);
+
+    // ---- n24: the night ceiling on the sky ambient ----
+    // Day and twilight pass through; once the sun is down the ambient may not exceed
+    // capMultiple x the moon light's published radiance. 0.25 is what ships
+    // ([sky] ambient_cap_mult); 0 is the switch that turns the rule off.
+    check("cap: full day passes through", skyAmbientCap(0.9f, 0.0669f, 1.0f, 31.0f, 0.25f),
+          0.9f, 1e-6f);
+    check("cap: mid-twilight passes through", skyAmbientCap(0.5f, 0.0669f, 0.5f, 31.0f, 0.25f),
+          0.5f, 1e-6f);
+    check("cap: just above the night line passes through",
+          skyAmbientCap(0.07f, 0.0669f, 0.051f, 31.0f, 0.25f), 0.07f, 1e-6f);
+    check("cap: at the night line it binds", skyAmbientCap(0.07f, 0.0669f, 0.05f, 31.0f, 0.25f),
+          0.016725f, 1e-5f);
+    check("cap: never raises", skyAmbientCap(0.001f, 0.0669f, 0.0f, 31.0f, 0.25f), 0.001f,
+          1e-6f);
+    check("cap: ambient_cap_mult=0 is the switch off", skyAmbientCap(0.07f, 0.0669f, 0.0f,
+                                                                     31.0f, 0.0f),
+          0.07f, 1e-6f);
+    check("cap: a moon that is not up sets no ceiling",
+          skyAmbientCap(0.07f, 0.0669f, 0.0f, -5.0f, 0.25f), 0.0f, 1e-6f);
+    // Where the night line actually sits on the shipped twilight band: skyDaylightFactor
+    // is a smoothstep over [-10, +4], so daylight = 0.05 at a sun elevation of -8.1 deg.
+    // Above it the sun still owns the ambient and the cap must not bite.
+    check("the night line is at -8.1 deg of sun elevation",
+          skyDaylightFactor(-8.1f, -10.0f, 4.0f), 0.05f, 5e-3f);
+    checkTrue("and at -7 deg the cap does not bind",
+              skyAmbientCap(0.07f, 0.0669f, skyDaylightFactor(-7.0f, -10.0f, 4.0f), 31.0f,
+                            0.25f) == 0.07f);
+    // The shipped numbers, computed from this file's own atmosphere rather than quoted:
+    // [moon] radiance 0.10, full moon, the ini's moon tint, at the altitude a July full
+    // moon actually reaches over Los Angeles (the anti-sun point: 33 deg, not 77).
+    lunarPosition(la, 23, 30, 0.5f, &moon);
+    const float moonLum = moonRadianceLum(moon, la.turbidity, 0.5f);
+    std::printf("      moon elev %+.1f  published radiance luminance %.4f  ->  night "
+                "ambient 0.0700 capped to %.4f (%.0f%% of it)\n", moon.elevationDeg, moonLum,
+                skyAmbientCap(0.07f, moonLum, 0.0f, moon.elevationDeg, 0.25f),
+                100.0f * skyAmbientCap(0.07f, moonLum, 0.0f, moon.elevationDeg, 0.25f) /
+                    0.07f);
+    checkTrue("the moon's published radiance is the order of magnitude the notes quote",
+              moonLum > 0.05f && moonLum < 0.09f);
+    checkTrue("the cap binds on the shipped ini's night ambient",
+              skyAmbientCap(0.07f, moonLum, 0.0f, moon.elevationDeg, 0.25f) < 0.02f);
+    // The ambient follows the moon's altitude instead of the clock: the same ini at three
+    // points of the night, each with the radiance that altitude actually publishes.
+    float capLow = 0.0f, capHigh = 0.0f;
+    for (int hh = 18; hh <= 30; ++hh) {   // 18:00 through 06:00
+        lunarPosition(la, hh % 24, 0, 0.5f, &moon);
+        if (moon.elevationDeg <= 0.0f) {
+            continue;
+        }
+        const float cap = skyAmbientCap(0.07f, moonRadianceLum(moon, la.turbidity, 0.5f),
+                                        0.0f, moon.elevationDeg, 0.25f);
+        capLow = capLow > 0.0f && capLow < cap ? capLow : cap;
+        capHigh = cap > capHigh ? cap : capHigh;
+    }
+    std::printf("      the night's ceiling over the night: %.4f .. %.4f\n", capLow, capHigh);
+    checkTrue("a higher moon lifts the ceiling", capHigh > capLow * 1.5f);
+    checkTrue("and it stays under the ini's 0.0700 target", capHigh < 0.07f);
+
+    // ---- n24: the cap moves a TARGET, and the limiter still owns the published value ----
+    // s28's rule: no published lighting value may step. The cap can therefore only ever
+    // be a step in the target; rhyRateStep turns it into a ramp. These are the shipped
+    // [fade] numbers (sky_rel_per_sec 3.0, sky_abs_per_sec 0.25) and a 60 fps frame.
+    SkyBody moonNight;
+    lunarPosition(la, 23, 30, 0.5f, &moonNight);   // up, 30.6 deg
+    const float nightTarget =
+        skyAmbientCap(0.07f, moonRadianceLum(moonNight, la.turbidity, 0.5f), 0.0f,
+                      moonNight.elevationDeg, 0.25f);
+    const float dt = 1.0f / 60.0f;
+    RhyRate sky;
+    rhyRateInit(sky, 0.07f, 3.0f, 0.25f, 0.002f);
+    float prev = sky.cur, worstAbs = 0.0f;
+    int frames = 0;
+    bool monotone = true, bounded = true;
+    while (fabsf(sky.cur - nightTarget) > 0.002f && frames < 1000) {
+        rhyRateStep(sky, nightTarget, dt);
+        // smooth.h's own bound: |move| <= cur * (relPerSec^dt - 1) + absPerSec * dt.
+        const float allowed = prev * (powf(3.0f, dt) - 1.0f) + 0.25f * dt;
+        if (fabsf(sky.cur - prev) > allowed + 1e-6f) {
+            bounded = false;
+        }
+        if (sky.cur > prev) {
+            monotone = false;  // going down must never overshoot back up
+        }
+        worstAbs = fmaxf(worstAbs, fabsf(sky.cur - prev));
+        prev = sky.cur;
+        ++frames;
+    }
+    std::printf("      ambient 0.0700 -> %.4f: %d frames (%.2f s), biggest single move "
+                "%.5f (%.0f%% of the start)\n", nightTarget, frames, frames * dt, worstAbs,
+                100.0f * worstAbs / 0.07f);
+    checkTrue("the capped ambient never arrives in one frame", frames > 10);
+    checkTrue("every frame stays inside the limiter's own bound", bounded);
+    checkTrue("the ramp is monotone", monotone);
+    checkTrue("and no frame takes more than a quarter of the ambient away",
+              worstAbs <= 0.07f * 0.25f);
+    // A clock glitch that puts the sun back up must not step the ambient either: the cap
+    // releases, and the same limiter carries it back up.
+    const float before = sky.cur;
+    rhyRateStep(sky, skyAmbientCap(0.07f, moonRadianceLum(moonNight, la.turbidity, 0.5f),
+                                   1.0f, moonNight.elevationDeg, 0.25f), dt);
+    checkTrue("releasing the cap in one frame does not step the published value",
+              fabsf(sky.cur - before) <= 0.005f && sky.cur < 0.035f);  // 0.07 is a quarter
+                                                                       // second away, not
+                                                                       // one frame away
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;

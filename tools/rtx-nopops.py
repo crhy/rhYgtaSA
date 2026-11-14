@@ -92,6 +92,12 @@ HEADER = """# rhyremix "no pops" A/B profile - n01. Install with:
 #       ignoreGameDirectionalLights, graphicsPreset, and all eight texture-hash lists.
 #       scripts/rtxprofile-selftest.sh hashes the lists and asserts the look keys and
 #       graphicsPreset come through unchanged.
+#   The n24 night keys are inherited the same way (fallbackLightMode 0 + fallbackLightRadiance
+#       0,0,0 with the old type/radius commented out, enableTransmissionApproximationInIndirectRays
+#       False, tonemap.shadowContrast 0.4, bloom.luminanceThreshold 1.0). None of them is
+#       temporal: they decide what the night is lit BY, not when a change lands, so this A/B
+#       must not move them - and a nopops run that shows a different night than `current` is a
+#       bug in this file, not a finding.
 #   WHY n16 MATTERS FOR THIS A/B: with rtx.tonemappingMode = 0 the local tonemapper is not
 #       dispatched at all (rtx_local_tone_mapping.cpp:144), so the whole-image curve in
 #       rtx_tone_mapping.cpp is what runs, and that curve is mixed with the previous frame's at

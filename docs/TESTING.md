@@ -367,11 +367,18 @@ config: fade in=700ms out=900ms step=0.25 creates/frame=24 player_grace=8000ms s
 and the `published:` part of the `sky:` line carries what the schedule actually did:
 
 ```
-published: sun 4.28,3.51,2.59 sky=1.000 emissive=1.000 rebuilds=6/6 cad=2000/2000ms step<=0.25/0.25 skip=0/0
+published: sun 4.28,3.51,2.59 sky=1.0000 emissive=1.000 exposure=-0.500 EV (target -0.500, max step 0.083) rebuilds=6/6 cad=2000/2000ms step<=0.25/0.25 skip=0/0
+```
+
+At night since n24 the `sky=` field names who is holding it down:
+
+```
+published: sun 0.00,0.00,0.00 sky=0.0166 (moon cap, asked 0.0700) emissive=0.800 exposure=+0.500 EV ...
 ```
 
 | field | what "correct" looks like |
 |---|---|
+| `sky=` | the value actually pushed for `rtx.skyBrightness`. By day it is `[sky] day` (1.0). At night it is `[sky] night + moon`, and since n24 it may not exceed `[sky] ambient_cap_mult` (0.25) x the moon light's published radiance - when that is what binds, the line says `(moon cap, asked 0.0700)` and the number in front is the ceiling. A night with the moon up should read ~0.017; with the moon down, 0.001 (the denoiser floor). If it reads 0.0700 at night, the cap is off: check `config: sky_apply=1 ... ambient_cap_mult=0.25` on the startup line |
 | `cad=` | the period in effect for each body, in ms. `2000/2000` is the fixed cadence at rest. It shortens when the published direction or radiance is actually moving (a clock jump drives it to the 150 ms floor) and must come back within a second or two of the motion stopping. If it sits at 150 while nothing is moving, the rate estimator is being fed noise - that was the `acos()` bug and `rhyAngleDeg()` is the fix |
 | `step<=` | the largest direction step one rebuild has actually carried this session, in degrees. At rest it must stay near 0.25 (0.125 deg/s x 2 s) and never exceed `[fade] handle_step_deg` (0.5) unless the body is slewing; the old threshold rule sat at 1.00-1.20 permanently, which is twice the sun's 0.53 deg disc |
 | `skip=` | periods where the live handle already carried the published values, so no bridge call was made. With `[sun] force_hour` pinned this climbs and `rebuilds=` stays 0 - that is the proof the cadence is a clock and not a queue |
@@ -501,7 +508,11 @@ few seconds - no restart.
 | Sodium still looks wrong | `lamp_warm=hps` - or try `lamp_warm=tungsten` to see the difference the line spectrum is making |
 | Cool lamps too blue | `lamp_cold=halide` (metal halide is much more neutral than mercury) |
 | Shopfronts blown out | `rtx.conf`: `rtx.emissiveIntensity = 0.5` |
-| Sky too bright at night | `rtx.conf`: `rtx.skyBrightness = 0.5` |
+| Sky too bright at night | **not `rtx.conf`** - the plugin pushes `rtx.skyBrightness` every 100 ms, so the file's 1.0 only stands until the first push. The night ambient is `[sky] night` (0.02) + `moon` (0.05) in `scripts/rhyremix.ini`, and since n24 it is capped at **`[sky] ambient_cap_mult` (0.25) x the moon light's own published radiance** - 0.0166 at a 31-degree moon, 0 with the moon down. `ambient_cap_mult=0` releases the cap (the pre-n24 look); the log's `published: ... sky=0.0166 (moon cap, asked 0.0700)` says which of the two is binding. Measure the whole thing offline: `python3 tools/night_ambient.py` |
+| The night has no dark end - moon-lit sand reads as lamp-lit | `rtx.tonemap.shadowContrast` in `config/rtx.conf`, **ships 0.4** (n24; the runtime default is 0). Measured on the sim's night metric points: 0 -> away sand 92/255 and a 36 % ratio, 0.4 -> 19/255 and 7.5 %, 0.6 -> 6/255 (nothing left for the denoiser). If the live night comes back crushed, the ladder is 0.3 (11.8 %, 30/255) then 0.2 (17.7 %, 45/255); `shadowContrastEnd` stays at its default 0, which is what keeps the noon ground out of the effect. `python3 tools/night-report.py <frames> --target 0.10` is the image-side gate |
+| The sea, or the pier's underside, glows with nothing under it | n24: `rtx.enableTransmissionApproximationInIndirectRays = False` (the runtime's own default; `True` let indirect rays keep their direction through the sea) and `rtx.bloom.luminanceThreshold = 1.0` (default 0.25, which made 10.31 % of the sea band of the 2026-11-12 frames bloom at full weight). Undo either by deleting its line |
+| A world with no lamps in it - menus, the first seconds of a run - is lit from the camera | n24: `rtx.fallbackLightMode = 0` and `rtx.fallbackLightRadiance = 0, 0, 0` in every profile. The runtime's own tooltip asks for Never in a production build; the old shape (mode 1, `type 1`, `radius 3`) out-lights the moon 8.6:1. The keys are commented out in the profiles with the number, so re-arming it is uncommenting two lines |
+| The ground is lit from below - a wall's underside brighter than its top, at night | n24: `solarClampLightDir()` means a published distant light can never have `dir z > 0`; the 2026-11-12 log recorded `dir=0.2206,-0.8386,+0.4981` at sun -31.6 deg. The `CreateLight ok dir=` lines print it, and every one of them must have a non-positive third component. If one does, the sun/moon elevation the plugin is reading is wrong - see the `sky: sun elev=` line on the same tick |
 | Signals too bright, or the street around them goes green | `[trafficlights] bulb_radiance=600` (the lens luminance in nits; 0 turns the signal lights off), `bulb_radius` if the sphere itself is too big, and `glow_flux=150` (or `0`) for the spill - the log's `flux=` on the `glow` line is the number to compare with a street lamp's 3473 |
 | A signal is a bright dot that colours nothing around it (no glow on pole/wall/road) | n02b: `[trafficlights] glow_radius` (metres of spill, default 3) and `glow_flux` (default 304 = the 2026-11-12 00:48 look, capped at 3473 = one street luminaire). The log must show a `glow` line per lit signal and `N heads lit (N with a glow)` with the two numbers equal |
 | The glow around a head is still a street-wide wash, or has vanished altogether | `[trafficlights] corona_radius` is the radius we leave the game's own signal corona, which ships at 15.0 = a 30 m flare: 0.45 default, 1.0 for a bigger halo, 0 to leave the game's code alone. Our own spill is `glow_radius`/`glow_flux`, not this |

@@ -275,6 +275,35 @@ class TestIniKeys(unittest.TestCase):
         self.assertEqual(self.ini["trafficlights"]["bulb_radiance"], "840")
         self.assertEqual(self.ini["trafficlights"]["glow_flux"], "304")
 
+    def test_the_n24_ambient_cap_is_parsed_and_clamped(self):
+        """n24 (V1, cause 2): [sky] ambient_cap_mult is the night ceiling on the pushed
+        rtx.skyBrightness, as a multiple of the moon light's own published radiance. The
+        same three rot paths as n23's scales: a key the ini carries and config.cpp never
+        asks for; a value with no clamp (a negative cap would take the night ambient to a
+        negative, and a cap of 4 is not a ceiling); and an ini number that is not the
+        compiled default, so a plugin started without an ini lights the night differently
+        from the one deploy.sh installs."""
+        self.assertIn(("sky", "ambient_cap_mult"), self.code,
+                      "config.cpp never reads [sky] ambient_cap_mult")
+        self.assertEqual(self.ini["sky"]["ambient_cap_mult"], "0.25",
+                         "the shipped ini must carry the value docs/FINDINGS.md measures")
+        self.assertTrue(same(self.ini["sky"]["ambient_cap_mult"],
+                             self.code[("sky", "ambient_cap_mult")]),
+                        "[sky] ambient_cap_mult: ini %s, code %s"
+                        % (self.ini["sky"]["ambient_cap_mult"],
+                           self.code[("sky", "ambient_cap_mult")]))
+        cfg = read(CFG)
+        self.assertIn("c.sky_ambient_cap_mult < 0.0f", cfg,
+                      "sky_ambient_cap_mult has no floor: a negative cap is an inverted ambient")
+        self.assertIn("c.sky_ambient_cap_mult = 0.0f;", cfg,
+                      "a broken value must fall back to 0, which is the documented switch off")
+        self.assertIn("c.sky_ambient_cap_mult > 4.0f", cfg,
+                      "sky_ambient_cap_mult has no ceiling")
+        # and the ini the plugin writes when the game has none carries the same number,
+        # or a fresh install and a tuned one are two different nights
+        self.assertIn('"ambient_cap_mult=0.25\\r\\n"', cfg,
+                      "kIniDefaults does not write ambient_cap_mult")
+
     def test_the_day_anchor_equals_the_profile_anchor(self):
         """n22's no-op-at-noon property, checked where both sides are visible.
 

@@ -1595,7 +1595,7 @@ undoing working-tree changes.
   and committed. `bash scripts/check-all.sh` was red at HEAD **before** this task started: 103 checks
   passed, 1 failed (`tests/test_changelog_coverage.py`).
 
-### Night brightness (n23) — the lamps came down, and the signal glow did not go with them
+### Night brightness (n23) — the lamps came down, and the signal glow did not go with them (`f15a509`)
 
 rhY, 2026-11-12b finding C: "street lights a little/considerably too bright — knock them down
 considerably. Nights must be significantly darker than daytime even with street lights on. Traffic
@@ -1670,6 +1670,103 @@ tonnemapper's floor lift in it (n16 removed that lever), while n22's `day_ev=-0.
   started — 106 checks, 1 failed, `tests/test_changelog_coverage.py`: `CHANGELOG.md` did not name
   `9ba6e08` (the n03 commit itself, which n03 could not name from inside its own commit). The n03
   heading now carries its hash. Same class of failure n03 itself fixed for `9b98f96`.
+
+### Night ambient (n24) — at night every photon comes from a source you could point at
+
+rhY, 2026-11-12c findings **V1** (a fake flat night ambient everywhere — "light from no source"),
+**V3** (exposure changes with view direction) and **V4** (the sea and the pier underside glow teal by
+themselves). All three were **measured, not shipped**: the only work on them was parked as `30a1a43`,
+and the reason it was parked — `scripts/test-session-selftest.sh` failing on a real-Strata race — was
+fixed by n09b (`cb0aac8`). n10 named four mechanisms; **cause 1 (the local tonemapper) shipped as n16
+(`rtx.tonemappingMode = 0`)**, which also removed V3's view-dependent pyramid fit. This task ships
+causes 2-4 and the V4/taste numbers on today's tree (n16's tonemap block, n17's atmosphere, n22's
+exposure anchor, n23's lamps at 0.4). It does not touch `radiance_scale`, `bulb_radiance` or
+`glow_flux` — those are n23's.
+
+- **Measured first** (`tools/night_ambient.py`, back from the parked branch and reviewed against
+  main): the moon light's published radiance is **0.0669** at 31° while the published ambient is
+  `[sky] night+moon = 0.0700` — an ambient ceiling **1.05×** the only real source in the night sky,
+  **1.36×** what the moon delivers on level sand, and **57.6 %** of the radiance landing on open sand.
+  The fallback light's old shape (mode 1 default, `type 1`, `radius 3`) delivers **0.4430** at 6 m with
+  no lamps in the world — **8.6:1 against the moon** — and takes the scene's away/under ratio from
+  **7.1 % to 26.3 %**. Cause 1 being shipped did **not** fix the ratio: with the curve at its defaults
+  and n22's +0.5 EV night anchor, a 7.1 % scene still arrives as a **50.6 %** image (away sand
+  129/255, lamp pool clipped at 255). The sim now reads n22's anchor (`night_ev()`), models the
+  plugin's cap (`apply_sky_cap()`) and prints the moon's published radiance the way `sun.cpp`
+  computes it, so its numbers describe today's tree rather than 2026-11-12's.
+- **Fixed (cause 2): the night ambient now answers to the moon.** `solar.cpp skyAmbientCap()` caps the
+  pushed `rtx.skyBrightness` at **`[sky] ambient_cap_mult = 0.25` × the moon light's own published
+  radiance** once `daylight ≤ 0.05`; day and twilight pass through untouched, `0` switches the rule
+  off, and the cap moves the **target** — `rhyRateStep` still owns the published value, so it can only
+  ramp (the s28 rule, asserted against the real limiter in `tests/solar_check.cpp`: 0.0700 → 0.0166 in
+  11 frames, no frame taking more than a quarter of it). The ambient stops following the clock and
+  starts following the moon: **0.0070 at 18:00 … 0.0175 at midnight** over a July night (the test's
+turbidity 0.12; the shipped ini's 0.15 gives 0.0163 at midnight, the number every table above uses). A moon that
+  is not up sets no ceiling at all — that is the point of the rule, and the 0.001 floor in `sun.cpp`
+  is what keeps the denoiser alive.
+- **Fixed (cause 3): the fallback light is off in every profile we ship.** `rtx.fallbackLightMode = 0`
+  (the runtime's *Never*) plus `rtx.fallbackLightRadiance = 0, 0, 0`, and `fallbackLightType` /
+  `fallbackLightRadius` commented out with the 8.6:1 number. The runtime's own tooltip asks for this
+  verbatim: "this option should be set to Never for 'production' builds … to avoid the fallback light
+  from appearing in games unintentionally" (`config/rtx-options-1.6.1.tsv:299`). Applied to
+  `config/rtx.conf`, `.perf`, `.nopops` (regenerated), and also to `.dlss5` and `.experimental` so the
+  profile families stay consistent.
+- **Fixed (cause 4): a distant light may never shine up through the ground.** `solar.cpp
+  solarClampLightDir()` flattens a light direction whose z > 0 to the horizon and renormalises; it
+  runs on both bodies' `wantDir` in `sun.cpp` and again on `pubDir` after `rhyDirLimit`, so the handle
+  the bridge gets can never carry the 2026-11-12 vector (`radiance=0.0376 dir=…, +0.4981` at sun
+  **−31.6°**). The radiance target is already 0 below −1°, so the handle **ramps to dark and the
+  existing retire path takes it away** — `smooth.cpp` is untouched, so n01's `handle_cadence_ms`
+  budgets and `tests/handle_check.cpp` stand unchanged.
+- **Changed (V4): `rtx.enableTransmissionApproximationInIndirectRays = False`** — the runtime's own
+  default (`rtx-options-1.6.1.tsv:280`); the `True` came from `88e8cd1` with no measurement behind it,
+  and its tooltip is the mechanism: indirect rays keep their direction **through** the sea, so the sky
+  and the lamp pools arrive under the pier. **`rtx.bloom.luminanceThreshold = 1.0`** (default 0.25,
+  written by no profile of ours until now), measured on the 60 frames of the 2026-11-12c video in the
+  sea/pier band the teal-chroma scan puts the glow in (y 841..941, 11.52 M pixels): **10.31 %** of it
+  is above 0.25 and blooms at full weight, **2.48 %** above 0.5, only **0.23 %** at or above 1.0 — so
+  the threshold cuts the fully-blooming area of that band **45×** and still lets the clipped lamp heads
+  bloom. Inside that band the tool's own p10/p95 ratio is 9.7 % by median (15.5/255 against
+  141/255), i.e. the glow is a bright minority of the band, not its floor; over the whole frame the
+  same tool sits at 21.1-42.4 % with 43 of the 60 frames over the 10 % target.
+- **Changed (the taste number): `rtx.tonemap.shadowContrast = 0.4`**, `shadowContrastEnd` left at its
+  default 0. The curve pass subtracts `shadowContrast × max(0, end − log2 L)` per bin
+  (`tonemapping_tone_curve.comp.slang:198`), so with `end = 0` the noon ground (log2 **+0.36** after
+  n22's `day_ev −0.5`) is untouched by construction and only material below linear 1.0 gets the extra
+  contrast. Measured on the sim's night metric points: 0.0 → away sand **92/255**, ratio **36.3 %**;
+  **0.4 → 19/255, 7.5 %**; 0.5 → 11/255, 4.3 %; 0.6 → 6/255 (the denoiser has nothing left). The A/B
+  ladder if the live run says the night is crushed: 0.3 (11.8 %, 30/255), then 0.2 (17.7 %, 45/255).
+- **Tests:** `tests/test_night_ambient.py` (new, 22 checks — the fallback keys and the commented-out
+  shape in all three profiles, the cap binding on the shipped ini, the sky's share of open-sand light
+  ≤ 35 %, the shipped chain's scene 4.1 % / image 7.5 % ratio, "night is not black" at 19/255, and two
+  negative controls: the old profile put back gives a 26 % scene and a 50 % image, and Local mode with
+  the old 2.5 lift flattens it again); `tests/test_night_report.py` (new, 5 checks on the image tool
+  against three synthetic frames); `tests/solar_check.cpp` +28 checks, 38 -> 66 (the clamp on the logged vector,
+  over a whole day for both bodies, and never touching a body that is up; the cap's day/twilight/night
+  boundary, the switch at 0, the moon-down case, the shipped radiance computed from `solar.cpp`'s own
+  constants, and the ramp through the real `RhyRate`); `tools/night-report.py` and
+  `tools/night_ambient.py` are in the tree and are run by the tests.
+- **Docs:** [docs/FINDINGS.md](docs/FINDINGS.md) — the "Night realism" section gains "what n24
+  measured and shipped" with every number above; [docs/STATUS.md](docs/STATUS.md) V1/V3/V4 move from
+  *measured, not shipped* to **in tree, awaiting a run**; [docs/TESTING.md](docs/TESTING.md) has the
+  log lines to read (`published: … sky=0.0166 (moon cap, asked 0.0700)`) and the knobs; [docs/
+  DEVELOPING.md](docs/DEVELOPING.md) the finding/mechanism/fix row; [docs/MODS-REPLACED.md](docs/
+  MODS-REPLACED.md) the fallback row; [docs/RELEASE-NOTES-next.md](docs/RELEASE-NOTES-next.md) the
+  player-facing half; [docs/NEXT-TEST.md](docs/NEXT-TEST.md) one line (paid for by trimming, the page
+  is at its 90-line / 6000-byte ceiling).
+- **Undo, per key:** `[sky] ambient_cap_mult=0` (the ambient cap); delete `rtx.fallbackLightMode` /
+  `rtx.fallbackLightRadiance` and uncomment the `fallbackLightType` / `fallbackLightRadius` lines
+  (the fallback light); delete `rtx.tonemap.shadowContrast` (default 0) and
+  `rtx.bloom.luminanceThreshold` (default 0.25); set
+  `rtx.enableTransmissionApproximationInIndirectRays = True` (the value this repo had). Or
+  `git revert` of this commit. Note the usual layer caveat: the ambient is pushed into the runtime's
+  **user** layer, which outranks `rtx.conf` and outlives the run, so undoing the plugin's cap does not
+  restore a value an earlier run wrote — run once at a noon stop, or use the Remix UI's sky control.
+- **Fixed (gate, pre-existing):** `bash scripts/check-all.sh` was red at HEAD (`f15a509`) **before**
+  this task started — 108 checks, 1 failed, `tests/test_changelog_coverage.py`: `CHANGELOG.md` did not
+  name `f15a509`, which is n23's own commit and the one n23 could not name from inside itself (its own
+  entry describes this exact failure class, and records n03 fixing it for `9b98f96`). The n23 heading
+  now carries its hash.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 
