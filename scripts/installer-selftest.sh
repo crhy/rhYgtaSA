@@ -255,6 +255,23 @@ for f in rhyremix.ini rhyremix_lights.txt rhyremix_traffic.txt rhyremix-rtx.conf
 [ -f "$FAKE/moonloader/SARemiv_LightMan.dat" ] && [ ! -f "$FAKE/moonloader/SARemiv_LightMan.lua" ]; chk $? "the Lua light manager is disabled (.dat) - our plugin lights the lamps"
 [ -f "$FAKE/moonloader/SARemix_Sun.dat" ] && [ ! -f "$FAKE/moonloader/SARemix_Sun.lua" ]; chk $? "the Lua sun mod is disabled (.dat) - our plugin owns the sun"
 [ -f "$FAKE/moonloader/SARemix_Shot.lua" ] && [ -f "$FAKE/moonloader/SARemix_Shot.conf" ]; chk $? "the F12 screenshot hotkey is installed"
+# n03: the photo tour. Nothing in the installer used to touch it, so a game folder kept running
+# whatever a human had `cp`'d in by hand - the 2026-11-12 00:49 session ran the stale 13-stop tour
+# while the repo had 16 stops, and the checklist steps that measure stops 12/13/14 had no numbers
+# (.strata/notes-s26-perf-checklist.md gap 1). The fake tree is built without any SARemix_Tour.lua,
+# so if it appears here, deploy.sh put it there.
+TOUR_SHA_REPO=$(sha "$REPO/plugin/lua/SARemix_Tour.lua")
+[ -f "$FAKE/moonloader/SARemix_Tour.lua" ]; chk $? "moonloader/SARemix_Tour.lua is installed by deploy.sh"
+[ "$(sha "$FAKE/moonloader/SARemix_Tour.lua")" = "$TOUR_SHA_REPO" ]
+chk $? "the installed tour script is the repo's, by sha256 ($TOUR_SHA_REPO)"
+grep -q 'tour: plugin/lua/SARemix_Tour.lua -> moonloader/SARemix_Tour.lua' "$OUT/deploy1.log"
+chk $? "deploy run 1 reports installing the tour script"
+grep -q 'tour: moonloader/SARemix_Tour.lua already current' "$OUT/deploy2.log"
+chk $? "deploy run 2 reports it already current (no rewrite of a loaded Lua script on every launch)"
+th1=$(sed -n 's|^\([0-9a-f]\{64\}\)  ./moonloader/SARemix_Tour\.lua$|\1|p' "$OUT/manifest-1.txt")
+th2=$(sed -n 's|^\([0-9a-f]\{64\}\)  ./moonloader/SARemix_Tour\.lua$|\1|p' "$OUT/manifest-2.txt")
+[ -n "$th1" ] && [ "$th1" = "$th2" ] && [ "$th1" = "$TOUR_SHA_REPO" ]
+chk $? "the tour script is in the fake tree with the repo hash in BOTH runs ($th1 / $th2)"
 [ -d "$FAKE/screenshots/pending" ] && [ -d "$FAKE/screenshots/shots" ]; chk $? "screenshots/pending and screenshots/shots exist"
 
 echo "== backups created once"

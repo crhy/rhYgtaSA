@@ -16,7 +16,12 @@ the s26 gate:
    * anything else must be on the small allowlist of external commands AND be on PATH;
 3. structure: every step section has a command block and the three things the task asked for
    (Look / Report / Rollback), and the six subjects the task named are all present;
-4. the doc must not tell the reader to start the game through launcher/launch-rtx.sh directly -
+4. n03: the log fields the finished tasks produced - the s28 fade counters, the s29 clock counters -
+   and the state of the character staging are required BY NAME, with the grep that produces them.
+   s29's own notes left this page alone ("deliberately not touched") and the page quietly carried
+   none of what s28/s29 fixed; a page rhY runs the session from must not be able to lose a check
+   that way again. The tour script is checked, not copied: deploy.sh installs it now;
+5. the doc must not tell the reader to start the game through launcher/launch-rtx.sh directly -
    the whole point of scripts/test-session.sh is that it frees the VRAM first and gives Strata
    back afterwards (docs/TESTING.md).
 
@@ -61,6 +66,25 @@ REQUIRED = [
 ]
 
 USAGE_LINES = 45      # the header comment every switcher keeps its action list in
+
+# n03: the log fields the finished tasks added and the page did not carry. s29's notes said
+# docs/NEXT-TEST.md was "deliberately not touched", and after that the page carried none of the s28
+# fade counters or the s29 clock counters - the reader was run from the page and never asked to look
+# at the two things those tasks fixed. Each field is required BY NAME, so deleting half a line fails
+# the same way as deleting the line. Long version and the meaning of every field: docs/TESTING.md.
+REQUIRED_FIELDS = [
+    # s28: the fade traffic on the streetlights/trafficlights lines (TESTING.md "fade counters")
+    "steps=", "created=", "retired=", "deferred=", "player_gone_frames=",
+    # s29: the clock counters on the sky: line (TESTING.md "clock counters")
+    "tod=", "ms/min=", "torn=", "jitter=", "reanchor=", "wraps=", "cal: accepted=0", "cloud=",
+    # n03 step 4: the characters step has to name the pack that IS staged and what it still wants
+    "Criminal Peds Vary", "_criminal-peds-vary-extras", "PedFuncs", "ModelVariations",
+    # n03 step 2: deploy.sh installs the tour script, so the page names the repo file it must match
+    "plugin/lua/SARemix_Tour.lua",
+]
+
+# ...and the grep that produces them, so the fields cannot rot into a list of words nobody runs
+REQUIRED_GREPS = ["grep -m2 'streetlights:'", "grep -m2 'sky: '"]
 
 
 def read(path):
@@ -155,6 +179,35 @@ class TestOneScreen(unittest.TestCase):
     def test_the_six_subjects_are_named(self):
         for needle in REQUIRED:
             self.assertIn(needle, self.src, "docs/NEXT-TEST.md never mentions %r" % needle)
+
+    def test_the_log_fields_the_last_tasks_added_are_still_there(self):
+        """n03: the page lost the s28 fade counters and the s29 clock counters by never gaining them.
+        They are the in-game half of those two fixes, so they are required by name, and so is the
+        grep that prints them."""
+        missing = [f for f in REQUIRED_FIELDS if f not in self.src]
+        self.assertEqual(missing, [], "docs/NEXT-TEST.md does not carry these: %s" % missing)
+        missing = [g for g in REQUIRED_GREPS if g not in self.src]
+        self.assertEqual(missing, [], "docs/NEXT-TEST.md names the fields but not the grep that "
+                                     "produces them: %s" % missing)
+
+    def test_the_tour_script_is_checked_not_copied(self):
+        """n03: deploy.sh installs plugin/lua/SARemix_Tour.lua, so the page must verify the install
+        instead of asking for a hand `cp`. That `cp` was the only thing ever keeping a game folder's
+        tour script current, and it is how the 2026-11-12 00:49 session ran 13 stops while the repo
+        had 16 (notes-s26 gap 1)."""
+        self.assertNotIn("cp plugin/lua/SARemix_Tour.lua", self.src,
+                         "the page still tells the reader to install the tour script by hand")
+        self.assertIn("diff -q plugin/lua/SARemix_Tour.lua", self.src,
+                      "the page does not check that the installed tour script matches the repo's")
+
+    def test_the_characters_step_describes_the_real_stage_dir(self):
+        """n03: the page said "nothing is staged" while the stage dir held Criminal Peds Vary. The
+        step has to say what IS staged and what that pack still needs, or rhY reads it, types `on`,
+        gets a refusal and learns nothing."""
+        self.assertNotIn("nothing is staged", self.src,
+                         "the page still claims the character stage dir is empty")
+        self.assertIn("on` refuses", self.src,
+                      "the page no longer says what `characters.sh on` does with a half-staged set")
 
     def test_it_does_not_send_the_reader_to_the_launcher_directly(self):
         # scripts/test-session.sh is the one that frees the VRAM and brings Strata back.

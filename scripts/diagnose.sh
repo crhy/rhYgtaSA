@@ -7,11 +7,23 @@ set -uo pipefail
 GAME="${1:-/media/rhy/data/Gamez/GTASA-RTX}"
 INI="$GAME/scripts/rhyremix.ini"
 LOG="$GAME/scripts/rhyremix.log"
+PREV="$GAME/scripts/rhyremix.log.prev"
+
+# n03: launcher/launch-rtx.sh now rotates rhyremix.log to rhyremix.log.prev when a session pushes it
+# over its cap (8 MiB), so the run you are asking about can be the one that just moved - starting the
+# game again between the tour and this script is enough to do it. Read BOTH, oldest first, so
+# `tail -n` still means "the newest N matches": a rotation must never hide a line this script claims
+# to print (scripts/log-rotate-selftest.sh asserts exactly that, line by line).
+LOGS=()
+[ -f "$PREV" ] && LOGS+=("$PREV")
+[ -f "$LOG" ] && LOGS+=("$LOG")
 
 # rhyremix.log lines are prefixed "[timestamp] ", so never anchor at ^ .
-ts_grep() { grep -hE "$1" "$LOG" 2>/dev/null | tail -n "${2:-4}"; }
+ts_grep() { grep -hE "$1" "${LOGS[@]}" 2>/dev/null | tail -n "${2:-4}"; }
 
-[ -f "$LOG" ] || { echo "no plugin log at $LOG - the game has not run this build yet"; exit 1; }
+[ ${#LOGS[@]} -gt 0 ] || { echo "no plugin log at $LOG - the game has not run this build yet"; exit 1; }
+
+echo "reading: ${LOGS[*]}"
 
 say() { printf '\n== %s ==\n' "$1"; }
 

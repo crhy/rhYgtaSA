@@ -46,7 +46,12 @@ Install the build into a game folder with `./deploy.sh`:
 + `.ide` + `.ipl`; the traffic list also reads the pack's lamp table under `<game>/moonloader/`.
 They are generated, not in git. It copies asi + ini + lists into `<game>/scripts/`, backs up the
 outgoing asi under `build/tmp/`, refuses an asi that is not `PE32 ... i386`, and prints the md5 of
-the build and of the deployed file: they must match before you trust a screenshot.
+the build and of the deployed file: they must match before you trust a screenshot. Since n03 it also
+refreshes `moonloader/SARemix_Tour.lua` from `plugin/lua/` on **every** run (`cmp -s` first, so a
+second run says `already current (sha256 …)` instead of rewriting a Lua file MoonLoader may have
+loaded): before that nothing in the repo installed the tour script, which is how a game folder kept
+running a stale stop list — `scripts/installer-selftest.sh` now asserts the copy by sha256 in both
+runs of the fake tree.
 
 The gate is `bash scripts/check.sh <phase>`; it must end with "All checks passed."
 The installer's own end-to-end test (fake install, no game, no GPU, no writes outside
@@ -838,6 +843,22 @@ running** — invoking `wineserver` with none up starts one just to kill it — 
 `watch_run_end` (armed only after the window has been seen). Two rules worth keeping: a signal that
 cannot be measured must not be guessed at, and the cleanup after the wait returns is unconditional —
 `RHYS_EXIT_GRACE=0` stops the watchdog, never the cleanup.
+
+### The launcher owns the log lifecycle too (n03)
+
+`launcher/launch-rtx.sh` has two more marked blocks, and `scripts/log-rotate-selftest.sh` sources them
+the same way `scripts/launch-cleanup-selftest.sh` sources the cleanup block (the launcher itself cannot
+run in a test: it deploys, checks the GPU and starts Proton). `rhy_rotate_log <file> [keep]` runs
+**before the game starts** (never on a `RHYS_DRY_RUN=1` run, which must not eat the log of the session
+being reported on): over `RHYS_LOG_MAX_BYTES` the file moves to `<name>.prev` — one generation — and
+the live file restarts at 0. The plugin log moves whole, because `scripts/diagnose.sh` and
+`tools/tour-report.py` read it line by line and a `.prev` that begins mid-line is a lost line; the
+Proton trace keeps only its last `RHYS_PROTON_LOG_KEEP`. `rhy_trim_log <file> <keep>` runs **after the
+run** and trims the trace **in place** instead of moving it, because `docs/TESTING.md` and
+`docs/FINDINGS.md` tell the reader to grep `logs/steam-12120.log` — the file has to stay at that path.
+`RHYS_PROTON_LOG=0` skips the trace entirely. The two rules worth keeping: the reader's path never
+moves, and every tool that reads the plugin log reads `rhyremix.log` **and** `rhyremix.log.prev`,
+oldest first, so `tail -n` still means "newest" across both files.
 
 ## Counting the asset pack before changing a material key (n18)
 

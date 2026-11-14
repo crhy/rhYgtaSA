@@ -17,6 +17,9 @@
 #                 [sun] enabled=1, because two suns stacked is the "too bright" look)
 #   --shotkey-off disable moonloader/SARemix_Shot.lua (the in-game F12 screenshot
 #                 hotkey); --shotkey-on installs/refreshes it. Default: on.
+#   moonloader/SARemix_Tour.lua (the photo tour, n03) is refreshed on EVERY run and is
+#                 NOT covered by --shotkey-off: it only acts when screenshots/tour.req
+#                 exists, and a stale copy silently drops tour stops (see below).
 #   --no-launcher do not refresh launch-rtx.sh in the game folder (used by the launcher itself)
 #   --aftermath   add devk.enableAftermath = True to <game>/dvk.conf (names the shader on a GPU crash)
 #   --rtx-probe   write rhyremix-rtx.conf with the candidate rtx.* key list and set
@@ -242,6 +245,32 @@ else
   moon_off SARemix_Shot --shotkey-on
 fi
 
+# n03 (notes-s26 gap 1, follow-up 1): the photo tour is the other Lua script this repo ships, and
+# until now NOTHING installed it. The only copy in a game folder was one a human had `cp`'d in by
+# hand - which is what docs/NEXT-TEST.md step 0 asked for. That is how the 2026-11-12 00:49 session
+# ran the stale 13-stop tour while the repo had 16 stops: stops 12/13/14 (mirror, ped crowd,
+# vegetation) produced no shots at all, so two steps of the checklist had no numbers.
+#
+# Same source tree, same moonloader/ path and the same rules as the SARemix_Shot.lua copy above:
+# the .lua is always the repo's bytes (--force-ini has only ever protected config files -
+# SARemix_Shot.lua itself is copied unconditionally), and a launcher dry run (RHYS_DRY_RUN=1) runs
+# deploy.sh, so it is installed there too. cmp -s first because deploy.sh runs on EVERY game start
+# (launch-rtx.sh calls it) and must not rewrite a Lua file that MoonLoader may have loaded - the
+# same reason launch-rtx.sh itself is only copied when it differs.
+# Deliberately NOT tied to --shotkey-off: SARemix_Tour.lua only acts when
+# <game>/screenshots/tour.req exists (its own header says so), so installing it cannot change a
+# normal session, and a game folder that cannot run the tour cannot run the checklist either.
+TOUR_SRC="$HERE/plugin/lua/SARemix_Tour.lua"
+TOUR_DST="$R/moonloader/SARemix_Tour.lua"
+if [ ! -f "$TOUR_SRC" ]; then
+  echo "== WARN: $TOUR_SRC is missing - the tour script was NOT installed; the game keeps whatever stop list it has"
+elif [ -f "$TOUR_DST" ] && cmp -s "$TOUR_SRC" "$TOUR_DST"; then
+  echo "== tour: moonloader/SARemix_Tour.lua already current (sha256 $(sha256sum "$TOUR_DST" | cut -c1-16), $(wc -c < "$TOUR_DST") bytes)"
+else
+  cp "$TOUR_SRC" "$TOUR_DST"
+  echo "== tour: plugin/lua/SARemix_Tour.lua -> moonloader/SARemix_Tour.lua (sha256 $(sha256sum "$TOUR_DST" | cut -c1-16), $(wc -c < "$TOUR_DST") bytes)"
+fi
+
 if [ "$AFTERMATH" = 1 ]; then
   D="$R/dvk.conf"
   if [ -f "$D" ] && grep -q 'devk.enableAftermath' "$D"; then
@@ -268,7 +297,8 @@ if [ "$LAUNCHER" = 1 ]; then
 fi
 
 echo "== deployed:"
-ls -la "$R/scripts/rhyremix.asi" "$R/scripts/rhyremix_lights.txt" "$R/scripts/rhyremix_traffic.txt"
+ls -la "$R/scripts/rhyremix.asi" "$R/scripts/rhyremix_lights.txt" "$R/scripts/rhyremix_traffic.txt" \
+       "$R/moonloader/SARemix_Tour.lua" 2>/dev/null || true
 [ -f "$INI" ] && ls -la "$INI"
 if [ -f "$HERE/build/rhyremix.asi" ] && command -v md5sum >/dev/null 2>&1; then
   # Two runs of the same log can look identical while a different build was

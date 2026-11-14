@@ -23,6 +23,14 @@
 #                           with shot.sh's title filter; skipped when there is no DISPLAY/wmctrl)
 #   RHYS_BRIDGE_TIMEOUTS=1  ask .trex/bridge.conf to keep the bridge's IPC timeouts on (backs the
 #                           file up first; the runtime overrides this, it is an A/B switch)
+# n03 (the logs the tools read were unbounded: scripts/rhyremix.log 1.09 MB and growing, one
+# PROTON_LOG run = 52 MB in logs/steam-12120.log). Before the game starts, a log over its cap moves
+# to <name>.prev and the live file restarts at 0; after the run the Proton trace is trimmed in place
+# so the file docs/TESTING.md points at stays the file that holds it. scripts/diagnose.sh and
+# tools/tour-report.py read rhyremix.log AND rhyremix.log.prev.
+#   RHYS_LOG_MAX_BYTES=N      cap for rhyremix.log and steam-<appid>.log (default 8388608 = 8 MiB)
+#   RHYS_PROTON_LOG_KEEP=N    how many trailing bytes of the Proton trace survive (default 2097152)
+#   RHYS_PROTON_LOG=0         do not ask Proton for the trace at all (the only cap that is 0 bytes)
 R="${GTASA_RTX_DIR:-$(cd "$(dirname "$0")" && pwd)}"
 [ -f "$R/gta-sa.exe" ] || R="/media/rhy/data/Gamez/GTASA-RTX"  # script not living in the game folder
 # Selftest guard, same shape as the one in apply.sh/deploy.sh: scripts/water-default-selftest.sh
@@ -85,7 +93,18 @@ export SteamAppId=12120 SteamGameId=12120
 export PROTON_ENABLE_NVAPI=1                       # DLSS / NGX
 export PROTON_PREFER_SDL=1 PROTON_ENABLE_HIDRAW=0  # DualShock: avoids an xinput deadlock with GInput + the Remix bridge
 export WINEDLLOVERRIDES="d3d9=n,b"                 # load the Remix bridge d3d9.dll
-export DXVK_NVAPI_LOG_LEVEL=info PROTON_LOG=1 PROTON_LOG_DIR="$R/logs"
+export DXVK_NVAPI_LOG_LEVEL=info PROTON_LOG_DIR="$R/logs"
+# --- proton log policy (BEGIN): scripts/log-rotate-selftest.sh sources exactly this block. ------
+# n03: PROTON_LOG=1 was unconditional, and one run of it is a ~50 MB wine trace (measured in $G:
+# logs/steam-12120.log 51,958,320 bytes, mtime 2026-11-12 12:04, from the 11:48 run). It stays on by
+# default, because docs/TESTING.md's Open-Limit-Adjuster row and docs/FINDINGS.md's unload grep both
+# need it, but it is now a choice, and what it writes is bounded by the rotation/trim below.
+if [ "${RHYS_PROTON_LOG:-1}" = 1 ]; then
+  export PROTON_LOG=1
+else
+  echo "launcher: RHYS_PROTON_LOG=$RHYS_PROTON_LOG -> PROTON_LOG is NOT set: no logs/steam-${SteamAppId}.log this run"
+fi
+# --- proton log policy (END) -------------------------------------------------------------------
 [ -f "$HOME/.config/MangoHud/wine-gta-sa.conf" ] && export MANGOHUD=1 MANGOHUD_CONFIGFILE="$HOME/.config/MangoHud/wine-gta-sa.conf"
 mkdir -p "$STEAM_COMPAT_DATA_PATH" "$R/logs" "$R/screenshots/pending"
 # Free-VRAM preflight. This exists because of a specific, expensive confusion:
@@ -245,6 +264,71 @@ if [ "${RHYS_DRY_RUN:-0}" = 1 ]; then
   exit 0
 fi
 
+# --- log bounds (BEGIN): scripts/log-rotate-selftest.sh sources exactly this block. -------------
+# n03, follow-ups 2 and 3 of .strata/notes-s26-perf-checklist.md. Measured in $G on 2026-11-14:
+#   scripts/rhyremix.log   1,088,220 bytes, appended to on every run since 2026-11-10 and never
+#                          rotated (the .prev sitting next to it, 3,378,593 bytes, is hand-made)
+#   logs/steam-12120.log   51,958,320 bytes from ONE PROTON_LOG=1 run
+# scripts/diagnose.sh and tools/tour-report.py scan the plugin log whole, so "read the log" got
+# slower for every session, forever, and nothing bounded the Proton trace at all.
+#
+# Why HERE and not in plugin/src/log.cpp, which is the other candidate the task names:
+#   1. One place has to own BOTH logs, and the plugin cannot touch the Proton log at all: Proton
+#      writes logs/steam-<appid>.log from its own process on the wine side. Rotating in log.cpp
+#      would bound one of the two files and leave the 52 MB one exactly where it was.
+#   2. A session boundary is the honest cut. log.cpp would rename a file it has open, on a thread
+#      inside a process that is itself the thing that crashes; here the file being moved is by
+#      definition finished with, and the live log then starts at 0, which makes "which run is this
+#      line from" answerable and keeps tour-report.py's --since scan cheap.
+#   3. It is testable. Blocks of this script are sourced and driven against a fake tree
+#      (scripts/launch-cleanup-selftest.sh does exactly this); log.cpp is MinGW-only with no host
+#      harness, so a rotation bug there would be found by the game, on a run that costs an hour.
+# The cap bounds what is RETAINED, not one run: one .prev per log, and the two tools that read the
+# plugin log now read both files (scripts/diagnose.sh, tools/tour-report.py).
+rhy_log_max_bytes()     { printf '%s\n' "${RHYS_LOG_MAX_BYTES:-8388608}"; }   # 8 MiB live
+rhy_proton_keep_bytes() { printf '%s\n' "${RHYS_PROTON_LOG_KEEP:-2097152}"; } # 2 MiB of the trace
+
+rhy_log_size() { stat -c%s "$1" 2>/dev/null || printf '0\n'; }
+
+# rhy_rotate_log <file> [keep_bytes]: over RHYS_LOG_MAX_BYTES -> <file>.prev, live file restarts at 0.
+# keep_bytes 0 moves the WHOLE file: rhyremix.log is read line by line by the tools, so a .prev that
+# begins mid-line is a lost line. keep_bytes > 0 keeps only that many trailing bytes: the Proton log
+# is one run of wine debug nobody reads except by grepping the end of it.
+rhy_rotate_log() {
+  local f="$1" keep="${2:-0}" max sz kept
+  [ -f "$f" ] || return 0
+  max="$(rhy_log_max_bytes)"; sz="$(rhy_log_size "$f")"
+  [ "$sz" -gt "$max" ] || return 0
+  if [ "$keep" -gt 0 ] && [ "$keep" -lt "$sz" ]; then
+    tail -c "$keep" "$f" > "$f.prev.part" && mv -f "$f.prev.part" "$f.prev" || return 1
+  else
+    mv -f "$f" "$f.prev" || return 1
+  fi
+  kept="$(rhy_log_size "$f.prev")"
+  : > "$f"
+  echo "logrotate: $f was $sz bytes -> $f.prev (kept $kept bytes); $f restarts at 0 for this session"
+}
+
+# rhy_trim_log <file> <keep_bytes>: after a run, keep only the last <keep_bytes> IN PLACE (no .prev).
+# Deliberately different from the rotate above: docs/TESTING.md and docs/FINDINGS.md tell the reader
+# to grep logs/steam-<appid>.log, so after the run the trace has to still be AT that path - just not
+# 52 MB of it. What is dropped is said out loud, with the number.
+rhy_trim_log() {
+  local f="$1" keep="${2:-0}" sz max
+  [ -f "$f" ] || return 0
+  max="$(rhy_log_max_bytes)"; sz="$(rhy_log_size "$f")"
+  [ "$sz" -gt "$max" ] || return 0
+  [ "$keep" -gt 0 ] && [ "$keep" -lt "$sz" ] || return 0
+  tail -c "$keep" "$f" > "$f.trim.part" && mv -f "$f.trim.part" "$f" || return 1
+  echo "logtrim: $f was $sz bytes: kept the last $keep (the end is where the fault lines are); dropped $((sz - keep))"
+}
+# --- log bounds (END) --------------------------------------------------------------------------
+
+# Rotate only now: a RHYS_DRY_RUN=1 run (scripts/water-default-selftest.sh does one against a fake
+# install) must not eat the log of the session rhY is about to report on, and nothing above writes
+# either file. rhyremix.log moves whole; the Proton trace keeps its tail.
+rhy_rotate_log "$R/scripts/rhyremix.log" 0
+rhy_rotate_log "$R/logs/steam-${SteamAppId}.log" "$(rhy_proton_keep_bytes)"
 # --- n09b: end the run even when the game refuses to end ---------------------------------
 # Two hangs, same shape, both started from THIS script (build/tmp/exit-hang-20261112.txt and
 # -b.txt):
@@ -479,4 +563,7 @@ rc=$?
 [ -n "$RUNWATCH" ] && { kill "$RUNWATCH" 2>/dev/null; wait "$RUNWATCH" 2>/dev/null; }
 [ -n "$WATCHER" ] && kill "$WATCHER" 2>/dev/null
 end_wine_tree "the launcher's wait returned (gta-sa.exe rc=$rc)"
+# n03: bound the Proton trace the run just wrote, IN PLACE, so the path the docs point at still
+# holds it. If the launcher itself was killed before this line, the next launch's rotation catches it.
+rhy_trim_log "$R/logs/steam-${SteamAppId}.log" "$(rhy_proton_keep_bytes)"
 exit "$rc"

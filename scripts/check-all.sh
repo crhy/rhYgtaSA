@@ -21,7 +21,10 @@
 # installer half of the same feature is inside the installer self-test), the HD PBR surface switch
 # (n20/n20b: our own BC4/BC5/BC3 encoders cross-checked against Pillow, ffmpeg and the spec block
 # layout, the generated DDS checked against the installed pack's own format census, and a
-# textures.sh on/on/off round-trip against a fake game tree hashed back to its starting bytes) and
+# textures.sh on/on/off round-trip against a fake game tree hashed back to its starting bytes), the
+# log bounds (n03: the launcher moves an over-cap rhyremix.log to one .prev before the game starts
+# and trims the ~50 MB Proton trace in place after the run; scripts/diagnose.sh and
+# tools/tour-report.py must still hand back every line they claim from the rotated pair) and
 # a syntax check of every shell script we ship. One PASS/FAIL line per check,
 # then either the list of failures or "ALL GATES PASSED".
 #
@@ -233,6 +236,13 @@ echo "== launcher exit cleanup (stub gta-sa.exe / NvRemixBridge.exe / wineserver
 # game that spins after Quit also stops the launcher from ever cleaning up; the cleanup block inside
 # it is sourced and driven against stub processes by scripts/launch-cleanup-selftest.sh.
 run launchcleanup "scripts/launch-cleanup-selftest.sh" 300 bash scripts/launch-cleanup-selftest.sh
+
+echo "== log bounds (n03: rhyremix.log and the Proton trace are capped by the launcher; the tools still read both) =="
+# The launcher moves an over-cap log to <name>.prev before the game starts and trims the Proton trace
+# in place after the run. This sources those blocks against a fake tree, rotates, and then requires
+# scripts/diagnose.sh and tools/tour-report.py to hand back every line they claim - a rotation must
+# never hide the session it just moved (notes-s26 follow-ups 2 and 3).
+run logrotate "scripts/log-rotate-selftest.sh" 300 bash scripts/log-rotate-selftest.sh
 
 echo "== rtx profiles (config/rtx.conf.perf keys audited against the runtime's own option names; tools/rtxprofile.sh round-trip on a fake tree) =="
 run rtxprofile "scripts/rtxprofile-selftest.sh" 300 bash scripts/rtxprofile-selftest.sh

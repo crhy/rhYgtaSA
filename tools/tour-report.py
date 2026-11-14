@@ -24,7 +24,9 @@ What it writes, all inside `GAME_DIR/screenshots/report-<tour start>/`:
     Under each shot the `rhyremix.log` lines nearest that second, one per category:
     `lights` (streetlights summary), `signals` (trafficlights summary, i.e. the
     green/amber/red counts the plugin actually pushed) and `sky` (sun elevation, daylight,
-    lamps on/off, game clock).
+    lamps on/off, game clock). Since n03 both `scripts/rhyremix.log` and its rotated
+    `rhyremix.log.prev` are read: the launcher moves the log when a session pushes it over
+    its size cap, so the run being reported can be the one that just moved.
 
 `--since TIME` restricts the run to the tail of a manifest (a tour may be run several times
 a day): `YYYY-MM-DD HH:MM[:SS]`, `YYYY-MM-DD`, `HH:MM[:SS]` (date taken from the manifest)
@@ -378,26 +380,42 @@ def flags(m):
 
 
 # --------------------------------------------------------------------------- log ---
+def log_files(path):
+    """The log plus its rotated sibling, oldest first (n03).
+
+    launcher/launch-rtx.sh moves rhyremix.log to rhyremix.log.prev when a session pushes it over its
+    size cap, so the run being reported can live entirely in the .prev - starting the game again
+    between the tour and the report is enough to do that. Both files are read; nearest() picks by
+    timestamp, so an older .prev line only wins when it really is the nearest one."""
+    out = []
+    prev = path + ".prev"
+    if os.path.isfile(prev):
+        out.append(prev)
+    if os.path.isfile(path):
+        out.append(path)
+    return out
+
+
 def load_log(path):
     """-> {category: [(dt, text) sorted]} for the three categories we report, plus the
-    total number of lines read. Missing file -> empty dict (the report says so)."""
+    total number of lines read. Missing file -> empty dict (the report says so). A rotated
+    rhyremix.log.prev is read too (n03): see log_files()."""
     cats = {name: [] for name, _ in LOG_CATEGORIES}
     total = 0
-    if not os.path.isfile(path):
-        return cats, 0
-    with open(path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            total += 1
-            m = LOG_TS_RE.match(line.rstrip("\n"))
-            if not m:
-                continue
-            g = m.groups()
-            micro = int((g[6] or "0").ljust(6, "0"))
-            when = dt.datetime(*[int(x) for x in g[:6]], microsecond=micro)
-            text = g[7]
-            for name, rx in LOG_CATEGORIES:
-                if rx.match(text):
-                    cats[name].append(LogLine(when, text))
+    for f in log_files(path):
+        with open(f, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                total += 1
+                m = LOG_TS_RE.match(line.rstrip("\n"))
+                if not m:
+                    continue
+                g = m.groups()
+                micro = int((g[6] or "0").ljust(6, "0"))
+                when = dt.datetime(*[int(x) for x in g[:6]], microsecond=micro)
+                text = g[7]
+                for name, rx in LOG_CATEGORIES:
+                    if rx.match(text):
+                        cats[name].append(LogLine(when, text))
     for v in cats.values():
         v.sort(key=lambda e: e.dt)
     return cats, total
@@ -532,8 +550,8 @@ def render_report(pairs, sheets, events, cats, log_total, meta):
     L.append("| shots dir | `%s` (%d image files, %d not claimed by the manifest) |"
              % (meta["shots_dir"], meta["n_files"], len(meta["unpaired_files"])))
     L.append("| paired | %d of %d manifest entries |" % (meta["n_paired"], len(pairs)))
-    L.append("| log | `%s` (%d lines read: %s) |"
-             % (meta["log"], log_total,
+    L.append("| log | `%s` (%d lines read from %d file(s): %s) |"
+             % (meta["log"], log_total, meta.get("n_log_files", 1),
                 ", ".join("%s %d" % (c, len(cats.get(c, []))) for c, _ in LOG_CATEGORIES)))
     L.append("| sheets | %s |" % (", ".join("`%s`" % s for s, _ in sheets) or "none"))
     L.append("")
@@ -760,6 +778,11 @@ def main(argv=None):
     os.makedirs(out_dir, exist_ok=True)
 
     cats, log_total = load_log(logfile)
+    n_log_files = len(log_files(logfile))
+    if n_log_files > 1:
+        log("tour-report: reading %s plus its rotated %s.prev (n03: the launcher rotates the log "
+            "when a session pushes it over its cap, so the run being reported can be the one that "
+            "just moved)" % (logfile, logfile))
     measured = []
     for entry, sf in pairs:
         m = metrics(sf.path) if sf is not None else None
@@ -774,7 +797,7 @@ def main(argv=None):
         "n_files": len(files), "n_paired": len(paired), "unpaired_files": unpaired_files,
         "run_start": run_start.strftime("%Y-%m-%d %H:%M:%S") if run_start else None,
         "run_end": run_end.strftime("%Y-%m-%d %H:%M:%S") if run_end else None,
-        "n_runs": len(runs),
+        "n_runs": len(runs), "n_log_files": n_log_files,
     }
     text = render_report(measured, sheets, events, cats, log_total, meta)
     report = os.path.join(out_dir, "report.md")

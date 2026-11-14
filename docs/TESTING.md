@@ -58,7 +58,13 @@ off without disabling the after-exit cleanup.
 
 `--tour` writes `<game>/screenshots/tour.req` first, so `SARemix_Tour.lua` runs the fixed
 stop list (names and order in `screenshots/tour-manifest.txt`, one run per flag file) instead
-of you walking to every shot with F12. The list ends with the three s15 subjects: the
+of you walking to every shot with F12. Since n03 **`deploy.sh` installs that script** into
+`moonloader/` on every run (it used to install only `SARemix_Shot.lua`, so the copy in a game
+folder was whatever a human had `cp`'d by hand - which is how the 2026-11-12 00:49 session ran
+the stale 13-stop tour while the repo had 16, and stops 12/13/14 produced no shots at all). The
+check is `diff -q plugin/lua/SARemix_Tour.lua "$G/moonloader/SARemix_Tour.lua"`: it prints
+nothing when the game has the repo's bytes, and `docs/NEXT-TEST.md` step 0 runs it. The list ends
+with the three s15 subjects: the
 rear-view mirror of the car parked at the Grove Street curb (docs/MIRRORS.md), a pedestrian
 close-up in Pershing Square at noon, and the Mulholland/Vinewood hillside vegetation (the s03
 streaming hang). If the mirror shot frames an empty curb, that stop's numbers are the ones to
@@ -223,6 +229,32 @@ you what the glow is doing on a given street.
 - **`bad`** climbing means the hook was handed a pointer that is not readable
   memory. It used to be a crash (2026-11-11 13:04:44); now it is a dropped
   record, so a rising `bad` is a symptom to report, not a reason to stop playing.
+
+### The logs themselves (n03): what the launcher rotates, and what reads both
+
+Two files used to grow without limit, and both are read by the tools above:
+`scripts/rhyremix.log` (1,088,220 bytes on 2026-11-14, appended to on every run
+since 2026-11-10, never rotated - the 3.4 MB `rhyremix.log.prev` next to it was made
+by hand) and `logs/steam-12120.log` (51,958,320 bytes from ONE `PROTON_LOG=1` run).
+`launcher/launch-rtx.sh` now bounds them:
+
+| when | what |
+|---|---|
+| before the game starts (never on a `RHYS_DRY_RUN=1` run) | a log over `RHYS_LOG_MAX_BYTES` (default 8 MiB) moves to `<name>.prev` - exactly one generation - and the live file restarts at 0. `rhyremix.log` moves **whole** (a `.prev` that begins mid-line is a lost line); the Proton trace keeps only its last `RHYS_PROTON_LOG_KEEP` (default 2 MiB) |
+| after the run | the Proton trace is trimmed **in place** to that same keep, because `docs/TESTING.md` and `docs/FINDINGS.md` tell you to grep `logs/steam-12120.log` - the file has to stay at that path, just not 52 MB of it |
+| `RHYS_PROTON_LOG=0` | no Proton trace at all (the only cap that is 0 bytes); default is on, because the Open-Limit-Adjuster row below needs it |
+
+`scripts/diagnose.sh` and `tools/tour-report.py` read `rhyremix.log` **and**
+`rhyremix.log.prev`, oldest first, so `tail -n` still means "the newest N matches" and
+a rotation cannot hide the run you are reporting on; `diagnose.sh` prints `reading:`
+with both paths and the tour report header says `N lines read from 2 file(s)`. Four
+readers deliberately still look at the live file only, because they ask about the run
+that just happened: `tools/perf-report.py --log` (it takes an explicit path and splits
+runs on the `---- log starts ----` marker), `scripts/check-rtx-probe.sh`,
+`scripts/lighting-test.sh`, and the launcher's `exit-hang-*.txt` evidence tails. The
+proof is `scripts/log-rotate-selftest.sh` (52 checks, in `check-all`): it rotates a
+fake tree whose log carries one marked line per claim, then requires every line
+`diagnose.sh` claims back and all three tour-report log categories.
 
 ### The fade counters (s28): proof that lighting changes over time instead of at once
 
@@ -485,12 +517,15 @@ few seconds - no restart.
 | The sun's shadow edge still jumps instead of creeping | `cad=` and `step<=` on the `sky:` line decide whether this is ours. `step<=` near 1.0 means the cadence is not running (check the `config: fade ... handle=` startup line); `step<=` near 0.25 and the jump is the renderer's - try `tools/rtxprofile.sh nopops` |
 | Lighting changes now arrive late (a lamp takes a quarter second to reach full brightness) | `[fade] handle_cadence_ms=1000` and `handle_cadence_min_ms=100` on our side; on the renderer side `tools/rtxprofile.sh current` (the A/B's accumulation windows are what add the lag) |
 | Head light sits just inside the lens instead of on it | `[trafficlights] head_normal=1 head_forward=0.15` - the 2DFX entry has no direction, so this uses the model's own "at" axis and may point the wrong way; it is a knob to A/B, not a fix |
+| The plugin log is huge, the tools take forever, or the run's lines have "disappeared" | n03: they are in `scripts/rhyremix.log.prev` - the launcher moves it there when the live log passes `RHYS_LOG_MAX_BYTES` (8 MiB) and keeps exactly one generation. `diagnose.sh` and `tour-report.py` read both; `grep -h . "$G"/scripts/rhyremix.log.prev \| tail -40` is the manual version. Raise the cap with `RHYS_LOG_MAX_BYTES=…`, and `logs/steam-12120.log` (52 MB a run) with `RHYS_PROTON_LOG_KEEP` or `RHYS_PROTON_LOG=0` |
 | 60 fps most of the time, but the run hitches more than the previous build, especially after ~5 minutes | n08. Ours: `[fade] destroys_per_frame=32` bounds the handles one frame may release (the 2026-11-12 runs measured 320 and 205 released inside a single frame); `0` puts the old one-frame flush back. The renderer's half is the six opacity-micromap work bounds `tools/rtxprofile.sh perf` installs (build/bake 150 M micro-triangles/s, texel-density 512/frame, 2000 staged requests behind 30-frame/30-use filters). Measure it, don't feel it: `python3 tools/perf-report.py <game>/logs/perf/NvRemixBridge_<stamp>.csv --log <game>/scripts/rhyremix.log --gpu-csv <game>/logs/perf/gpu-<stamp>.csv --series` — the number is **spikes/min after the first 300 s** (90.6 in the good run, 187.8 in the regressed one), and `due_destroy=`/`deferred_destroy=` on the `remix:` line say whether our bound is biting |
 
 ## Step 5 - send back
 
 ```bash
 cp /media/rhy/data/Gamez/GTASA-RTX/scripts/rhyremix.log /tmp/rhyremix.log
+# n03: if the launcher rotated the log during/before the run, send the other half too:
+cp /media/rhy/data/Gamez/GTASA-RTX/scripts/rhyremix.log.prev /tmp/rhyremix.log.prev 2>/dev/null
 grep -c 'Invalid light handle' /media/rhy/data/Gamez/GTASA-RTX/rtx-remix/logs/bridge64.log
 # frame pacing (n08): the MangoHud CSV and the nvidia-smi trace, then the report
 # (start the trace BEFORE the run - nothing in this repo starts it for you:

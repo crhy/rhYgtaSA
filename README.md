@@ -38,7 +38,7 @@ install and test it. What is in the box today:
 | **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with an exposure anchor that follows the sun, so the sun, chrome and wet patches can be bright instead of grey and 21:00 is not darkened by a noon number | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16), and `[tonemap] day_ev → night_ev` driven off solar elevation at runtime (n22); **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
 | **Materials** | the ~2190 materials the asset pack never gave PBR maps get a *measured* BRDF instead of the runtime's guess: `rtx.legacyMaterial.roughnessConstant = 0.65`, taken from the roughness of the pack's own maps (paving 0.58-0.65, per-map median 0.582) - and a census that proves no per-texture knob for them exists | `tools/pack_pbr_census.py` (coverage, decoded rough/metal/height, the uncovered-hash list) + the n18 block in all three profiles; **not yet seen in game** - [docs/TARGET.md](docs/TARGET.md) §6 |
 | **Textures (n20 → n20b, rhY's MUST-HAVE #1)** | the 40 map surfaces that own the most screen in our own tour shots get real albedo + normal + roughness + height maps, generated from the game's own rasters (4x, deterministic - a photograph would erase the road markings) and installed as a Remix replacement layer on top of the pack. 35 sets, 140 DDS, **91.9 MB of VRAM** against the 1.08 MB the game spends on those materials today; the 5 the pack already covers at 2048²/4096² are skipped by design | `tools/textures.sh` (`on` / `off` / `status` / `generate`), `tools/pbrify.py` (the generator, `--calibrate`, `--report` = the VRAM delta), `tools/bcn.py` (our BC1/3/4/5 encoders - Pillow and ImageMagick cannot), `tools/texture_rank.py` (the screen-share ranking), `config/texture-pbr.json`; [docs/TEXTURES.md](docs/TEXTURES.md), FINDINGS (n20b); **not yet seen in game** - NEXT-TEST step 8 |
-| **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
+| **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour (since n03 `deploy.sh` installs `moonloader/SARemix_Tour.lua` on every run - before that nothing did, and a game folder ran whatever a human had `cp`'d in), and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
 | **Safety** | every install step reversible, the plugin stops touching a dead Remix bridge, and the launcher ends the Wine tree if the game hangs on Quit | `apply.sh` backups, `plugin/src/shutdown.cpp`, `launcher/launch-rtx.sh` |
 
 What is still rough is written down, not hidden: [docs/STATUS.md](docs/STATUS.md) lists every
@@ -165,7 +165,10 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
 
 - Log files: `<game>/logs/launch-<timestamp>.log` (launcher) and `<game>/scripts/rhyremix.log`
   (plugin). The launcher prints which plugin file it is running and its md5, so "did my change
-  reach the game?" is never a guess.
+  reach the game?" is never a guess. Since n03 the two logs the tools read are **bounded**: before
+  the game starts a log over `RHYS_LOG_MAX_BYTES` (8 MiB) moves to `<name>.prev` - one generation -
+  and the live file restarts at 0, and after the run the ~50 MB Proton trace is trimmed in place.
+  `scripts/diagnose.sh` and `tools/tour-report.py` read `rhyremix.log` **and** its `.prev`.
 - Desktop icon:
   ```
   scripts/install-desktop-entry.sh "/path/to/your/GTASA-RTX"
@@ -183,7 +186,10 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   backing the file up first),
   `RHY_SKIP_VRAM_CHECK=1`, `RHYS_SHOT_WATCH=0`, `RHYS_EXIT_GRACE=N` (seconds a game may outlive its
   window before the launcher ends the Wine prefix; `0` = watch off), `RHYS_BRIDGE_TIMEOUTS=1` (ask
-  `.trex/bridge.conf` to keep the bridge's client timeouts on; see `docs/FINDINGS.md`).
+  `.trex/bridge.conf` to keep the bridge's client timeouts on; see `docs/FINDINGS.md`),
+  `RHYS_LOG_MAX_BYTES=N` (n03: the cap over which `scripts/rhyremix.log` and the Proton trace rotate
+  to one `.prev`; default 8388608), `RHYS_PROTON_LOG_KEEP=N` (how many trailing bytes of the Proton
+  trace survive; default 2097152), `RHYS_PROTON_LOG=0` (do not ask Proton for the trace at all).
 - To run the repo copy of the launcher against another install:
   ```
   GTASA_RTX_DIR="/path/to/your/GTASA-RTX" bash launcher/launch-rtx.sh

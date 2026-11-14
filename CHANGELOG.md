@@ -833,10 +833,13 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
 - **Aborted (n06, `48d93d5` on `wip/n06-pier-and-sign-lights-1922`): pier lamp heads and highway-sign
   bulbs.** Interrupted by a reboot mid-task; the commit is a WIP snapshot, never gated, and its
   findings (D and E) are still open.
-- **Stopped with no commit (n11): every lamp in the world lit (V2, findings D/E).** The plan and the
-  reading are in `.strata/notes-n11-every-lamp-lit.md`; the queue recorded `rc=2: no changes`. The
-  2dfx reader, the world inventory and the coverage tool were never written, so the boardwalk and pier
-  lamps are still dark.
+- **Stopped with no commit, then committed (n11, `9b98f96`): every lamp in the world lit (V2, findings
+  D/E).** The first pass stopped with no commit — the plan and the reading are in
+  `.strata/notes-n11-every-lamp-lit.md`, and the queue recorded `rc=2: no changes`. It was finished
+  later and shipped as `9b98f96`: the 2dFx reader, the world inventory and the coverage tool do exist
+  (`tools/dff_2dfx.py`, `tools/lamp_list.py`, `tools/lamp-coverage.py`), the gate runs them, and the
+  entry is below under its own hash. This bullet is only here because the earlier "never written"
+  reading was true for a day and a half.
 - **Parked (n03, `b3a68cd` on `failed/n03-next-session-ready-235920`): next-session-ready** — deploy
   the tour script, bound the logs, rewrite NEXT-TEST. It got as far as the NEXT-TEST rewrite that
   `tests/test_next_test_doc.py` then refused (the one-screen bounds), and the queue parked it; the
@@ -1514,6 +1517,78 @@ own lamp data inside the models.
   is not visible geometry, so the claim is only that the head is now the brightest thing at the head
   and that the game's own corona (`coronastar`, size float 12/18 in the record) still draws the
   sprite. NEXT-TEST step 9 is the leg that settles it.
+
+### Session readiness (n03) — the page rhY runs the session from, and the tour script nobody installed
+
+Three things that were each somebody's follow-up and nobody's task (`.strata/notes-s26-perf-checklist.md`
+follow-ups 1-3, `notes-s27` step 5, `notes-s29` step 5). **Not committed yet**, so "undo" below means
+undoing working-tree changes.
+
+- **Fixed (`deploy.sh`): nothing in this repo ever installed `plugin/lua/SARemix_Tour.lua`.** Measured
+  in `$G`: `moonloader/SARemix_Tour.lua` 13,829 bytes, mtime 2026-11-12 10:22, sha256 `0eb48b8c…` —
+  byte-identical to the repo's, because a human had run the `cp` that `docs/NEXT-TEST.md` step 0 asked
+  for; `grep -n Tour deploy.sh` found nothing, deploy.sh copied only `SARemix_Shot.lua`. That hand `cp`
+  is the reason the symptom (the 2026-11-12 00:49 session ran the stale **13-stop** tour while the repo
+  had 16, so stops 12/13/14 — mirror, ped crowd, vegetation — produced no shots and two steps of the
+  checklist had no numbers) had gone away while the cause stayed. deploy.sh now copies the tour script
+  into `moonloader/` on every run, `cmp -s`-guarded so a second run says `already current (sha256 …)`
+  instead of rewriting a Lua file MoonLoader may have loaded, and prints the hash. It is deliberately
+  not tied to `--shotkey-off`: the tour only acts when `screenshots/tour.req` exists.
+  **Undo:** delete the `TOUR_SRC`/`TOUR_DST` block (and the `ls` argument next to it), or in a game
+  folder just `rm $G/moonloader/SARemix_Tour.lua` — MoonLoader then has no tour to run.
+- **Added (`scripts/installer-selftest.sh`, 78 → 83 checks): five assertions for that copy.** The fake
+  tree is built without any `SARemix_Tour.lua`, so if the file appears, deploy.sh put it there: it
+  exists, its sha256 equals the repo's, run 1 reports the copy, run 2 reports "already current", and
+  the whole-tree manifest hashes carry the repo hash in **both** runs.
+- **Fixed (`launcher/launch-rtx.sh`): the logs the tools read were unbounded.** Measured in `$G` on
+  2026-11-14: `scripts/rhyremix.log` **1,088,220 bytes**, appended to on every run since 2026-11-10 and
+  never rotated (its `rhyremix.log.prev`, 3,378,593 bytes, is hand-made), and `logs/steam-12120.log`
+  **51,958,320 bytes** from one `PROTON_LOG=1` run. `scripts/diagnose.sh` and `tools/tour-report.py`
+  scan the plugin log whole, so every session made the next diagnosis slower. The launcher now, before
+  the game starts, moves an over-cap log to `<name>.prev` and restarts the live file at 0 — the plugin
+  log **whole** (a `.prev` that begins mid-line is a lost line), the Proton trace keeping its **tail** —
+  and after the run trims the Proton trace **in place**, because `docs/TESTING.md` and `docs/FINDINGS.md`
+  tell the reader to grep that exact path. Knobs: `RHYS_LOG_MAX_BYTES` (8 MiB), `RHYS_PROTON_LOG_KEEP`
+  (2 MiB), `RHYS_PROTON_LOG=0` (no trace at all). **Why the launcher and not `plugin/src/log.cpp`:** one
+  place has to own both logs and the plugin cannot touch the Proton log (Proton writes it, wine side);
+  a session boundary is the honest cut, not a rename of an open file from inside the process that
+  crashes; and blocks of the launcher are sourced and driven against a fake tree, while `log.cpp` is
+  MinGW-only with no host harness. **Undo:** delete the two marked blocks and their three call sites;
+  nothing else in the launcher depends on them.
+- **Changed (`scripts/diagnose.sh`, `tools/tour-report.py`): both read `rhyremix.log` *and*
+  `rhyremix.log.prev`**, oldest first, so `tail -n` still means "the newest N matches" and a rotation
+  cannot hide the run being reported. `diagnose.sh` prints `reading: <files>`; the tour report header
+  now says `N lines read from 2 file(s)`. `tools/perf-report.py --log`, `scripts/check-rtx-probe.sh`,
+  `scripts/lighting-test.sh` and the launcher's own evidence tails were left alone on purpose: all four
+  work on the current run, which is the live file (recorded in `docs/TESTING.md`).
+- **Added (`scripts/log-rotate-selftest.sh`, 52 checks, wired into `check-all`):** the rotation and the
+  trim driven against a fake tree (cap honoured, whole-file move byte-identical, tail-only for the
+  Proton log, exactly one `.prev`, no-op under the cap, the trim keeps the trace at the documented path
+  and says what it dropped), the Proton-log policy block sourced with the knob on and off, and then
+  `diagnose.sh` and `tour-report.py` run against the rotated tree: **all nine lines `diagnose.sh`
+  claims come back**, the newest live line beats an older `.prev` one, and all three `LOG_CATEGORIES`
+  still appear under a shot.
+- **Changed (`docs/NEXT-TEST.md`, rewritten inside the one-screen bounds — 89 lines / 5998 bytes /
+  ≤ 132 columns):** it now carries the **s28 fade counters** (`steps=`, `created=`, `retired=`,
+  `deferred=`, `player_gone_frames=`, `in_drop=`) and the **s29 clock line** (`tod=`, `ms/min=`, `torn=`,
+  `jitter=`, `reanchor=`, `wraps=`, `cal: accepted=0`, `cloud=`) with the exact grep for each — s29's own
+  notes had left the page alone and it carried none of what those two tasks fixed. The characters step
+  says what is actually staged (`Criminal Peds Vary` + `_criminal-peds-vary-extras`, five of six
+  missing) and what that pack still needs (`PedFuncs`, `ModelVariations`, the two hand `cp`s in its
+  extras README) instead of "until the packs are staged"; step 0 **checks** the tour script with
+  `diff -q` instead of copying it; and "Large Address Aware … (step 6 needs it)" points at step 7, which
+  is the character step. Every cut is named with its reason in `.strata/notes-n03-next-session-ready.md`.
+  **Undo:** `git checkout -- docs/NEXT-TEST.md`.
+- **Tests (`tests/test_next_test_doc.py`, 8 → 11 checks):** the s28/s29 fields, the staging facts and
+  `plugin/lua/SARemix_Tour.lua` are now required **by name**, the two greps that produce them are
+  required, the hand `cp` is forbidden, and "nothing is staged" is forbidden. Eight mutations of the
+  page (drop `torn=`/`jitter=`, rename `player_gone_frames=`, drop the four fade counters, rename the
+  staged pack, drop `PedFuncs`/`ModelVariations`, put the `cp` back, drop the `sky:` grep, restore the
+  old characters prose) are all caught — that is the "it cannot lose s29 again" half.
+- **Fixed (gate, pre-existing):** `CHANGELOG.md` did not name `9b98f96` (the n11 commit) — the
+  "Parked and aborted work" bullet still said n11 "stopped with no commit" after it had been finished
+  and committed. `bash scripts/check-all.sh` was red at HEAD **before** this task started: 103 checks
+  passed, 1 failed (`tests/test_changelog_coverage.py`).
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

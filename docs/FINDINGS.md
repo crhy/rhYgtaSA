@@ -3068,3 +3068,62 @@ mechanism is the one n02b shipped for signal lenses and rhY accepted ("We wanted
 should be both like real life"), and the game's own corona for the bulb (`coronastar`, the `f8` size
 float 12/18 in the record) still draws the sprite on top of it. [NEXT-TEST.md](NEXT-TEST.md) step 9 is
 the leg that settles it, with `head_glow=0` as the A/B.
+
+## The logs the tools read were unbounded, and the tour script nobody installed (2026-11-14, n03)
+
+Two things that only show up when you go back to a machine weeks later: a log that has been growing
+since the first session, and a script in the game folder that no installer owns. Both were follow-ups
+somebody had already written down (`.strata/notes-s26-perf-checklist.md`, follow-ups 1-3) and neither
+had an owner. Measured in `$G` on 2026-11-14, read-only:
+
+| thing | measured | what it cost |
+|---|---|---|
+| `scripts/rhyremix.log` | **1,088,220 bytes**, mtime 2026-11-12 11:51, appended to on every run since 2026-11-10 | `scripts/diagnose.sh` and `tools/tour-report.py` scan it whole, so every session made the next diagnosis slower |
+| `scripts/rhyremix.log.prev` | 3,378,593 bytes, mtime 2026-11-10 22:03 | **hand-made**: nothing in the repo had ever rotated the log, so the only `.prev` on the machine was one a human moved |
+| `scripts/rhyremix.log.crash1`, `.test-prev` | 18,782 / 1,962 bytes | the same, by hand, twice more: the naming is folklore, not a policy |
+| `logs/steam-12120.log` | **51,958,320 bytes** (`du -sh $G/logs` 64 M) from ONE run | `launcher/launch-rtx.sh` exported `PROTON_LOG=1` unconditionally and nothing ever bounded or removed the file |
+| `moonloader/SARemix_Tour.lua` | 13,829 bytes, mtime 2026-11-12 10:22, sha256 `0eb48b8c…` = the repo's | the *symptom* of notes-s26 gap 1 (the 2026-11-12 00:49 session ran the stale **13-stop** tour while the repo had 16) was gone only because a human had run the `cp` that `docs/NEXT-TEST.md` step 0 asked for |
+| `grep -n Tour deploy.sh` | **no hits**; deploy.sh copies `SARemix_Shot.lua` and nothing else | the *cause* was still there: no installer owned the tour script, so a fresh install - or any install after a stop list changed - silently ran the old one |
+
+**The mechanism is the same in both rows: nobody owned the file's lifecycle.** A log file that is only
+ever opened in append mode grows forever, and a Lua script that only ever reaches a game folder through
+a copy-paste in a document is the same problem one level up - the document is the deployment. That is
+also why the tour gap survived being *noticed*: s26 fixed the symptom in the doc (a preflight `cp`) and
+queued the durable fix, and the queue is not a gate.
+
+**Where the bound went, and why not in the plugin.** The task offered `plugin/src/log.cpp` or
+`launcher/launch-rtx.sh`. The launcher won on three grounds: (1) one place has to own **both** logs and
+the plugin cannot touch the Proton trace at all - Proton writes `logs/steam-<appid>.log` from its own
+process on the wine side; (2) a session boundary is the honest cut - `log.cpp` would rename a file it
+has open, on a thread inside the process that is itself the thing that crashes, while the launcher moves
+a file that is by definition finished with, and the live log then restarts at 0, which makes "which run
+is this line from" answerable; (3) testability - blocks of the launcher are sourced and driven against a
+fake tree (`scripts/launch-cleanup-selftest.sh` already does it), while `log.cpp` is MinGW-only with no
+host harness, so a rotation bug there would be found by the game, on a run that costs an hour.
+
+**What the bound is.** Before the game starts (and never on a `RHYS_DRY_RUN=1` run, which must not eat
+the log of the session being reported on): a log over `RHYS_LOG_MAX_BYTES` (8 MiB) moves to
+`<name>.prev` - exactly one generation - and the live file restarts at 0. The plugin log moves **whole**,
+because the tools read it line by line and a `.prev` that begins mid-line is a lost line; the Proton
+trace keeps only its last `RHYS_PROTON_LOG_KEEP` (2 MiB), because one run of it is ~50 MB of wine debug
+nobody reads except by grepping the end. After the run the trace is trimmed **in place** instead:
+`docs/TESTING.md`'s Open-Limit-Adjuster row and `docs/FINDINGS.md`'s unload grep both name
+`logs/steam-12120.log`, so the trace has to still be *at that path*, just not 52 MB of it.
+`RHYS_PROTON_LOG=0` is the only cap that is 0 bytes.
+
+**The cost, paid on purpose.** A rotation can move the run you are reporting on out of the file the
+tools read, so `scripts/diagnose.sh` and `tools/tour-report.py` now read `rhyremix.log` **and**
+`rhyremix.log.prev`, oldest first, which keeps `tail -n` meaning "the newest N matches" across both.
+`scripts/log-rotate-selftest.sh` (52 checks) is the proof: it rotates a fake tree whose log carries one
+marked line per claim, then requires all nine lines `diagnose.sh` claims back, requires the newest live
+line to beat an older `.prev` line, and requires all three `LOG_CATEGORIES` to still appear under a shot.
+Four readers were deliberately left on the live file alone - `tools/perf-report.py --log` (it takes an
+explicit path, splits runs on `---- log starts ----` and aligns plugin events to the CSV clock of the
+run being measured), `scripts/check-rtx-probe.sh`, `scripts/lighting-test.sh`, and the launcher's own
+`save_exit_evidence` tails - because all four ask about the run that just happened.
+
+**Not measured.** Whether 8 MiB is the right cap: the largest single session log on this machine is
+1,088,220 bytes, so 8 MiB is roughly eight sessions of the 2026-11-12 shape, and the number is a knob,
+not a claim. And whether the launcher's own `logs/launch-*.log` (7 files, 1.6-6.2 KB each, unbounded in
+count) needs the same treatment - recorded, not fixed, because 7 KB per start is not what made the
+diagnosis slow.
