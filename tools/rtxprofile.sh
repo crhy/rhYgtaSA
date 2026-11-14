@@ -4,6 +4,7 @@
 #
 #   tools/rtxprofile.sh perf     [GAME_DIR]   install config/rtx.conf.perf   (the 60 fps profile)
 #   tools/rtxprofile.sh nopops   [GAME_DIR]   install config/rtx.conf.nopops (the temporal A/B, n01)
+#   tools/rtxprofile.sh dlss5    [GAME_DIR]   install config/rtx.conf.dlss5  (the DLSS 5 probe, n19 - NOT shipped)
 #   tools/rtxprofile.sh current  [GAME_DIR]   install config/rtx.conf        (this repo's shipped file)
 #   tools/rtxprofile.sh orig     [GAME_DIR]   install <game>/rtx.conf.orig   (the runtime's first-launch file)
 #   tools/rtxprofile.sh status   [GAME_DIR]   which profile is live, and what it says
@@ -34,8 +35,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GAME_DEFAULT="/media/rhy/data/Gamez/GTASA-RTX"
 STATE_DIR=".rhys-rtxprofile"
 
-usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
-die()   { echo "rtxprofile.sh: $*" >&2; echo "usage: tools/rtxprofile.sh {perf|nopops|current|orig|status|restore|check} [GAME_DIR]" >&2; exit 1; }
+usage() { sed -n '2,28p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die()   { echo "rtxprofile.sh: $*" >&2; echo "usage: tools/rtxprofile.sh {perf|nopops|dlss5|current|orig|status|restore|check} [GAME_DIR]" >&2; exit 1; }
 
 sha() { sha256sum "$1" | awk '{print $1}'; }
 
@@ -48,6 +49,7 @@ profile_src() { # $1 = profile, $2 = game dir; prints source file or nothing
   case "$1" in
     perf)    echo "$REPO/config/rtx.conf.perf" ;;
     nopops)  echo "$REPO/config/rtx.conf.nopops" ;;
+    dlss5)   echo "$REPO/config/rtx.conf.dlss5" ;;
     current) echo "$REPO/config/rtx.conf" ;;
     orig)
       if [ -f "$2/rtx.conf.orig" ]; then echo "$2/rtx.conf.orig"
@@ -66,6 +68,14 @@ if [ "$action" = check ]; then
   # .trex/d3d9.dll returns 0), which is exactly what the audit is for.
   python3 "$REPO/tools/rtxkeycheck.py" --keys "$REPO/config/rtx-runtime-keys.txt" \
     "$REPO/config/rtx.conf.perf" || die "config/rtx.conf.perf has keys this runtime does not know"
+  # n19: the DLSS 5 probe profile is audited by BOTH audits, and the second one is the point: the
+  # category name rtx.dlssNeuralRendering is in the binary's strings (so rtxkeycheck.py verdicts it
+  # "dotted" and passes it) while the option is rtx.dlssNeuralRendering.enable. A probe file whose
+  # switch does not exist would report "nothing happened" and look like a hardware answer.
+  python3 "$REPO/tools/rtxkeycheck.py" --keys "$REPO/config/rtx-runtime-keys.txt" --quiet \
+    "$REPO/config/rtx.conf.dlss5" || die "config/rtx.conf.dlss5 has keys this runtime does not know"
+  python3 "$REPO/tools/rtx-option-audit.py" --quiet "$REPO/config/rtx.conf.dlss5" \
+    || die "config/rtx.conf.dlss5 has keys that are not options of RTX Remix 1.6.1"
   # n01: the A/B profile is audited too. It is generated from the shipped file by
   # tools/rtx-nopops.py, so it inherits that file's two legacy spellings; the rule is therefore
   # "no MORE unknown keys than the file it was generated from", which still catches a temporal
@@ -99,7 +109,7 @@ case "$action" in
   status)
     cur=$(sha "$live")
     active="unknown"
-    for p in perf nopops current orig; do
+    for p in perf nopops dlss5 current orig; do
       src=$(profile_src "$p" "$game")
       [ -n "$src" ] && [ "$(sha "$src")" = "$cur" ] && active="$p"
     done
@@ -120,7 +130,9 @@ case "$action" in
              rtx.volumetrics.enable rtx.volumetrics.froxelGridResolutionScale \
              rtx.texturemanager.budgetPercentageOfAvailableVram \
              rtx.opacityMicromap.enable rtx.opacityMicromap.cache.maxBudgetSizeMB \
-             rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate rtx.dlfg.enable; do
+             rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate rtx.dlfg.enable \
+             rtx.dlssNeuralRendering.enable rtx.dlssNeuralRendering.model \
+             rtx.dlssNeuralRendering.intensity rtx.dlssNeuralRendering.showVramUsage; do
       printf '  %-56s %s\n' "$k" "$(grep -m1 -E "^[[:space:]]*$k[[:space:]]*=" "$live" | sed 's/.*=[[:space:]]*//' || true)"
     done
     exit 0
@@ -131,7 +143,7 @@ case "$action" in
     echo "== restored the file that was live before the last switch: $(sha "$live")"
     exit 0
     ;;
-  perf|nopops|current|orig) ;;
+  perf|nopops|dlss5|current|orig) ;;
   *) die "unknown action '$action'" ;;
 esac
 

@@ -1176,7 +1176,7 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   game:** rule 1 forbids running the game, wine or Steam here, and a fog change only becomes a
   number once the runtime draws a frame.
 
-### Materials (n18) — ~2190 materials had no BRDF at all, so the runtime's default became ours (on top of `5099a3e`)
+### Materials (n18) — ~2190 materials had no BRDF at all, so the runtime's default became ours (in `141bcf8`, on top of `5099a3e`)
 
 - **Changed (n18): `rtx.legacyMaterial.roughnessConstant = 0.65`** in `config/rtx.conf`,
   `config/rtx.conf.perf` and `config/rtx.conf.nopops`. The reason is a census, not a taste: the pack
@@ -1232,6 +1232,57 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   3.5–12.9 ‰ / 67–213 blobs / 64–324 largest against our 4.0–27.6 ‰ / 43–479 / 128–1192) and
   `build/tmp/n18/good-before.json`. **Not measured in game:** rule 1 forbids running the game, wine
   or Steam here, and a material change only becomes a number once the runtime draws a frame.
+
+### DLSS 5 (n19) — the reference's biggest single advantage, measured: this driver refuses it (on top of `141bcf8`, the n18 commit; this work is uncommitted in the tree)
+
+- **Answered (n19): DLSS 5 (`rtx.dlssNeuralRendering.*`) does nothing on this box, and the runtime
+  already says so on every run.** `<game>/rtx-remix/logs/remix-dxvk.log:328` (2026-11-12 11:48,
+  the last real run): `NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info:
+  NVSDK_NGX_Result_FAIL_UnsupportedParameter)` — while `grep -c dlssNeuralRendering` over every
+  `*.conf*` in the install is **0**, i.e. the line is not caused by our config. It is unconditional:
+  `NGXContext::initialize()` calls `checkDlssNeuralRenderingSupport()` right after
+  `NVSDK_NGX_VULKAN_GetCapabilityParameters` (`rtx_ngx_wrapper.cpp:226`), and that runs whenever any
+  NGX context is created (Ray Reconstruction: `rtx.enableRayReconstruction` default True).
+  `0xbad00010` is returned by the **first** `params->Get` in that function
+  (`NVSDK_NGX_Parameter_DLSSNR_NeedsUpdatedDriver`, `:411-417`), so the driver never even gets to
+  answer "available?". Box: `nvidia-smi` → `NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04, 16376 MiB`;
+  Remix 1.6's own release notes raise the runtime's driver baseline to **616.92**; NVIDIA documents
+  DLSS 5 on RTX 50-series. **Not an asset problem:** `<game>/.trex/nvngx_dlssnr.dll` is present,
+  266 424 944 bytes. **Undo:** nothing to undo — nothing shipped changed.
+- **Found (n19): the task file's key name is the option CATEGORY, and the audit it names accepts
+  it.** `rtx.dlssNeuralRendering` is in `.trex/d3d9.dll`'s strings (line 87759 of
+  `build/tmp/n15/trex-d3d9.strings.txt`), so `tools/rtxkeycheck.py` verdicts it `dotted` and passes
+  it, while the switch is `rtx.dlssNeuralRendering.enable` (`RTX_OPTION("rtx.dlssNeuralRendering",
+  bool, enable, false, …)`, `config/rtx-options-1.6.1.tsv:193`). A probe written with the category
+  name would have run, changed nothing, and been read as a hardware answer — the same trap as n16's
+  `rtx.tonemap.tonemappingMode`, and `tools/rtx-option-audit.py` is again what catches it.
+- **Added (n19): `config/rtx.conf.dlss5`, a NON-shipped probe profile, and `tools/rtxprofile.sh
+  dlss5`.** It is `config/rtx.conf.perf` plus the eleven DLSS-NR keys at the runtime's own
+  documented defaults (`enable = True`, `model = 0`, `showVramUsage = True` — its tooltip says
+  "Enable before activating the feature"), so the A/B against the 60 fps profile is one variable and
+  the experiment can be re-run on a newer driver or a 50-series card. One command in, one command
+  out (`current` / `restore`), same backup path as every other profile. **No shipped profile carries
+  a DLSS-NR key.** Safe by construction: with the support flag false `isEnabled()` is false
+  (`rtx_dlss_neural_rendering.cpp:55`), so the pass never activates, allocates nothing
+  (`rtx_resources.cpp:540`) and `dispatchDlssNR()` returns at its first line
+  (`rtx_context.cpp:1897`); a failed activation would switch the option off by itself
+  (`disableAfterFailure`, `:285`).
+- **Tests (n19):** `tests/test_dlss5_probe_keys.py` — every key of the probe is a real 1.6.1 option
+  (option table **and** strings vocabulary), every value is the runtime's documented default except
+  the two switches, the float4 line parses as four numbers in order, the probe differs from
+  `rtx.conf.perf` by exactly those eleven keys and keeps every pack texture list, no shipped profile
+  may carry a `dlssNeuralRendering` key, and the negative control stays true: the category name is in
+  the strings but is **not** an option. `scripts/rtxprofile-selftest.sh` §7 adds the round-trip
+  (installs byte-for-byte, `status` names it, `dlss5 → restore` and `dlss5 → current` byte-identical,
+  107 checks total). **Not measured in game:** rule 1 forbids running the game, wine or Steam here —
+  and the capability query that answers the question runs on every run anyway, so the static
+  evidence is the runtime's own words, not a guess.
+- **Docs:** FINDINGS "DLSS 5 on this box: the keys exist, the driver refuses them (2026-11-13,
+  n19)"; TARGET §2 rewritten with the log line, §4 T1(c) and the §5 row closed, §6 "The n19 probe"
+  with the ten-second re-check after any driver update; STATUS's DLSS 5 row **open (probe) →
+  measured — unavailable** plus "what to test next" item 11; README's profile list names `dlss5`.
+  The consequence for the plan is stated in TARGET §2: T1/T3/T4 are won with materials (n18), fog
+  (n17) and grading (n16/n22), not with a DLSS 5 switch.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

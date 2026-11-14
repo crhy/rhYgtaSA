@@ -34,6 +34,7 @@ install and test it. What is in the box today:
 | **Water** | five variants, `remix-ref` by default, installed by the installer and re-ensured on every start, with the `rtx.conf` keys each variant needs | `tools/water.sh`, `tools/rtx_water_keys.py`, `config/water/*.usda` |
 | **Vegetation** | the pack's 234 foliage card textures tagged as cutouts (`rtx.hairCardTextures`) instead of being blended into scribbled lines, its mis-named LOD dictionary fixed, and its real cost measured (18x the triangles, 92-188 MB pinned) | `tools/vegetation.sh` (`check` / `--step 5` / `--step 6`), `tools/vegetation_hashes.py`, `tools/vegetation_ide_check.py`, `tools/vegetation_stream.py`, `tools/vegetation_edge_measure.py` |
 | **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf` | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops` |
+| **DLSS 5, measured (n19)** | the reference video's single biggest advantage does **not** run here: the runtime's own capability query fails on every run (`NVIDIA DLSS-NR support query failed (0xbad00010)`, driver 610.57.04 on an RTX 4070 Ti SUPER, model DLL present), so nothing is shipped for it and the look is bought with materials, fog and grading instead | `config/rtx.conf.dlss5` + `tools/rtxprofile.sh` (the `dlss5` action: a reversible probe, **not** a shipped profile), `tests/test_dlss5_probe_keys.py`; verdict and re-check: [docs/TARGET.md](docs/TARGET.md) §2/§6, FINDINGS (n19) |
 | **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with an exposure anchor that follows the sun, so the sun, chrome and wet patches can be bright instead of grey and 21:00 is not darkened by a noon number | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16), and `[tonemap] day_ev → night_ev` driven off solar elevation at runtime (n22); **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
 | **Materials** | the ~2190 materials the asset pack never gave PBR maps get a *measured* BRDF instead of the runtime's guess: `rtx.legacyMaterial.roughnessConstant = 0.65`, taken from the roughness of the pack's own maps (paving 0.58-0.65, per-map median 0.582) - and a census that proves no per-texture knob for them exists | `tools/pack_pbr_census.py` (coverage, decoded rough/metal/height, the uncovered-hash list) + the n18 block in all three profiles; **not yet seen in game** - [docs/TARGET.md](docs/TARGET.md) §6 |
 | **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
@@ -193,6 +194,7 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   tools/rtxprofile.sh check                      # audit: does every key exist in this runtime?
   tools/rtxprofile.sh perf    "/path/to/GTASA-RTX"   # the 60 fps profile (config/rtx.conf.perf)
   tools/rtxprofile.sh nopops  "/path/to/GTASA-RTX"   # the temporal A/B (config/rtx.conf.nopops)
+  tools/rtxprofile.sh dlss5   "/path/to/GTASA-RTX"   # the DLSS 5 probe (config/rtx.conf.dlss5) - not shipped
   tools/rtxprofile.sh current "/path/to/GTASA-RTX"   # this repo's shipped profile
   tools/rtxprofile.sh status  "/path/to/GTASA-RTX"
   tools/rtxprofile.sh restore "/path/to/GTASA-RTX"  # the exact bytes that were there before
@@ -205,7 +207,10 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   appear in the renderer; `tools/rtx-option-audit.py` checks the **exact** name and prints the
   runtime's own default for it, against `config/rtx-options-1.6.1.tsv` (the option table the runtime
   generates for itself, fetched from the matching upstream tag). It found four names in our own files
-  that were never options - see [docs/FINDINGS.md](docs/FINDINGS.md), "Dead keys":
+  that were never options - see [docs/FINDINGS.md](docs/FINDINGS.md), "Dead keys". A second failure
+  mode is subtler and n19 hit it head-on: an option's **category** name is also a string in the
+  binary, so `rtx.dlssNeuralRendering = True` passes the strings audit and does nothing - the switch
+  is `rtx.dlssNeuralRendering.enable`:
   ```
   python3 tools/rtx-option-audit.py config/rtx.conf.perf        # audit a profile
   python3 tools/rtx-option-audit.py --show rtx.tonemappingMode  # type + default of one key

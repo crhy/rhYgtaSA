@@ -146,6 +146,29 @@ If something in the update looks wrong, everything is reversible
   map (those average 0.382), so 0.1 is wrong in both directions - but lowering it also removes real
   highlights, so it gets its own step and its own measurement.
 
+### DLSS 5 (the reference video's trick) — measured, and the answer is "not on this box"
+
+- **Nothing to enable.** The showcase look everyone is chasing is largely **DLSS 5** (DLSS 3D-Guided
+  Neural Rendering), and RTX Remix 1.6.1 does ship the switches - eleven of them under
+  `rtx.dlssNeuralRendering.*`, plus the 266 MB model (`<game>/.trex/nvngx_dlssnr.dll`). This box will
+  not run it, and the proof is not a guess: the runtime asks the driver whether DLSS-NR is supported
+  on **every** start, whatever your config says, and the answer in the log is
+  `NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info:
+  NVSDK_NGX_Result_FAIL_UnsupportedParameter)` - RTX 4070 Ti SUPER, driver 610.57.04, below the
+  616.92 baseline Remix 1.6 itself asks for. So **no shipped profile carries a DLSS-NR key**, and the
+  look is bought with materials, fog and grading instead (n16-n18, n22).
+- **A probe exists for the day that changes:** `bash tools/rtxprofile.sh dlss5 <game>` installs the
+  60 fps profile plus the eleven keys at the runtime's own defaults, and
+  `bash tools/rtxprofile.sh current <game>` puts the shipped file back. It cannot break startup: with
+  the capability refused, the renderer never activates the pass, allocates nothing for it, and would
+  switch the option off by itself if activation were attempted. Re-check the verdict after any driver
+  update with `grep -iE 'DLSS-NR|Neural' <game>/rtx-remix/logs/remix-dxvk.log` - no config change
+  needed. Details: [docs/TARGET.md](TARGET.md) §2 and §6, [docs/FINDINGS.md](FINDINGS.md) (n19).
+- **One naming trap worth knowing when you edit `rtx.conf` yourself:** the switch is
+  `rtx.dlssNeuralRendering.enable`. The bare `rtx.dlssNeuralRendering` is the option's *category* - a
+  word the renderer recognises, so it keeps the line and ignores it, and the strings-based key checker
+  even passes it. `python3 tools/rtx-option-audit.py <your file>` is the check that catches it.
+
 ### Traffic signals
 
 - **The light now sits on the signal head, in the colour the game is showing.** The plugin reads the
@@ -335,6 +358,13 @@ What each shot should prove, and the knobs to A/B if it does not, are in
    sky is still black. In the log, the 10-second line now carries `exposure=+0.500 EV (target +0.500,
    max step 0.005)` at a night stop and `exposure=-0.500` at a noon stop; if it reads −0.5 at 21:00 the
    plugin is not pushing and that is a bug to report, not a look to describe.
+9. **DLSS 5 (n19) - one grep, nothing to install.** `grep -iE 'DLSS-NR|Neural'
+   "$G/rtx-remix/logs/remix-dxvk.log"` should still show the `0xbad00010` support-query failure next
+   to `[RTX info] Neural Radiance Cache: supported`: NRC works here, DLSS-NR does not, and they are
+   different NGX features. If that warn line ever disappears after a driver update, the probe becomes
+   worth a run (`bash tools/rtxprofile.sh dlss5 $G`, a noon street and a close character, then
+   `bash tools/rtxprofile.sh current $G`); if it turns into "not available on this hardware/platform"
+   then the GPU is the gate and the question is closed for good.
 
 ---
 

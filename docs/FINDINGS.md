@@ -1,3 +1,125 @@
+## DLSS 5 on this box: the keys exist, the driver refuses them (2026-11-13, n19)
+
+The question from [TARGET.md](TARGET.md) §2: does `rtx.dlssNeuralRendering` (DLSS 3D-Guided Neural
+Rendering = DLSS 5) do **anything** on an RTX 4070 Ti SUPER under this Proton prefix, or is the
+reference video's advantage simply hardware we do not own? Answer: **it does nothing here, and the
+runtime already says so in its own log on a run where the feature was never asked for.** Nothing was
+run for this task (rule 1: no game, no wine, no Steam); the evidence is the last real run of this
+install, the runtime's option table, its source at tag `remix-1.6.1`, and `strings` on the shipped
+binary.
+
+**1. The switch is `rtx.dlssNeuralRendering.enable`, not `rtx.dlssNeuralRendering`.** The task file
+names the latter, and it is the option **category**. `config/rtx-options-1.6.1.tsv:193-203` (the
+runtime's own auto-generated table) and the source agree —
+`RTX_OPTION("rtx.dlssNeuralRendering", bool, enable, false, "Enable DLSS 3D-Guided Neural Rendering.\n");`
+(`src/dxvk/rtx_render/rtx_dlss_neural_rendering.h`). This matters because the audit the task names,
+`tools/rtxkeycheck.py`, **accepts** the category spelling — the string is in `.trex/d3d9.dll`'s
+strings (`build/tmp/n15/trex-d3d9.strings.txt:87759`), so the verdict is `dotted`:
+
+```
+$ printf 'rtx.dlssNeuralRendering = True\n' > build/tmp/n19-category-only.conf
+$ python3 tools/rtxkeycheck.py --keys config/rtx-runtime-keys.txt build/tmp/n19-category-only.conf
+ok   rtx.dlssNeuralRendering                              dotted
+build/tmp/n19-category-only.conf: 1 keys, 0 unknown
+$ python3 tools/rtx-option-audit.py build/tmp/n19-category-only.conf
+FAIL  build/tmp/n19-category-only.conf:1 rtx.dlssNeuralRendering  - no option of this runtime has this leaf
+```
+
+A probe written with the category name would have run, changed nothing, and then been read as a
+hardware answer. Same trap as n16's `rtx.tonemap.tonemappingMode`; `tools/rtx-option-audit.py` is
+again the audit that catches it, and `tests/test_dlss5_probe_keys.py` keeps that negative control
+alive.
+
+**2. The runtime's own answer, from a run that never enabled it.**
+`<game>/rtx-remix/logs/remix-dxvk.log` (2026-11-12 11:48, the last real run of this install):
+
+```
+195:[11:48:12.372] info:    Driver: 610.57.4
+327:[11:48:12.631] info:  [RTX info] Neural Radiance Cache: supported
+328:[11:48:13.146] warn:  NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info: NVSDK_NGX_Result_FAIL_UnsupportedParameter)
+329:[11:48:13.168] err:   Failed to initialize the Vulkan device as a Reflex low latency device: Not implemented in current driver installation.
+```
+
+`grep -c dlssNeuralRendering` over every `*.conf*` in the game folder: **0** — no file of ours, and
+no file the runtime wrote, mentions the feature. So line 328 is not a consequence of our config. It
+is unconditional: `NGXContext::initialize()` calls `checkDlssNeuralRenderingSupport(tempParams)`
+immediately after `NVSDK_NGX_VULKAN_GetCapabilityParameters` (`rtx_ngx_wrapper.cpp:226`), and
+`initialize()` runs the first time **any** NGX context is created — for this install that is Ray
+Reconstruction (`rtx.enableRayReconstruction` defaults to True and every profile carries
+`rtx.useDenoiser = True`). Every run asks the question; this box answers it the same way every time.
+
+**3. What the failure code means, exactly.** `checkDlssNeuralRenderingSupport`
+(`rtx_ngx_wrapper.cpp:411-417`) asks for **one** parameter first:
+
+```cpp
+int needsUpdatedDriver = 0;
+NVSDK_NGX_Result result = params->Get(NVSDK_NGX_Parameter_DLSSNR_NeedsUpdatedDriver, &needsUpdatedDriver);
+if (NVSDK_NGX_FAILED(result)) { Logger::warn("NVIDIA DLSS-NR support query failed: ", ...); return false; }
+```
+
+`0xbad00010` = `NVSDK_NGX_Result_FAIL_UnsupportedParameter`: the NGX in this driver (the binary
+carries `.../NGX/core/rel_310_9/source/lib/nvsdk_ngx_vulkan_lib.cpp`, strings line 450569) does not
+know the DLSS-NR capability parameter **at all**. We never reach the `NeedsUpdatedDriver` answer,
+nor `NVSDK_NGX_Parameter_DLSSNR_Available`, nor the driver-version message the same function can
+print (`NVIDIA DLSS-NR cannot be loaded due to an outdated driver. Minimum driver version required:
+X.Y.`, strings line 426783) — so this box cannot even be told *which* driver NVIDIA would want. The
+adjacent facts: `nvidia-smi` says `NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04, 16376 MiB`, and
+Remix 1.6's own release notes (`build/tmp/n15/gh-remix-rel.json`, tag `remix-1.6.1`) state
+**"Driver Baseline: Raised the minimum NVIDIA driver requirement to 616.92"** — we are below the
+runtime's own floor and far below whatever DLSS-NR wants. NVIDIA describes DLSS 5 as running "on
+GeForce RTX 50 Series GPUs" ([the paper page](https://research.nvidia.com/labs/adlr/DLSS5/),
+[the announcement](https://www.nvidia.com/en-us/geforce/news/dlss5-breakthrough-in-visual-fidelity-for-games/)).
+
+**4. It is not a missing-asset problem.** The model ships:
+`<game>/.trex/nvngx_dlssnr.dll` = **266 424 944 bytes**, sitting next to `nvngx_dlss.dll`,
+`nvngx_dlssd.dll` (RR) and `nvngx_dlssg.dll` (frame generation). The runtime also has the whole
+feature wired: the option block (`rtx.dlssNeuralRendering.*`, 11 options), the NGX parameter names
+(`DLSSNR.Width` … `DLSSNR.Enabled`, strings 426694-426713), the resources
+(`DLSS-NR Control Mask texture` 97836, `DLSS-NR input` 97939, `DLSS-NR output` 97940), the status
+export `remixinternal_GetDlssNeuralRenderingStatus` (452874) and the failure vocabulary
+(`NVIDIA DLSS-NR not supported` 426778, `DLSS-NR activation failed; disabling DLSS-NR.` 428123).
+Weights present + capability query refused = a driver/hardware gate.
+
+**5. Why turning it on is inert rather than dangerous** (this is what made the probe safe to build).
+`DlssNeuralRendering::isEnabled()` is
+`enable() && (!isDlssNeuralRenderingSupportChecked() || supportsDlssNeuralRendering())`
+(`rtx_dlss_neural_rendering.cpp:55-59`); `RtxPass::onFrameBegin` copies that into `isActive()`
+(`rtx_resources.h:637-670`). With the support flag false, `Resources::updateDlssNeuralRenderingResources()`
+(`rtx_resources.cpp:540-558`) allocates **no** control mask and **no** NR output, and
+`RtxContext::dispatchDlssNR()` returns at its first line (`rtx_context.cpp:1897-1903`). If
+activation were ever attempted and failed, the runtime turns the option off itself:
+`onActivation()` → `disableAfterFailure("DLSS-NR activation failed; disabling DLSS-NR.")` →
+`DlssNeuralRendering::enable.setDeferred(false)` (`rtx_dlss_neural_rendering.cpp:61-68, 285-289`).
+A feature that cannot initialise cannot break startup here — no frame cost, no VRAM, no crash.
+One side note for the tonemap work: `rtx.dlssNeuralRendering.enableHighlightRecovery` /
+`.highlightRecoveryThresholds` are read by `DxvkToneMapping::dispatchFastToneMapping`
+(`rtx_tone_mapping.cpp:384-388`), which only runs on the DLSS-NR path — so those two keys are inert
+in every profile of ours, and n16's tonemap block does not interact with them.
+
+**6. What was built anyway, and what is NOT shipped.** `config/rtx.conf.dlss5` —
+`config/rtx.conf.perf` plus the eleven DLSS-NR keys at the runtime's own documented defaults
+(`enable = True`, `model = 0`, `showVramUsage = True` because its tooltip says "Enable before
+activating the feature") — installable with `bash tools/rtxprofile.sh dlss5 [GAME_DIR]` and one
+command back (`current` / `restore`). It exists so the probe is a real, reversible experiment on any
+box where the answer might change (a newer driver, a 50-series card), not so this box pretends.
+**No shipped profile carries a DLSS-NR key** (`config/rtx.conf`, `.perf`, `.nopops` are all clean);
+`tests/test_dlss5_probe_keys.py` and `scripts/rtxprofile-selftest.sh` §7 enforce that offline.
+
+**7. The one sub-question this task could not close.** Whether a driver ≥ 616.92 would expose
+DLSS-NR on **Ada** (4070 Ti SUPER) or whether the refusal is the GPU, not the driver: the failure is
+`FAIL_UnsupportedParameter` on the capability parameter, which does not distinguish them, and
+upgrading the driver is not this task's call. It is answerable in ten seconds after any driver
+update, with no config change at all:
+`grep -i 'DLSS-NR' <game>/rtx-remix/logs/remix-dxvk.log` — if the warn line changes to
+`NVIDIA DLSS-NR not available on this hardware/platform. Available: 0, …` (strings 426789) the
+driver now knows the feature and the GPU is the blocker; if the line disappears, the feature is
+supported and `tools/rtxprofile.sh dlss5` becomes worth a real run.
+
+**8. The consequence, stated plainly.** The reference's single biggest advantage is unavailable on
+this hardware, so T1 (materials), T3 (atmosphere) and T4 (grading) are won with the renderer we do
+control — n18's legacy BRDF constant, n17's fog remap, n16/n22's tonemap and exposure anchor — and
+not with a DLSS 5 switch. Do not leave a hopeful key in a shipped config.
+
 ## The materials the pack never touched, counted and decoded (2026-11-13, n18)
 
 T1a of [TARGET.md](TARGET.md): ~2000 of the pack's materials have no PBR maps, so they render with

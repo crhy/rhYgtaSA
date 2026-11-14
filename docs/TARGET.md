@@ -66,13 +66,31 @@ It invents the things real photos have and games fake: *"subsurface scattering i
 scattering through foliage"*. That is a large part of T1 (materials), T3 (atmosphere) and T4
 (grading) arriving for free on someone else's frame.
 
-**And it is not available to us.** This box is an **RTX 4070 Ti SUPER, driver 610.57.04**
-(`nvidia-smi`); DLSS 5 is RTX 50-series only, and our own perf profile already records the runtime
-answering `NVIDIA DLSS-NR support query failed (0xbad00010)` under this Proton prefix. The keys do
-exist in our runtime (1.6.1) — `rtx.dlssNeuralRendering`, `intensity`, `structuralStrength`,
-`toneStrength`, `model` (A/B/C), `useAutoMask`, `skinStructureStrength`, `enableHighlightRecovery`,
-`highlightRecoveryThresholds`, `enableVolumetricControlMask` — task **n19** probes whether any of
-them do something here, and the answer goes in the docs either way.
+**And it is not available to us — n19 tested it, and the runtime says so in its own log.** This box
+is an **RTX 4070 Ti SUPER, driver 610.57.04** (`nvidia-smi --query-gpu=name,driver_version,memory.total
+--format=csv`), and the last real run of this install logged, on 2026-11-12 11:48:
+
+```
+[11:48:13.146] warn:  NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info: NVSDK_NGX_Result_FAIL_UnsupportedParameter)
+```
+
+That line is not caused by our config — no `*.conf*` in the game folder mentions the feature
+(`grep -c dlssNeuralRendering` → 0). The runtime asks NGX for the DLSS-NR capability on **every**
+run, inside `NGXContext::initialize()` (`rtx_ngx_wrapper.cpp:226`), and this driver fails the very
+first parameter it is asked for (`NVSDK_NGX_Parameter_DLSSNR_NeedsUpdatedDriver`), so we never even
+reach an "available / needs a newer driver" answer. The model weights are present
+(`<game>/.trex/nvngx_dlssnr.dll`, 266 MB), so it is a driver/hardware gate, not a missing asset; and
+Remix 1.6's own release notes raise the runtime's driver baseline to **616.92**, above what is
+installed here. NVIDIA describes DLSS 5 as running "on GeForce RTX 50 Series GPUs".
+
+The keys do exist in our runtime (1.6.1) — `rtx.dlssNeuralRendering.enable` (note: **`.enable`**;
+the bare `rtx.dlssNeuralRendering` is the category and a dead key), `intensity`,
+`structuralStrength`, `toneStrength`, `model` (A/B/C), `useAutoMask`, `skinStructureStrength`,
+`enableHighlightRecovery`, `highlightRecoveryThresholds`, `enableVolumetricControlMask`,
+`showVramUsage` — and n19 built the reversible probe anyway
+(`config/rtx.conf.dlss5`, `tools/rtxprofile.sh dlss5`) so the question can be re-asked on a newer
+driver or a 50-series card. The verdict, the log lines and the one sub-question a driver update
+would settle are in [FINDINGS.md](FINDINGS.md) (n19) and §6 below.
 
 So the plan is: **take the look through the renderer we do control** — materials, fog, grading —
 and never pretend a DLSS 5 switch will do it for us.
@@ -117,7 +135,7 @@ Two extra facts worth keeping:
 
 | # | what they use | what we have | concrete fix | effort | licence / hosting |
 |---|---|---|---|---|---|
-| **T1** PBR materials | the pack's PBR maps **plus DLSS 5's learned materials** on an RTX 5090 | the same pack, counted exactly by n18's `tools/pack_pbr_census.py`: **2363** `mat_<HASH>` materials, of which **174** have a replacement albedo (147 normal, 121 rough, 71 height, **13 metal** keyed to a game texture); ~**2190** are legacy, and `rtx_materials.cpp` shows a legacy material can only carry a **constant** roughness — a map is impossible | **(a) shipped by n18:** `rtx.legacyMaterial.roughnessConstant = 0.65` in all three profiles — one step from the runtime default 0.7 onto the matte end of the pack's own measured paving band (wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584; per-map median 0.582), while `rtx.opaqueMaterial.roughnessScale/Bias` are refused because they would rescale the pack's 121 rough maps too; (b) offline PBR-ify pass (normal+roughness from albedo) for the top ground/road textures by hash — the list is `build/tmp/n18/pack-uncovered.txt` (2197 hashes, ranked by USD references), and we already read and write DDS in `tools/water_normal_soft.py`; (c) probe `rtx.dlssNeuralRendering` and record the verdict | (a) 40 min · (b) 3–4 h · (c) 45 min | pack is **MIT** — patchable and re-hostable with credit; Proper Shaders is proprietary, link only |
+| **T1** PBR materials | the pack's PBR maps **plus DLSS 5's learned materials** on an RTX 5090 | the same pack, counted exactly by n18's `tools/pack_pbr_census.py`: **2363** `mat_<HASH>` materials, of which **174** have a replacement albedo (147 normal, 121 rough, 71 height, **13 metal** keyed to a game texture); ~**2190** are legacy, and `rtx_materials.cpp` shows a legacy material can only carry a **constant** roughness — a map is impossible | **(a) shipped by n18:** `rtx.legacyMaterial.roughnessConstant = 0.65` in all three profiles — one step from the runtime default 0.7 onto the matte end of the pack's own measured paving band (wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584; per-map median 0.582), while `rtx.opaqueMaterial.roughnessScale/Bias` are refused because they would rescale the pack's 121 rough maps too; (b) offline PBR-ify pass (normal+roughness from albedo) for the top ground/road textures by hash — the list is `build/tmp/n18/pack-uncovered.txt` (2197 hashes, ranked by USD references), and we already read and write DDS in `tools/water_normal_soft.py`; (c) probe `rtx.dlssNeuralRendering` and record the verdict — **done by n19: unavailable here**, the driver refuses the capability query, so T1 is won with (a) and (b) only | (a) 40 min · (b) 3–4 h · (c) 45 min | pack is **MIT** — patchable and re-hostable with credit; Proper Shaders is proprietary, link only |
 | **T2** HD geometry / textures | an "8K texture pack" claim; the pack itself is 2K/4K; Remix 1.6 adds OpenEXR/HDR skyboxes and ComfyUI 2.0 AI texture pipelines | the pack's 2K albedo set (164 of 345 at 2048 px), `rtx.texturemanager.budgetPercentageOfAvailableVram = 40` on a 16 GB card, no HDR sky | measure the texture budget and the streaming cost of the pack's 4K set; HDR sky is pack/Toolkit work, not ours | 1–2 h to measure; the assets are upstream | MIT pack; the runtime zip is NVIDIA's EULA (`redistribute: ask` in `deps/manifest.json`) |
 | **T3** atmosphere | Remix volumetrics; DLSS 5's foliage light scattering + volumetric control mask | `rtx.volumetrics.enable = True` and the froxel keys — but **no fog-remap keys at all**, so San Andreas' fixed-function fog never became volumetric (and the profile's `rtx.enableFogMaxDistanceRemap = False` was a dead name, so the option had always run at its default) | **shipped by n17:** `rtx.volumetrics.enableFogRemap = True`, input bounds `fogRemapMaxDistanceMin/MaxMeters = 400 / 4000` (the game's own `FarClp` range in `data/timecyc.dat`), output bounds `fogRemapTransmittanceMeasurementDistanceMin/MaxMeters = 2 / 6` (3.4–10.3 km of air), `fogRemapColorMultiscatteringScale = 0`, and the dead key renamed to `rtx.volumetrics.enableFogMaxDistanceRemap = True`. `enableHeterogeneousFog` deliberately left commented out. Targets far/near 0.5–0.9 and sky luma ≥ 150 are **not both reachable with this block** — see §6 and FINDINGS (n17) | 60–90 min + one tour | none (runtime knobs) |
 | **T4** grading | warm filmic with real roll-off (ceiling 1–4 %, headroom 2.4–3.5), partly DLSS 5's tone model | `rtx.tonemap.finalizeWithACES = True`, but `tonemappingMode` left at its default **Local**, `localtonemap.shadows = 2.5`, auto-exposure off → headroom 1.4-1.8, ceiling ≤ 0.03 %, warmth −67…+10 | **shipped by n16:** `rtx.tonemappingMode = 0` (Global — not `rtx.tonemap.tonemappingMode`, which is not an option), `rtx.tonemap.exposureBias = -0.5` as the anchor, `localtonemap.shadows 2.5 → 1.0` and `highlights 4 → 2.0` for the Local A/B, `finalizeWithACES` kept. Targets: ceiling 0.5–3 %, headroom ≥ 2.0, warmth ≥ +15, warm share ≥ 70 % — **not yet measured**, see §6 | 60–90 min + measure | none (runtime knobs) |
@@ -134,7 +152,7 @@ files, so "before" and "after" are two commands.
 | **n16-tonemap-highlights** | T4 | Global tonemap + an exposure anchor that lets highlights exist; the biggest measured number in the table | **config shipped, after-numbers owed** (see §6) |
 | **n17-fog-aerial-perspective** | T3 | map San Andreas' fixed-function fog onto Remix volumetrics so distance fades instead of staying crisp | **config shipped, after-numbers owed** (see §6). The dead key it inherited (`rtx.enableFogMaxDistanceRemap`) is fixed; the medium is 10.3 km of air in clear weather instead of 344 km |
 | **n18-legacy-material-brdf** | T1a | give the ~2190 materials that have no PBR maps a sane roughness instead of the runtime default | **config shipped, after-numbers owed** (see §6). Census, the decoded roughness of the pack's own maps, and the uncovered-hash list: FINDINGS (n18) and `build/tmp/n18/` |
-| **n19-dlss5-neural-probe** | T1c/T4 | find out whether `rtx.dlssNeuralRendering` does anything on an RTX 4070 Ti SUPER under Proton, and write the answer down either way | queued |
+| **n19-dlss5-neural-probe** | T1c/T4 | find out whether `rtx.dlssNeuralRendering` does anything on an RTX 4070 Ti SUPER under Proton, and write the answer down either way | **answered: no** — the runtime's own `NVIDIA DLSS-NR support query failed (0xbad00010)` line, driver 610.57.04, model DLL present. Probe profile `config/rtx.conf.dlss5` exists (not shipped, one command in/out); nothing in this repo depends on it. FINDINGS (n19), §6 |
 
 ## 6. Re-measuring this at any time
 
@@ -358,6 +376,56 @@ props 0.419, floor 0.434). 0.65 is that band's matte end, one step from the defa
    (it will not — that is the point of the next task) while the pack's own remastered surfaces stay
    as they were; whether chrome, glass and car paint are unchanged (they are replaced materials, so
    they must be); and whether the 21:00 sodium lamps still sit on a dark road.
+
+### The n19 probe: DLSS 5 is off this box's menu, and here is the ten-second re-check
+
+n19 asked whether DLSS 3D-Guided Neural Rendering (`rtx.dlssNeuralRendering.*`) does anything on an
+RTX 4070 Ti SUPER / driver 610.57.04 under this Proton prefix. It could not run the game (rule 1),
+but it did not need to: the runtime queries the DLSS-NR capability on **every** run, inside
+`NGXContext::initialize()` (`rtx_ngx_wrapper.cpp:226`), which happens when the first NGX context is
+created (Ray Reconstruction — `rtx.enableRayReconstruction` defaults to True, `rtx.useDenoiser = True`
+is in every profile). The last real run answered:
+
+```
+<game>/rtx-remix/logs/remix-dxvk.log:328
+[11:48:13.146] warn:  NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info: NVSDK_NGX_Result_FAIL_UnsupportedParameter)
+```
+
+with **no** `dlssNeuralRendering` key in any `*.conf*` of the install. Verdict: **unavailable** —
+nothing to ship, and no hopeful key left behind (`tests/test_dlss5_probe_keys.py` fails if one
+appears in `config/rtx.conf`, `.perf` or `.nopops`). Full evidence: [FINDINGS.md](FINDINGS.md) (n19).
+
+1. Nothing to install for the free half. On any run, look at what the runtime already said:
+   ```
+   grep -iE 'DLSS-NR|Neural' <game>/rtx-remix/logs/remix-dxvk.log
+   ```
+   Expected today: the warn line above, plus `[RTX info] Neural Radiance Cache: supported` (NRC is a
+   different NGX feature and it **does** work here — do not confuse the two).
+2. If a driver update ever happens (Remix 1.6's own baseline is **616.92**; this box is on
+   610.57.04), the same grep answers the one open sub-question — driver gate or GPU gate:
+   * the line disappears → the capability is now advertised, and the probe becomes worth a real run;
+   * it becomes `NVIDIA DLSS-NR not available on this hardware/platform. Available: 0, …` → the
+     driver knows the feature and **the GPU is the gate**; close the question and stop.
+3. Only if step 2 says "the line disappeared": `bash tools/rtxprofile.sh dlss5 <game>` (that is
+   `config/rtx.conf.perf` plus the eleven DLSS-NR keys at the runtime's documented defaults —
+   `enable = True`, `model = 0`, `showVramUsage = True`), take two stops of the tour — a daytime
+   street (pershing-noon) and a close character (13-ped-crowd-pershing-noon), because the effect is
+   skin/foliage/material detail — then
+   ```
+   grep -A200 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log | grep -i dlssneural
+   grep -iE 'DLSS-NR|Neural' <game>/rtx-remix/logs/remix-dxvk.log
+   ```
+   The dump must show `rtx.dlssNeuralRendering.enable = 1`; the log must **not** contain
+   `DLSS-NR activation failed; disabling DLSS-NR.` (if it does, the runtime turned it off itself —
+   `rtx_dlss_neural_rendering.cpp:285` — and the answer is still "no"). Then the usual two
+   `tools/target-gap.py` commands against `build/tmp/n16/gap.json` and
+   `build/tmp/n16/good-before.json`, and the KEEP WHAT WORKS rule decides: DLSS 5 is a *generative*
+   stage, so a shot that gains detail while the sodium lamps, the sunset and the sea move at all is
+   a reason to leave it off.
+4. Rollback is one command either way: `bash tools/rtxprofile.sh current <game>` (or `restore`).
+   The probe cannot break startup even when the feature cannot initialise: with the support flag
+   false the pass never activates, allocates nothing (`rtx_resources.cpp:540`) and returns before
+   doing any work (`rtx_context.cpp:1897`).
 
 After those, the two bigger bets are recorded but not scheduled: an offline **PBR-ify pass**
 (generate normal/roughness for the most-seen ground and road textures, patch the pack's material

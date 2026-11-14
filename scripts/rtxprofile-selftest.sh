@@ -16,6 +16,11 @@
 #   6  n01: the nopops A/B profile installs byte-for-byte and restores byte-for-byte, changes
 #      exactly the nine temporal keys it documents, and leaves every look key and texture list
 #      of config/rtx.conf alone. Its provenance (tools/rtx-nopops.py) is re-checked too.
+#   7  n19: the DLSS 5 probe profile (config/rtx.conf.dlss5) installs and restores byte-for-byte,
+#      differs from config/rtx.conf.perf by exactly the eleven rtx.dlssNeuralRendering.* keys, and
+#      is audited by BOTH key audits - including the negative control that the task file's own
+#      spelling, `rtx.dlssNeuralRendering = True`, is the CATEGORY and not an option, so the
+#      strings audit accepts it and the option-table audit must not.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
@@ -201,6 +206,82 @@ for k in decalTextures ignoreTextures uiTextures skyBoxTextures particleTextures
   c=$(grep -m1 "rtx.$k = " config/rtx.conf | tr -d '\r' | sha256sum)
   [ "$a" = "$c" ] && ok "nopops carries the texture list rtx.$k byte for byte" || bad "nopops altered the texture list rtx.$k"
 done
+
+# --- 7 the n19 DLSS 5 probe profile -------------------------------------------------------
+DL=$(sha config/rtx.conf.dlss5)
+$TOOL current "$G" > /dev/null 2>&1
+$TOOL dlss5 "$G" > "$T/dlss5.log" 2>&1 || bad "dlss5 switch exited nonzero"
+[ "$(sha "$G/rtx.conf")" = "$DL" ] && ok "dlss5 installed the probe profile byte for byte" || bad "dlss5 did not install the probe profile"
+$TOOL status "$G" > "$T/status-dlss5.log" 2>&1
+if grep -q "^profile  : dlss5" "$T/status-dlss5.log"; then ok "status identifies the live file as 'dlss5'"; else bad "status did not identify 'dlss5'"; fi
+if grep -q "rtx.dlssNeuralRendering.enable  *True" "$T/status-dlss5.log"; then ok "status shows the probe switch is on"; else bad "status does not show rtx.dlssNeuralRendering.enable"; fi
+$TOOL restore "$G" > /dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "dlss5 -> restore is byte-identical" || bad "dlss5 -> restore changed the file"
+$TOOL dlss5 "$G" > /dev/null 2>&1
+$TOOL current "$G" > /dev/null 2>&1
+[ "$(sha "$G/rtx.conf")" = "$ORIG" ] && ok "dlss5 -> current round-trip is byte-identical (one command back to shipped)" || bad "dlss5 -> current changed the file"
+
+# both audits on the probe file, and the probe is only allowed the same dead keys as perf
+if grep -q "rtx.conf.dlss5: [1-9][0-9]* keys, 0 unknown" "$T/check.log"; then
+  ok "rtxprofile.sh check audited config/rtx.conf.dlss5 against the runtime's strings (0 unknown)"
+else
+  bad "rtxprofile.sh check did not audit config/rtx.conf.dlss5" "see $T/check.log"
+fi
+if python3 tools/rtx-option-audit.py --quiet config/rtx.conf.dlss5 > "$T/dlss5-optaudit.log" 2>&1; then
+  ok "option-table audit: every key of the probe names a real 1.6.1 option"
+else
+  bad "option-table audit on config/rtx.conf.dlss5" "see $T/dlss5-optaudit.log"
+fi
+# the negative control, in both directions: the task file's spelling is the CATEGORY
+printf 'rtx.dlssNeuralRendering = True\n' > "$T/category-only.conf"
+if python3 tools/rtxkeycheck.py --keys config/rtx-runtime-keys.txt --quiet "$T/category-only.conf" > /dev/null 2>&1; then
+  ok "the strings audit accepts rtx.dlssNeuralRendering (why the second audit is required)"
+else
+  bad "the strings audit changed its verdict on the category name - re-check the audits"
+fi
+if python3 tools/rtx-option-audit.py --quiet "$T/category-only.conf" > "$T/category-only.log" 2>&1; then
+  bad "option-table audit is vacuous: it accepted the category name as a switch"
+else
+  ok "option-table audit rejects rtx.dlssNeuralRendering = True; the probe writes .enable"
+fi
+# exactly the eleven documented DLSS-NR keys differ from the 60 fps profile, nothing else
+dlssdiff=$(python3 - <<'PY'
+import re
+KEY = re.compile(r"^\s*(rtx\.[A-Za-z0-9_.]+)\s*=\s*(.*)$")
+def load(p):
+    d = {}
+    for line in open(p, encoding="utf-8", errors="replace"):
+        m = KEY.match(line)
+        if m:
+            d[m.group(1)] = m.group(2).strip()
+    return d
+a, b = load("config/rtx.conf.perf"), load("config/rtx.conf.dlss5")
+diff = {k for k in set(a) | set(b) if a.get(k) != b.get(k)}
+want = {"rtx.dlssNeuralRendering." + n for n in (
+    "enable", "intensity", "structuralStrength", "toneStrength", "model", "useAutoMask",
+    "skinStructureStrength", "enableHighlightRecovery", "highlightRecoveryThresholds",
+    "enableVolumetricControlMask", "showVramUsage")}
+print("%d %s" % (len(diff), "OK" if diff == want else "WRONG:" + ",".join(sorted(diff - want | want - diff))))
+PY
+)
+[ "$dlssdiff" = "11 OK" ] && ok "dlss5 = perf plus exactly the 11 documented DLSS-NR keys" || bad "dlss5 key diff vs perf is wrong ($dlssdiff)"
+for k in decalTextures ignoreTextures uiTextures skyBoxTextures particleTextures animatedWaterTextures lightmapTextures hairCardTextures; do
+  a=$(grep -m1 "rtx.$k = " config/rtx.conf.dlss5 | tr -d '\r' | sha256sum)
+  c=$(grep -m1 "rtx.$k = " config/rtx.conf.perf | tr -d '\r' | sha256sum)
+  [ "$a" = "$c" ] && ok "dlss5 carries the texture list rtx.$k byte for byte" || bad "dlss5 altered the texture list rtx.$k"
+done
+for k in tonemappingMode tonemap.exposureBias volumetrics.enableFogRemap legacyMaterial.roughnessConstant \
+         graphicsPreset pathMaxBounces di.initialSampleCount opacityMicromap.enable; do
+  a=$(get config/rtx.conf.dlss5 "rtx.$k"); b=$(get config/rtx.conf.perf "rtx.$k")
+  [ "$a" = "$b" ] && ok "dlss5 leaves the perf look/perf key rtx.$k alone ($a)" || bad "dlss5 changed rtx.$k ($b -> $a)"
+done
+# no hopeful key in a shipped config: the DLSS-NR keys live in the probe file ONLY
+for f in config/rtx.conf config/rtx.conf.perf config/rtx.conf.nopops; do
+  if grep -q "dlssNeuralRendering" "$f"; then
+    bad "$f carries a dlssNeuralRendering key - the probe must stay non-shipped (n19)"
+  fi
+done
+ok "no shipped profile carries a DLSS-NR key (n19 verdict: unavailable on this GPU/driver)"
 
 echo
 echo "$pass checks passed, ${#fails[@]} failed"

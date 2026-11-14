@@ -1,0 +1,411 @@
+# rhyremix 60 fps profile - s22. Install with: tools/rtxprofile.sh perf [GAME_DIR]
+#
+# Generated from the live <game>/rtx.conf on 2026-11-11 (see .strata/notes-s22-60fps-budget.md
+# for the evidence: every key here is in the runtime's own strings, checked with
+# tools/rtxkeycheck.py --keys config/rtx-runtime-keys.txt config/rtx.conf.perf).
+#
+# What this file is for: MangoHud says ~60 fps with drops on a 4070 Ti SUPER 16 GB at 1080p.
+# Tier A below is applied and is meant to buy headroom without changing the look of the pack.
+# Tier B is commented: one line at a time, in the order given, re-testing between each.
+#
+# Two keys the shipped rtx.conf carries are NOT in this build of the runtime at all
+# (`grep -c` on .trex/d3d9.dll and every other .trex module returns 0):
+#   rtx.enableVolumetricLighting      -> replaced by rtx.volumetrics.enable (same switch, the
+#                                        name this runtime has; the tooltip: "Enabling volumetric
+#                                        lighting provides higher quality ray traced physical
+#                                        volumetrics, disabling falls back to cheaper depth based
+#                                        fog.")
+#   rtx.minReplacementTextureMipMapLevel -> dropped; it was already a no-op here.
+# Both are still in rtx.conf.orig / config/rtx.conf, so `tools/rtxprofile.sh current` puts them
+# back.
+#
+# Read the runtime's own log after the first launch of a profile:
+#   grep -A80 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log
+# That dump is the only place the preset layers become visible (the last run showed
+# rtx.neuralRadianceCache.trainingMaxPathBounces = 9, which no file in the game folder writes).
+
+rtx.restirGI.boilingFilterRemoveReservoirThreshold = 30
+rtx.decalTextures = 0x0270E41E9BF89516, 0x11C6FD244CAED049, 0x1A1B9A4E6CAF5E9E, 0x1A2F5F13EC1D6CDD, 0x1B91964934D3E1B1, 0x20D2BD9A8F8CB7F1, 0x26626F3D0B9542FD, 0x2E80B8878F003D7A, 0x35BF4E34E77A0B7C, 0x38FA6E19237E82FE, 0x39E5406DC4D3006D, 0x3F3E25323C1E0220, 0x432E891037A5F4CE, 0x45ABC0B544E897FF, 0x470163CEBDD9080F, 0x4B0B6CE7E032DD29, 0x56190D6EE7379FE5, 0x5B1F839051230514, 0x5F3832E42403337A, 0x62DC87C416A654CD, 0x64DC83584D2F7779, 0x66EFA5FE769C8102, 0x6BD6FA2D62E32EDA, 0x73AC780C8EDE6485, 0x76CF04376B04B8B4, 0x78F9BBFB79156E88, 0x791CFC283E2D00E1, 0x86E7F5D9BDCB6871, 0x960E9DA1FBC8D55C, 0x98F1B88719A0D2C8, 0xA244C9C2D5956E1A, 0xA29AEC4A3D81DFDC, 0xA6D7045F8740A5DF, 0xB97DAA02F39D2524, 0xBBB8BF8C92DEC94F, 0xBE686B6B6B8AE7ED, 0xC1DEE32B1A6EDBE3, 0xC7593BF9215112DD, 0xC8EDDFB620CA8A5F, 0xCA4EAF478D3E998C, 0xD0A66A65C7528968, 0xDB4F6AFB517CAA97, 0xDD0B477219193EA2, 0xE099A3A212027ADE, 0xE857B38281B72432, 0xFC343E2104C444F9, 0xFDFC58D603A94554
+rtx.restirGI.validateVisibilityChange = True
+# n16 audit found this key DEAD in 1.6.1 (the option is rtx.volumetrics.enableFogMaxDistanceRemap,
+# default True), so it has never run. n17 fixed the name; the value is the default, so this line
+# changes nothing on its own - the fog block at the end of this file is what changes anything.
+rtx.volumetrics.enableFogMaxDistanceRemap = True
+rtx.dlfg.enable = False
+rtx.fallbackLightRadius = 3
+rtx.ignoreTextures = 0x04931B9EC8F68722, 0x0748B4991EA9E481, 0x0801DDFEFD4AD85F, 0x12327A08E725DEE0, 0x188BFFED5020950B, 0x4DBD066761A29F5B, 0x63F56BAD1D42704D, 0x650AB0CEFBAFD10F, 0x6D2446E17BAC3050, 0x6F0AB36E2C7DB1A6, 0x72F44E5A77F84F90, 0x8CA564E68A98C4A7, 0x8F34BF39FA23F39D, 0x9D6A9F7B9355F09F, 0xB1B3C04B07B5ACEA, 0xB5C86BEE8E84357E, 0xBC9E2A1A5E437634, 0xBCCFDFAAE0F4E2AF, 0xE2D32425EB3234C0
+rtx.enableFirstBounceLobeProbabilityDithering = False
+rtx.restirGI.boilingFilterMinThreshold = 15
+rtx.fallbackLightType = 1
+rtx.allowFSE = True
+rtx.usePostFilter = False
+rtx.minOpaqueSpecularLobeSamplingProbability = 0.05
+rtx.restirGI.sampleStealingJitter = 3
+rtx.di.stealBoundaryPixelSamplesWhenOutsideOfScreen = False
+rtx.postfx.enableVignette = False
+rtx.opacityMicromap.showAdvancedOptions = True
+rtx.restirGI.virtualSampleMaxDistanceRatio = 0.5
+rtx.uiTextures = 0x02FB7ADBE915018A, 0x1D3D385E969C83FA, 0x3259CE3885F90642, 0x3781F525BBBD9FBD, 0x3FC78C823061BDB0, 0x5825FA46CF812787, 0x5970DA3808FA8128, 0x9D36811F7D6CB321, 0xC412E7D486FF9E5C, 0xEDAA7402F2B0E4BB
+rtx.restirGI.historyDiscardStrength = 10
+rtx.pathMaxBounces = 2
+rtx.enableTransmissionApproximationInIndirectRays = True
+rtx.freeCameraSpeed = 50
+rtx.stochasticAlphaBlendOpacityThreshold = 0.2
+rtx.lightmapTextures = 0xB6E06CE024FE9111
+# rtx.localtonemap.shadows moved to the n16 block at the end of this file (2.5 -> 1.0).
+rtx.dlfg.enablePresentMetering = False
+rtx.instanceOverrideInstanceIdx = 2147483647
+rtx.useNewGuiInputMethod = False
+rtx.autoExposure.evMinValue = 0
+rtx.restirGI.useVirtualSample = False
+rtx.restirGI.useAdaptiveTemporalHistory = False
+rtx.emissiveIntensity = 1.0
+rtx.emissiveBlendOverrideEmissiveIntensity = 0.06
+rtx.di.enableDenoiserConfidence = False
+rtx.skyBoxTextures = 0x294AFA03D0A0EC8F, 0x56F9D8C7499BC624, 0x79452E6A6F0D6C0E, 0x7A4F053D4D0C4437, 0x9B80DC0B3042D274, 0xA3DB5B6EB9628265, 0xBBC7C2A811DC27AF, 0xD4B43B810BECAFE8, 0xD90E0FB3CC373950, 0xDB44893153AB9DFB, 0xEB05F3829A0BA3B0, 0xEBABE67E3BB17A9D
+rtx.di.permutationSamplingNthFrame = 0  # n04: runtime default; 1 re-randomises which lights a pixel draws every frame
+rtx.ignoreGameDirectionalLights = True
+rtx.restirGI.useSampleStealing = 1
+rtx.particleTextures = 0x05D81D806AE2DE92, 0x166C27331EA67091, 0x2D558BC31F67FD1D, 0x2F580E4763FAB662, 0x3F66C5D5F91C3708, 0x448152B6FE9F348C, 0x44AF0EF987753198, 0x4EEAC3D05034C372, 0x76BD5D19A139B6BC, 0x7A8BAF2D1E21CC24, 0x9A8E8191471533D5, 0xB51546930E6B5738, 0xB573F6EEBBA1EC5D, 0xBE5F9FBE5DF344A8, 0xC70DC799C5BFFE65, 0xC97B2D2D38F5CF97, 0xCE919FA9A67900C4, 0xD4220861A515C770, 0xEA35A9BFBDAE3C3B, 0xEF687DB43CD24DE3
+rtx.skyDrawcallIdThreshold = 6000
+rtx.zUp = True
+rtx.autoExposure.enabled = False
+rtx.restirGI.useDLSSRRCompatibilityMode = True
+rtx.enableCulling = False
+rtx.demodulate.enableDirectLightBoilingFilter = False
+rtx.graphicsPreset = 1
+rtx.animatedWaterTextures = 0x00FAD6ECF37BFBDB, 0x02502A4AFB4CADBB, 0x071C53CBDEFFBA77, 0x0C746F1683798424, 0x0DC55F6D9DEBCADB, 0x0DFE4F77C157CEA2, 0x120BED9788C58EDD, 0x1225B4DFF6506137, 0x1A1A35CA8382015E, 0x1D024B67914A61A9, 0x1DE1B1AA2398A7DC, 0x278367335989356B, 0x2FAC7A403DB8EF89, 0x334EFD7D0C9A0557, 0x3DFD2B96C1930F78, 0x3EF016691656F970, 0x418DEBB0F4A2A197, 0x434FC43F7BF7EC1F, 0x47F0D076364FE100, 0x48519E8FE2DC6D8B, 0x4E8D2FCE735ACA80, 0x4FFDCE29E1793968, 0x51DB758F888C8A7C, 0x529A2C691C741B21, 0x566FF5AF1575B4F6, 0x59296793798A7318, 0x5D20FD88C0A70C13, 0x5D69653013D1FE27, 0x5FAE7571446D5A1F, 0x6363571649761AFC, 0x66ABA8DF426979B7, 0x6E419569F50C57A3, 0x6E8F5B279EFEC93C, 0x71D279975B0F4808, 0x7492C2957CEB1377, 0x75007E056037B9BF, 0x7EAA20F654D73E23, 0x80A5DB2A47161FDF, 0x8398EA381E2D5BAB, 0x91548A1865B639AC, 0x91E3C33F56C7C402, 0x923E2560A8DB36F4, 0x9A6022AB4E9D706A, 0x9B7E84B205AABCF3, 0x9BD20D5EED3F151F, 0xA006DCDD5668F14C, 0xA4EED0463F70FD79, 0xA75A0B41F2454F04, 0xC120BA4E84CE7AE8, 0xC75EC8EE882E2237, 0xCD648C3913D2AAE4, 0xCE2FA1C23180ECA3, 0xD04D48CB7D9648C0, 0xD48CB1BB322048DA, 0xD9EDCDEC1D0221F2, 0xDB5C2DFA92C01020, 0xDB6D83AA39677D42, 0xDD8A0AE1E5EB9369, 0xDE8822B32A6BC670, 0xE692218518A4111F, 0xEFA8FB7D8D3AA6C3, 0xF40C8156FAB61149
+rtx.neeCache.enableModeAfterFirstBounce = 2
+rtx.postFilterThreshold = 10
+rtx.russianRouletteMode = 1
+rtx.minOpaqueDiffuseLobeSamplingProbability = 0.05
+rtx.pathMinBounces = 1
+rtx.skyBrightness = 1.0
+rtx.enableStochasticAlphaBlend = False
+rtx.tonemap.finalizeWithACES = True
+rtx.sceneScale = 0.01
+rtx.postfx.enableChromaticAberration = False
+rtx.opacityMicromap.enable = True
+rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate = 2048
+rtx.opacityMicromap.cache.maxBudgetSizeMB = 768
+# n07: the same four opacity-micromap guard rails config/rtx.conf carries, next to the caps they
+# sit beside (pinned from xoxor4d's GTA IV / Portal 2 RTX profiles and from the runtime's own
+# defaults; the reason is our OOM device loss - docs/VEGETATION.md).
+rtx.opacityMicromap.cache.maxVidmemSizePercentage = 0.15
+rtx.opacityMicromap.building.conservativeEstimation.maxTexelTapsPerMicroTriangle = 64
+rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False
+rtx.opacityMicromap.building.splitBillboardGeometry = True
+# n07: 1.0 pairs with the regenerated water sheets (tools/water.sh remix-ref / soft); 0.35 is the
+# number for the pack's own sheet (tools/water.sh realistic / calm). See config/rtx.conf.
+rtx.translucentMaterial.normalIntensity = 1.0
+
+# s32: the hillside vegetation (grass/bush/fern/leaf cards) comes out as soft scribbled lines.
+# These are the alpha-cutout card textures of the game's procedural-vegetation objects: every
+# texture in the dictionaries those objects reference, kept only where the texture really has
+# cutout content (>=5 % fully transparent or >=5 % mid-alpha texels; the opaque bark/dirt in the
+# same dictionaries is left alone). Regenerate with:
+#   python3 tools/vegetation_hashes.py models/gta3.img --emit rtx.hairCardTextures
+# (the dictionary allow-list is the tool's default; --verbose prints the per-texture alpha table).
+# Measured on the mip-0 alpha: gta_proc_rushes gras03Si 76.5 % alpha 0 / 20.8 % mid / 2.7 %
+# opaque; gta_proc_grassland oak2b 89.8 / 10.2 / 0; gta_proc_bush newtreeleaves128 30.2 / 20.6 /
+# 49.2. The cards are painted with soft gradients and not one of them is in any rtx.conf category
+# list today, so the runtime blends them instead of alpha-testing them - which is what the
+# hair-card tooltip is for ("Textures in this category will preserve fine texture detail, render
+# as cutouts instead of alpha blends, and disable backface culling"), and it is also what makes
+# the opacity micromaps apply to them ("a ground densely covered with grass blades ... multiple
+# trees with a lot of foliage").
+# If the vegetation looks unchanged in game, this line may be too long for the parser: retry with
+# the procobj-only subset (45 hashes, 922 chars) - .strata/notes-s32-water-vegetation.md.
+rtx.hairCardTextures = 0x0504F3815DC61AA1, 0x08E10D793AD4E2AA, 0x0B1832275CFCB7C9, 0x0D9C21ADF10ADDE7, 0x0E03AA6D740C7A91, 0x0ECD773BC6EABD04, 0x107EEC5B4E018765, 0x1606014E1D0CA857, 0x1860952EB12C1012, 0x187275A5E2C6C9D1, 0x192EDED43163A36B, 0x19A9E6323C3D65D6, 0x1ABD08BDE3184A6A, 0x1D17FC39CBBAFBA0, 0x1D4FCD7A1998F57C, 0x1E41E0E8E5A5F9A4, 0x2248220BFCFA63C1, 0x22614A2DEDEBA2A5, 0x287CE07C692737AD, 0x29686669C64AA3FC, 0x29D8D740AD006BCF, 0x2C08084131222891, 0x2C9C995996103E27, 0x2E1B3B8C149F4E99, 0x2FDF80B499595FB4, 0x3151EA6E45845C17, 0x321DBA0CE6203EB7, 0x3413BBC2B13512CD, 0x38DB281EB8824EF5, 0x3B707642F71E687A, 0x3D719CD78ECABA71, 0x3E2544BE257E9554, 0x3F2C07157A990E6A, 0x423FE28B06E6650F, 0x469CCDAFB47946D7, 0x47F55D5FAE08C379, 0x4963A56F7F16FC89, 0x4B719C27ED8C8836, 0x4BD59785193B3FEA, 0x4F460C663667E09F, 0x4FA612073739FEFF, 0x510C705713853845, 0x56DDB2B8AD2A2DDA, 0x570BD70B9046B029, 0x58927C54CAADD295, 0x5A56C1B9FEEDBAB9, 0x5FE4D31FBE4EEAC6, 0x63145CA4E3F292C8, 0x635F3F989E80F1C7, 0x6497C0EF21A78B78, 0x65FBBEF39CEFAC90, 0x6A42FEBBCB8F029E, 0x6DBCFD70FE455DC5, 0x7595A7450C46CAEB, 0x76266E5CD4DC9500, 0x76D8A0DB60C19639, 0x76F57DDFF86D0779, 0x77081216EC352583, 0x7DC36B000E4FED76, 0x7FAE254C2096AD57, 0x805989154B38E599, 0x80CC572629B0188E, 0x86524E16BDF6E88C, 0x865CD43443A18E6A, 0x898447444F91E3B5, 0x89C0F60CBAABBDAD, 0x8AFFAE2946E92ABE, 0x922928507FECE299, 0x947A4D782DB1FCCD, 0x990161BE04651B62, 0x9C8ACB804A7C77FC, 0x9CC908221052AB72, 0x9D57CFBF4DC5C6C8, 0x9E124DD250F748E7, 0x9EE2BA6525CC97C5, 0x9EE9CA1E2022ECF9, 0x9F83826776AAC0DF, 0xA1075B471E2068D3, 0xA5054FBA0D8C1527, 0xA697D6AAA35DF2FF, 0xA7B9605620133102, 0xA99DAA70B90EE5BD, 0xAA6A767CD75FB268, 0xAB9BD5DC7B72F88A, 0xAC51BF60BF3865CD, 0xAE2E8A7685B242D8, 0xB3EC1CF75134B94C, 0xB48687BBCB9F7448, 0xB50FA269D9BCE0D7, 0xB530EC1CADC74E3D, 0xB53B57E78B7D329A, 0xB5D1BC076C8FE0C7, 0xB6093296B6A1B04B, 0xBAD068D6DD5B10B3, 0xBF04D252D688E8C8, 0xC1278B21D7B39CF1, 0xC3E69221BE9DF2DD, 0xC3F81A23C145E731, 0xC5CD0D4F434AEA31, 0xC6ECDA6547C665F9, 0xC8835200DF303C5C, 0xC8EEFC3B47219C97, 0xC99DBC4B82253C50, 0xCE043A54EBBA15F9, 0xD6D0726F33098B7B, 0xD79327181A4A8DE0, 0xD8FDE69FE1FA3032, 0xD9A4C29EB4CF0C8E, 0xDAFDE2A978A4380E, 0xDBC6603A5C5A1713, 0xDD8318C52803E0BB, 0xDDE8E851C606AB69, 0xDEE802C5F8BA3B46, 0xE9467F583312AA0A, 0xE9DA42F6E7483E74, 0xEB832349DE93EB27, 0xF20884563EA70C55, 0xF4A9329FF093BED7, 0xF5B6C02742843D30
+
+# --- Tier A: applied ---------------------------------------------------------
+# rtx.pathMinBounces 0 -> 1. Tooltip: "The minimum number of indirect bounces the path must
+#   complete before Russian Roulette can be used. Must be < 16. This value is recommended to
+#   stay fairly low (1 for example) as forcing longer paths when they carry little contribution
+#   quickly becomes detrimental to performance." Cost: paths that would have gone 2 bounces in
+#   deep interiors terminate one bounce earlier. Watch: slightly flatter bounce-light in
+#   unlit interiors and under parked cars; nothing else.
+#
+# rtx.spatiallyHashedRadianceCache.qualityPreset = 0 (Medium). The last run logged
+#   "[RTX] Integrate Indirect Mode: Spatially Hashed Radiance Cache - activated", so SHaRC is
+#   the indirect mode that is actually running, and this is the single biggest lever in the
+#   file. Tooltip: "Quality Preset: 0: Medium, 1: High, 2: Ultra ... Lower presets reduce
+#   update tracing cost but slow cache convergence and lighting response. Medium combines
+#   update and query dispatches, adding one frame of latency to lighting changes."
+#   Watch: a one-frame lag on lamps/signs switching on, and GI taking a moment longer to
+#   "fill in" when you drive out of a tunnel.
+#
+# rtx.neuralRadianceCache.qualityPreset = 0 (Medium). The last run logged
+#   "[RTX Neural Radiance Cache] Selected Ultra preset mode." even though NRC is not the
+#   active integration mode; the preset layer still trains it. Cheap insurance if the
+#   automatic raytrace mode ever picks NRC.
+#
+# rtx.volumetrics.froxelGridResolutionScale = 2. Tooltip: "The scale factor to divide the x
+#   and y render resolution by to determine the x and y dimensions of the froxel grid."
+#   Volumetric lighting is on (light cones, the thing that makes the pack's lamps read), so
+#   this halves the froxel grid area. Watch: cone edges and near-field fog get blockier where
+#   they cross geometry; if the halo around streetlights starts stepping, go back to 1.
+#
+# rtx.texturemanager.budgetPercentageOfAvailableVram = 40 (the tooltip states the default is
+#   50%): "If material textures are required beyond this budget, then those textures will be
+#   loaded at lower quality." 16 GB card, and the pack already pushed the OMM cache into an
+#   out-of-memory device loss once (see the OMM block below). Watch: distant road/building
+#   textures one mip softer; if it reads too soft, 45.
+#
+# rtx.useDenoiser = True is written out on purpose: the tooltip says denoising "generally
+#   should remain enabled except when debugging". Turning it off is not a fps trick - it
+#   trades a clean image for noise and then the same time anyway.
+
+# --- Tier B: try ONE at a time, in this order --------------------------------
+# rtx.enableStochasticAlphaBlend = True  # the live file already carries ...OpacityThreshold = 0.2
+#   Tooltip: "Use stochastic alpha blend." Foliage/fences/particles become dithered cutouts
+#   instead of sorted blends, which is also what Opacity Micromaps want. Watch: shimmer on
+#   chain-link fences, power lines and grass edges when moving; the threshold key decides how
+#   much of the image is affected (raise rtx.stochasticAlphaBlendOpacityThreshold to widen it).
+# rtx.enableCulling = True
+#   Tooltip: "Enable front/backface culling for opaque objects. Objects with alpha blend or
+#   alpha test are not culled." This build ships it False. Watch: any single-sided geometry
+#   (skydome seams, road quads seen from below a bridge) can vanish. Revert immediately if a
+#   building loses a wall.
+# rtx.secondaryRayMaxInteractions = 2
+#   Tooltip: "...maximum number of resolver interactions to use for secondary (indirect)
+#   rays ... recommended to be set lower than the primary/PSR max ray interactions". Watch:
+#   decals and ray portals can drop out of GI (a wet-looking road loses its reflection of a
+#   decal).
+# rtx.volumetrics.froxelDepthSlices = 32
+#   Tooltip: "The z dimension of the froxel grid. Must be constant after initialization."
+#   This build does not print its default, so compare in the Remix UI before/after.
+# rtx.sparseRendering.enableSparseRendering = True
+# rtx.sparseRendering.quality = 0.35
+#   Tooltip: "Enables sparse rendering ... applies a constant per-pixel sampling rate across
+#   the screen. DLSS Ray Reconstruction is required." quality default is 0.45 (seen in the
+#   runtime's own default table). NOT enabled here because the last run logged
+#   "NVIDIA DLSS-NR support query failed (0xbad00010)" under this Proton prefix - verify RR
+#   works (rtx.enableRayReconstruction = True, then look for the RR init line in the log)
+#   before spending the sampling-rate trade. Tooltip on the rate: "Range [0.0625, 1.0]. Rates
+#   below ~0.2 tend to suffer from undersampling and yield diminishing performance returns."
+# rtx.spatiallyHashedRadianceCache.downscaleFactor = 2
+#   Tooltip: "Controls SHaRC update resolution; a factor of N traces one update ray per N by
+#   N pixel block each frame. Higher values reduce update cost but make cache coverage and
+#   lighting changes converge more slowly. Only used when targetNumUpdateRecords is 0."
+# rtx.particles = False
+#   Tooltip: "Enables particle simulation and rendering." Last resort: it removes the
+#   raytraced rain, sparks, smoke and splash, which is most of the pack's atmosphere.
+# rtx.dlfg.enable = True
+#   DLSS frame generation. The same run failed to initialise Reflex
+#   ("Not implemented in current driver installation"), so treat frame gen under Proton as
+#   unproven here; it also adds a frame of latency to a game with 32-bit input handling.
+#
+# Not in this file on purpose - set them in the Remix in-game UI (Rendering tab), because the
+# integer enum order is not recoverable from this build's strings and guessing it is how a
+# "perf profile" ends up lowering the wrong knob:
+#   Graphics Preset -> Custom   (the runtime then logs "[Graphics Preset] Switched to Custom -
+#                                Quality settings migrated to User layer" and stops overriding
+#                                the keys below it; until then the quality-preset layer wins
+#                                over rtx.conf for everything it sets)
+#   DLSS Mode -> Balanced       (labels in this build: Ultra Performance, Performance,
+#                                Balanced, Quality, Full Resolution, Auto)
+#   Raytracing Mode Preset -> Performance/Balanced/Quality (currently "Automatic Raytrace Mode
+#                                Preset in use")
+
+# Kept from the live file, unchanged, because they are look-critical for the pack, not fps:
+#   rtx.sceneScale 0.01 / rtx.zUp True / rtx.ignoreGameDirectionalLights True /
+#   rtx.skyBrightness 1.0 / rtx.emissiveIntensity 1.0 / rtx.localtonemap.shadows (n16 moved it
+#   to 1.0 and wrote the reason at the end of this file) /
+#   rtx.autoExposure.enabled False / rtx.translucentMaterial.normalIntensity (s02 water; n07 sets
+#   it to 1.0 to pair with the regenerated sheets)
+#   and every texture-hash list (decal/ui/skyBox/particle/animatedWater/lightmap/ignore).
+# The rtx.restirGI.* block is carried unchanged but is inert while the indirect mode is SHaRC:
+# the integration mode is one of Importance Sampled / ReSTIR GI / NRC / SHaRC, and the log says
+# SHaRC won. Do not spend a session tuning those eleven keys for fps.
+
+rtx.volumetrics.enable = True
+rtx.useDenoiser = True
+rtx.spatiallyHashedRadianceCache.qualityPreset = 0
+rtx.neuralRadianceCache.qualityPreset = 0
+rtx.volumetrics.froxelGridResolutionScale = 2
+rtx.texturemanager.budgetPercentageOfAvailableVram = 40
+
+
+# ---------------------------------------------------------------------------
+# n04 (2026-11-12b finding A): the same light-sampling keys as config/rtx.conf,
+# at the cheaper end. The plugin now keeps every lamp inside max_distance alive
+# (the cap may no longer evict one), so the pool the renderer samples is 400-550
+# lights; these are the keys that decide whether a pixel ever draws one of them,
+# and they are what "off-screen lights still light" actually depends on. The
+# full reasoning and the tooltips are in config/rtx.conf and
+# .strata/notes-n04-lights-always-on.md; this file only has to be cheaper.
+rtx.di.initialSampleCount = 6
+rtx.di.maxHistoryLength = 12
+rtx.risLightSampleCount = 12
+rtx.volumetrics.temporalReuseMaxSampleCount = 4
+rtx.volumetrics.restirGridGuardBandFactor = 1.3
+# n16 audit: both names are DEAD in 1.6.1 - the options are rtx.antiCulling.object.enable and
+# rtx.antiCulling.light.enable (both default False), so anti-culling has never been on here.
+# Renaming them is a TLAS/VRAM decision (numObjectsToKeep default 10000), not a look one: it
+# belongs to a perf task. docs/FINDINGS.md, "Dead keys".
+rtx.antiCulling.object = True
+rtx.antiCulling.light = True
+rtx.antiCulling.light.numFramesToExtendLightLifetime = 600
+# Cheaper than the shipped profile on the candidate draws (6 vs 8, 12 vs 16) and
+# on the volumetric reservoir (4 vs 8), the same on the two keys that cost reuse
+# rather than rays. If fps matters more than steadiness, drop
+# rtx.di.initialSampleCount back to 4 FIRST and keep maxHistoryLength: history is
+# nearly free, candidates are not.
+
+
+# ---------------------------------------------------------------------------
+# n07 water and foliage: the same look keys as config/rtx.conf (research log:
+# .strata/notes-n07-water-research.md), minus the one that costs rays.
+# Pair with `bash tools/water.sh remix-ref <game>`.
+rtx.translucentMaterial.animatedWaterEnable = True
+rtx.translucentMaterial.animatedWaterSecondaryNormalLodBias = 2.0
+rtx.opaqueMaterial.layeredWaterNormalEnable = True
+rtx.rayreconstruction.invalidateHistoryForAnimatedWater = False
+rtx.rayreconstruction.combineSpecularAlbedo = True
+rtx.volumetrics.enableTranslucentShadows = True
+#   Volumetric lighting is on in this profile too, so this is what keeps a light cone alive where it
+#   crosses the sea surface; it is a froxel-grid term, not a ray term, so it is safe in a perf file.
+# NOT here on purpose: rtx.enableDirectTranslucentShadows (True in config/rtx.conf). Its tooltip
+# is "...include OBJECT_MASK_TRANSLUCENT into primary visibility rays", and over an ocean-sized
+# single sheet that is an extra intersection on every shadow ray. If the 60 fps profile wants the
+# coloured light through water, add it and watch the frame time at stop 11-water-santa-maria.
+
+
+# ---------------------------------------------------------------------------
+# n16 (2026-11-13, docs/TARGET.md §4 T4): the daytime frame has no bright end - the tonemap.
+# Same five keys as config/rtx.conf, same values; the tooltips, the 1.6.1 source lines and the
+# retune ladder are in config/rtx.conf's n16 block and .strata/notes-n16-tonemap-highlights.md.
+# Nothing here costs rays: the local tonemapper's mip pyramid stops running entirely
+# (rtx_local_tone_mapping.cpp:144 returns false while rtx.tonemappingMode = 0), and the global
+# pass is three compute dispatches over the frame plus a 256-bin curve (rtx_tone_mapping.cpp).
+# Measured before: headroom p99.9/p50 1.41-1.81, ceiling 0.003-0.027 %, p50 123-170
+# (build/tmp/n15/gap.json). This task could not render (rule 1), so the after-numbers are owed by
+# the next live run - docs/TARGET.md §6.
+rtx.tonemappingMode = 0
+#   NOT rtx.tonemap.tonemappingMode: that name is not an option and is silently ignored
+#   (tools/rtx-option-audit.py against config/rtx-options-1.6.1.tsv). 0 = Global, default 1 = Local.
+rtx.tonemap.exposureBias = -0.5
+#   Hard EV (auto exposure is off here too): exposureFactor = 2^(exposureBias + userEVBias).
+#   The Remix UI's "Global Exposure" drag; -0.5 EV is the p50 anchor, retune ladder in rtx.conf.
+#   n22: the plugin overwrites this at runtime from the sun (rhyremix.ini [tonemap],
+#   day_ev -0.5 -> night_ev +0.5 over solar elevation, <= 0.05 EV/s). The user layer outranks this
+#   file, so this is the startup / full-daylight value; [tonemap] apply=0 puts a static number back.
+rtx.localtonemap.shadows = 1.0
+rtx.localtonemap.highlights = 2.0
+#   Both inert while rtx.tonemappingMode = 0; they are the Local A/B starting values (the shipped
+#   2.5 / default-4 pair is a 90:1 squeeze of exactly the shadow and highlight branches).
+#   rtx.tonemap.finalizeWithACES = True is already in this file (line 84) and is NOT repeated here -
+#   within one layer the later line wins (Config::parseOption -> m_options.insert_or_assign,
+#   src/util/config/config.cpp:1137), so a second copy only invites a future edit of the wrong one.
+#   What does change is that in Global mode it is live for the first time: in Local mode it was
+#   rtx.localtonemap.finalizeWithACES (default True) that ran.
+
+
+# ---------------------------------------------------------------------------
+# n17 (2026-11-13, docs/TARGET.md §3 T3): SA's fixed-function fog, remapped onto the volumetric
+# medium, so distance fades. Same six keys and the same values as config/rtx.conf - the tooltips,
+# the 1.6.1 source lines, the density arithmetic (tools/fog-budget.py), the not-shipped list and
+# the retune ladder are in config/rtx.conf's n17 block and .strata/notes-n17-fog-aerial-perspective.md.
+# Nothing here costs rays. The froxel march and the analytic transmittance tail already ran in every
+# frame of this profile (rtx.volumetrics.enable is True, so volumeArgs.enable is True and the
+# composite's depth-based fog has always been skipped - composite.comp.slang:653); what changes is
+# the sigma they integrate, from 1.1e-5 /m (344 km of air, i.e. nothing) to 3.8e-4 /m (10.3 km) at
+# the game's own daytime fog end of 4000 m. Measured before: far/near local contrast 1.22-3.67,
+# sky luma 92-128 at saturation 0.28-0.61 (build/tmp/n17/gap.json). This task could not render
+# (rule 1), so the after-numbers are owed by the next live run - docs/TARGET.md §6.
+rtx.volumetrics.enableFogRemap = True
+rtx.volumetrics.fogRemapMaxDistanceMinMeters = 400
+rtx.volumetrics.fogRemapMaxDistanceMaxMeters = 4000
+rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMinMeters = 2
+rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMaxMeters = 6
+rtx.volumetrics.fogRemapColorMultiscatteringScale = 0
+#   The input bounds bracket the game's own fog end (data/timecyc.dat FarClp: 4000 m for every
+#   weather type except 5 AM smog at 800 m; vanilla timecycp.dat 400-1150 m). The runtime does NOT
+#   clamp normalized, so leaving the defaults (1 / 40 m) in place would have mapped SA's 4000 m to
+#   d_meas 8200 m - thinner than the nothing it replaces. The output bounds are the density:
+#   10.3 km of air at the clear end, 3.4 km at the densest the game asks for, and never more than
+#   2 % of contrast lost inside 50 m in clear weather (5.5 % at the densest) - the "haze must not
+#   blur the ground under the camera" bound.
+# NOT here on purpose, same as config/rtx.conf: rtx.volumetrics.enableFogColorRemap (a dark game fog
+#   colour multiplies sigma by hundreds: 0.1 sRGB at d_meas 6 m is 0.77 /m, the street gone),
+#   rtx.volumetrics.enableHeterogeneousFog (its noise defaults are 12 cm cells - room scale, and it
+#   adds a density sample per march step, which is the one part of this that would cost fps), and
+#   rtx.volumetrics.froxelMaxDistanceMeters (20 m: bounds the in-scatter march, not the attenuation,
+#   which has an analytic tail; raising it changes the pack's lamp cones - a perf call).
+#   rtx.volumetrics.enableAtmosphere is inert in 1.6.1: no shader reads it.
+
+
+# ---------------------------------------------------------------------------
+# n18 (2026-11-13, docs/TARGET.md §4 T1a): the ~2190 materials the pack never gave PBR maps.
+# Same one key and the same value as config/rtx.conf - the census (2363 mat_<HASH> materials, only
+# 174 with a replacement albedo), the decoded roughness of the pack's own maps (per-map mean median
+# 0.582; wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584, buildings 0.503, props 0.419) and
+# the source proof that a legacy material can only carry a CONSTANT roughness
+# (src/dxvk/rtx_render/rtx_materials.cpp, LegacyMaterialData::as()) are in config/rtx.conf's n18
+# block and .strata/notes-n18-legacy-material-brdf.md; the census itself is
+# build/tmp/n18/census.txt from tools/pack_pbr_census.py.
+rtx.legacyMaterial.roughnessConstant = 0.65
+#   One step from the runtime default 0.7 (config/rtx-options-1.6.1.tsv) toward the pack's own
+#   paving band 0.58-0.65, not past it. Costs no rays: roughness is a GBuffer term, and 0.65 stays
+#   far above rtx.spatiallyHashedRadianceCache.perceptualRoughnessThreshold (0.4) and
+#   rtx.restirGI.virtualSampleRoughnessThreshold (0.2). It does sharpen the specular lobe, so the
+#   denoiser averages slightly less where the lobe was already narrow - the one fps-relevant
+#   sentence in this block. Ladder and abort: config/rtx.conf, docs/TARGET.md §6.
+#   NOT here on purpose, same as config/rtx.conf: rtx.opaqueMaterial.roughnessScale/.roughnessBias
+#   (they would rescale the pack's 121 rough maps too - the only per-texture variation the pack has,
+#   median intra-map spread 0.220 - and the tooltip says debug-only), rtx.legacyMaterial.
+#   metallicConstant (0.1 default; 13 hashes have a metal map averaging 0.382, so it is wrong both
+#   ways, but lowering it removes specular energy: a separate one-value step),
+#   rtx.legacyMaterial.anisotropy (uniform smear), rtx.terrainBaker.material.properties.* (the
+#   runtime's own second, per-class constant for blended terrain - needs rtx.terrainTextures hashes
+#   and bakes a texture per frame: a data + VRAM task, not a perf line).
+
+
+# ---------------------------------------------------------------------------
+# n19 (2026-11-13, docs/TARGET.md §2 / §5 / §6): the DLSS 5 probe. NOT A SHIPPED PROFILE.
+#
+# What this file is: config/rtx.conf.perf plus the eleven DLSS 3D-Guided Neural Rendering keys,
+# so the A/B against the 60 fps profile is exactly one variable. Install it with
+#   bash tools/rtxprofile.sh dlss5 [GAME_DIR]
+and get the shipped profile back with
+#   bash tools/rtxprofile.sh current [GAME_DIR]      (or: restore)
+#
+# Why it is not shipped and not in config/rtx.conf.perf: on this box the runtime answers, in its own
+# log, at NGX init - which happens whether or not these keys are set, because Ray Reconstruction
+# creates the first NGX context (rtx_ngx_wrapper.cpp:226):
+#   [11:48:13.146] warn:  NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info: NVSDK_NGX_Result_FAIL_UnsupportedParameter)
+# (2026-11-12 11:48 run, <game>/rtx-remix/logs/remix-dxvk.log:328; GPU/driver:
+# nvidia-smi -> "NVIDIA GeForce RTX 4070 Ti SUPER, 610.57.04, 16376 MiB"; Remix 1.6's own release
+# notes raise the driver baseline to 616.92). The query fails on its FIRST parameter
+# (NVSDK_NGX_Parameter_DLSSNR_NeedsUpdatedDriver, rtx_ngx_wrapper.cpp:411-417), i.e. the driver does
+# not expose the DLSS-NR capability at all. The model weights are present
+# (<game>/.trex/nvngx_dlssnr.dll, 266424944 bytes), so this is a driver/hardware gate, not a
+# missing asset. Full evidence and the consequence for T1/T3/T4: docs/FINDINGS.md (n19).
+#
+# Why the probe is safe to run anyway (1.6.1 source): DlssNeuralRendering::isEnabled() is
+# `enable() && (!supportChecked || supports())` (rtx_dlss_neural_rendering.cpp:55), so with the
+# support flag false the pass never activates: no DLSS-NR resources are allocated
+# (rtx_resources.cpp:540), dispatchDlssNR() returns at its first line (rtx_context.cpp:1897), and if
+# activation were ever attempted and failed it would set the option back to false itself
+# (disableAfterFailure, rtx_dlss_neural_rendering.cpp:285). A feature that cannot initialise cannot
+# break startup here.
+#
+# The key names, and the one that is NOT a key: `rtx.dlssNeuralRendering` is the CATEGORY
+# (it is in the binary's strings, so tools/rtxkeycheck.py accepts it as "dotted"); the switch is
+# `rtx.dlssNeuralRendering.enable` (RTX_OPTION("rtx.dlssNeuralRendering", bool, enable, false, ...)
+# in rtx_dlss_neural_rendering.h; config/rtx-options-1.6.1.tsv line 193). Every value below is the
+# runtime's own documented default from that table, so the probe asks for the stock effect, not a
+# tuned one - the only two deviations are enable=True and showVramUsage=True (its tooltip: "Enable
+# before activating the feature"). tests/test_dlss5_probe_keys.py keeps all of that honest offline.
+rtx.dlssNeuralRendering.enable = True
+rtx.dlssNeuralRendering.intensity = 1
+rtx.dlssNeuralRendering.structuralStrength = 0.7
+rtx.dlssNeuralRendering.toneStrength = 0.3
+rtx.dlssNeuralRendering.model = 0
+rtx.dlssNeuralRendering.useAutoMask = True
+rtx.dlssNeuralRendering.skinStructureStrength = 0.5
+rtx.dlssNeuralRendering.enableHighlightRecovery = True
+rtx.dlssNeuralRendering.highlightRecoveryThresholds = 1, 8, 0.75, 0.99
+rtx.dlssNeuralRendering.enableVolumetricControlMask = True
+rtx.dlssNeuralRendering.showVramUsage = True
