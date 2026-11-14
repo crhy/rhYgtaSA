@@ -1176,6 +1176,63 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   game:** rule 1 forbids running the game, wine or Steam here, and a fog change only becomes a
   number once the runtime draws a frame.
 
+### Materials (n18) — ~2190 materials had no BRDF at all, so the runtime's default became ours (on top of `5099a3e`)
+
+- **Changed (n18): `rtx.legacyMaterial.roughnessConstant = 0.65`** in `config/rtx.conf`,
+  `config/rtx.conf.perf` and `config/rtx.conf.nopops`. The reason is a census, not a taste: the pack
+  defines **2363** `mat_<HASH>` materials and ships a replacement albedo for **174** of them
+  (147 normal, 121 rough, 71 height, **13 metal** keyed to a game texture), so ~2190 are "legacy" —
+  and `src/dxvk/rtx_render/rtx_materials.cpp` (`LegacyMaterialData::as()`, tag `remix-1.6.1`) shows a
+  legacy material is built from **constants** plus the game's colour texture: no roughness map, no
+  normal map, no per-texture variation is possible. Decoding the pack's own `_rough` maps
+  (texel/255 = perceptual roughness) gives the number to answer with: per-map mean median **0.582**,
+  and by category wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584, buildings 0.503, props
+  0.419, floor 0.434 — i.e. the runtime's default **0.7** is mattier than anything the pack authors
+  chose for the same surfaces. 0.65 is one step from the default onto the **matte end** of that
+  band, not an invented gloss. **Undo:** delete the one line, or `tools/rtxprofile.sh current <game>`.
+- **Deliberately not shipped, with the reason (same block):** `rtx.opaqueMaterial.roughnessScale` /
+  `.roughnessBias` — the only keys that reach legacy *and* replaced materials, which is the problem:
+  they would rescale the pack's 121 rough maps too, flattening the one variation source the pack has
+  (median intra-map spread 0.220), and the tooltip says "debug or development".
+  `rtx.legacyMaterial.metallicConstant` stays at its 0.1 default: only 13 hashes carry a `_metal`
+  map (those average 0.382), so 0.1 is wrong in both directions, but lowering it also removes real
+  specular energy — the next one-value step, decided by the specular row. `rtx.legacyMaterial.anisotropy`
+  (0) would smear one highlight direction over roads, walls and cars alike.
+  `rtx.demodulate.demodulateRoughness` looks like a material knob and is not: `demodulate.comp.slang`
+  scales noisy specular radiance for the **denoiser**, it never puts roughness in a material.
+- **New tool: `tools/pack_pbr_census.py`** — census, coverage, and the decoded roughness / metallic /
+  height distributions of any Remix asset pack, plus the ranked list of uncovered materials.
+  Read-only; `--json` and `--list-prefix` write where you point them. It also resolves USD
+  sub-layers case-insensitively the way the runtime does under Proton, and reports the ones that
+  resolve nowhere.
+- **Found (n18): n15's material count was 29 short, and six of the pack's own layers point at files
+  this install does not have.** 2363, not 2334: `grep -rhoE 'mat_…'` prints "binary file matches"
+  instead of the matches for the 2174 binary crates, so it silently skipped them (`grep -a`, or this
+  tool). And `Materials.usda → SARemix/SARemix_Vehicles_Meshes.usda`,
+  `meshes/CJHouse/outdoor.usda → CJ_House_outdoor_01/02/03.usd`,
+  `vehicles_materials.usda → Planes/Plane_materials.usda` + `Trains/Train_materials.usda` do not
+  exist in the install at all (the bridge log never mentions them). Distinct from the 18 sub-layers
+  whose **case** does not match the on-disk directories — those load fine, because the runtime
+  resolves paths case-insensitively under Proton.
+- **Found (n18): the pack's 191 `_height` maps are real** — median amplitude (p95−p05) 84/255, only
+  3 of 191 effectively flat — while its metal coverage is 13 game textures. That is the asymmetry the
+  next task has to fix: the remastered materials have micro-relief and per-texel roughness, and the
+  legacy ones cannot have either.
+- **Handed to the PBR-ify pass:** `build/tmp/n18/pack-uncovered.txt` — 2197 `mat_<HASH>` hashes with
+  the number of USD layers referencing each and the category of that layer (meshes 765, SARemix 674,
+  SARemix+vehicles 608, props 44, ground 11, buildings 8, asphalt 5, pavement 5, wall 5 …), and
+  `pack-covered.txt` so nothing gets redone. The runtime's own second legacy constant —
+  `rtx.terrainBaker.material.properties.roughnessConstant` (0.7), gated by `rtx.terrainBaker.enableBaking`
+  and driven by `rtx.terrainTextures` hashes — is recorded as the one per-class knob that exists
+  without patching the pack; SA blends two ground textures per world sector, which is exactly what
+  the baker is for.
+- **Docs:** FINDINGS "The materials the pack never touched, counted and decoded (2026-11-13, n18)";
+  TARGET §4 T1 row, §5 row and the §6 "n18 run" protocol; STATUS T1 row and "what to test next"
+  item 10. Before-measurements are `build/tmp/n18/gap.json` (reproduces n15/n17 exactly: specular
+  3.5–12.9 ‰ / 67–213 blobs / 64–324 largest against our 4.0–27.6 ‰ / 43–479 / 128–1192) and
+  `build/tmp/n18/good-before.json`. **Not measured in game:** rule 1 forbids running the game, wine
+  or Steam here, and a material change only becomes a number once the runtime draws a frame.
+
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 
 ### Installer and launcher

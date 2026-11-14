@@ -124,6 +124,28 @@ If something in the update looks wrong, everything is reversible
   lean in), not a colour key. `python3 tools/fog-budget.py config/rtx.conf` prints exactly what a
   number does before you try it.
 
+### Materials
+
+- **The materials the asset pack never redrew now have a measured roughness.** Counting the pack
+  read-only (`tools/pack_pbr_census.py`) says it defines **2363** materials and ships a replacement
+  colour texture for **174** of them - and the renderer's own source shows that everything else is
+  drawn with one constant roughness for the whole game, with no way to give it a roughness map at
+  all. So that constant is now a measured number instead of the runtime's guess: the pack's own
+  roughness maps average **0.58-0.65** for paving, walls and ground (per-map median 0.582), while the
+  runtime's default was **0.7** - mattier than anything the pack's authors chose for the same
+  surfaces. The profiles now run `rtx.legacyMaterial.roughnessConstant = 0.65`: one step from the
+  default, landing on the matte end of the pack's own range rather than inventing gloss. **Not seen
+  in game yet**; if the paving starts reading wet, that one line goes back to 0.7
+  (`tools/rtxprofile.sh current <game>`), and the real fix - per-material roughness for the ~2190
+  uncovered materials - is the next task, with its work list already written
+  (`build/tmp/n18/pack-uncovered.txt`).
+- **Two knobs we deliberately did *not* turn.** `rtx.opaqueMaterial.roughnessScale/Bias` would have
+  rescaled the pack's 121 real roughness maps along with the defaults, flattening the only variation
+  the pack has (and the runtime's own tooltip says they are for debugging). And
+  `rtx.legacyMaterial.metallicConstant` stays at its 0.1 default: only 13 game textures have a metal
+  map (those average 0.382), so 0.1 is wrong in both directions - but lowering it also removes real
+  highlights, so it gets its own step and its own measurement.
+
 ### Traffic signals
 
 - **The light now sits on the signal head, in the colour the game is showing.** The plugin reads the

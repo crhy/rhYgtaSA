@@ -334,3 +334,29 @@ rtx.volumetrics.fogRemapColorMultiscatteringScale = 0
 #   rtx.volumetrics.froxelMaxDistanceMeters (20 m: bounds the in-scatter march, not the attenuation,
 #   which has an analytic tail; raising it changes the pack's lamp cones - a perf call).
 #   rtx.volumetrics.enableAtmosphere is inert in 1.6.1: no shader reads it.
+
+
+# ---------------------------------------------------------------------------
+# n18 (2026-11-13, docs/TARGET.md §4 T1a): the ~2190 materials the pack never gave PBR maps.
+# Same one key and the same value as config/rtx.conf - the census (2363 mat_<HASH> materials, only
+# 174 with a replacement albedo), the decoded roughness of the pack's own maps (per-map mean median
+# 0.582; wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584, buildings 0.503, props 0.419) and
+# the source proof that a legacy material can only carry a CONSTANT roughness
+# (src/dxvk/rtx_render/rtx_materials.cpp, LegacyMaterialData::as()) are in config/rtx.conf's n18
+# block and .strata/notes-n18-legacy-material-brdf.md; the census itself is
+# build/tmp/n18/census.txt from tools/pack_pbr_census.py.
+rtx.legacyMaterial.roughnessConstant = 0.65
+#   One step from the runtime default 0.7 (config/rtx-options-1.6.1.tsv) toward the pack's own
+#   paving band 0.58-0.65, not past it. Costs no rays: roughness is a GBuffer term, and 0.65 stays
+#   far above rtx.spatiallyHashedRadianceCache.perceptualRoughnessThreshold (0.4) and
+#   rtx.restirGI.virtualSampleRoughnessThreshold (0.2). It does sharpen the specular lobe, so the
+#   denoiser averages slightly less where the lobe was already narrow - the one fps-relevant
+#   sentence in this block. Ladder and abort: config/rtx.conf, docs/TARGET.md §6.
+#   NOT here on purpose, same as config/rtx.conf: rtx.opaqueMaterial.roughnessScale/.roughnessBias
+#   (they would rescale the pack's 121 rough maps too - the only per-texture variation the pack has,
+#   median intra-map spread 0.220 - and the tooltip says debug-only), rtx.legacyMaterial.
+#   metallicConstant (0.1 default; 13 hashes have a metal map averaging 0.382, so it is wrong both
+#   ways, but lowering it removes specular energy: a separate one-value step),
+#   rtx.legacyMaterial.anisotropy (uniform smear), rtx.terrainBaker.material.properties.* (the
+#   runtime's own second, per-class constant for blended terrain - needs rtx.terrainTextures hashes
+#   and bakes a texture per frame: a data + VRAM task, not a perf line).

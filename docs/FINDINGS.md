@@ -1,3 +1,103 @@
+## The materials the pack never touched, counted and decoded (2026-11-13, n18)
+
+T1a of [TARGET.md](TARGET.md): ~2000 of the pack's materials have no PBR maps, so they render with
+the runtime's default legacy BRDF. Nothing was run in the game; everything below is the read-only
+pack, the runtime's own option table, its source at tag `remix-1.6.1`, and `tools/target-gap.py`
+on the 2026-11-12 10:22 tour. New tool: **`tools/pack_pbr_census.py`** (census + coverage + decoded
+roughness/metal/height distributions + the uncovered-hash list).
+
+**1. The pack's real coverage is ~7 %, and n15's material count was 29 short.**
+`tools/pack_pbr_census.py <game>/rtx-remix/mods/gameReadyAssets`
+(full output `build/tmp/n18/census.txt`, JSON `build/tmp/n18/census.json`): 5211 files, 2111 `.dds`,
+3065 `.usda/.usd`, **2363** distinct `mat_<HASH>` materials. n15's notes say 2334 because
+`grep -rhoE 'mat_[0-9A-Fa-f]{16}'` prints "binary file matches" instead of the matches for the 2174
+binary crates — the scan has to read bytes (`grep -a` or this tool). Maps keyed by a `<HASH>`, i.e.
+bound to a *game* texture: **174 albedo, 147 normal, 121 rough, 71 height, 13 metal, 37 emissive**.
+The rest of the 2111 `.dds` are 724 hand-named maps belonging to the pack's own new geometry
+(`rail_base_albedo.dds`, `SpotLight_01_albedo.dds`, …) and **778 bare `<HASH>.dds` copies of the
+game's own un-remastered textures** — the pack ships the original texture for 778 surfaces it never
+redrew. So "2334 materials, ~300 with maps" is right in spirit and wrong in kind: **174 game
+textures have a replacement albedo, and ~2190 materials are legacy.**
+
+**2. A legacy material cannot carry a roughness map. The runtime's own source says so.**
+`src/dxvk/rtx_render/rtx_materials.cpp` (tag `remix-1.6.1`, MIT; kept at
+`build/tmp/n18/rtx_materials.cpp`): `LegacyMaterialData::as()` copies `LegacyMaterialDefaults` into
+an `OpaqueMaterialData` — `setRoughnessConstant`, `setMetallicConstant`, `setAnisotropyConstant`,
+`setAlbedoConstant`, `setOpacityConstant`, the thin-film and emission flags — and then adds only the
+game's colour texture (`setAlbedoOpacityTexture(getColorTexture())`), a secondary texture, the
+sampler override and the alpha rules. **The roughness of ~2190 materials is one float for the whole
+game**, and no `rtx.conf` key makes it per-texture. Two names that read like they do and do not:
+`rtx.demodulate.demodulateRoughness` (True, offset 0.1, "Demodulate roughness to improve specular
+details") is a **denoiser front-end** term — `pass/demodulate/demodulate.comp.slang` scales the
+noisy specular radiance by `getRoughnessDemodulationFactor(perceptualRoughness, offset)` before NRD
+packing — and `rtx.rayreconstruction.demodulateRoughness` is DLSS-RR only, which does not
+initialise on this prefix. Neither puts variation into a material.
+
+**3. The runtime's default is *mattier* than anything the pack chose for the same surface classes.**
+Decoding mip 0 of every `_rough` map (a roughness map is raw data, so texel/255 IS the perceptual
+roughness) with `tools/pack_pbr_census.py --sample 8`: per-map mean **median 0.582**, p05 0.095,
+p95 0.861; inside a single map the spread (p95−p05) is **0.220** at the median. By category (mean of
+the per-map means): wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584, buildings 0.503, props
+0.419, floor 0.434, metal 0.382, vehicles 0.247, windows 0.060, marble 0.079, carpet 0.783, fabric
+0.738. The runtime's default `rtx.legacyMaterial.roughnessConstant` is **0.7**
+(`config/rtx-options-1.6.1.tsv`, the runtime's own table; `metallicConstant` 0.1, `anisotropy` 0).
+So the gap is not "the default is too glossy" — it is that one number, with no normal map and no
+variation, stands in for the pack's 0.58–0.65 paving band, its 0.50 buildings and its 0.06 glass.
+Shipped: **`rtx.legacyMaterial.roughnessConstant = 0.65`** in all three profiles — one step from the
+default, landing on the matte end of the pack's own paving band, not on an invented gloss. The
+ladder (0.62 = the pack's paving mean, 0.58 = its overall median and its ground mean) and the abort
+condition (night 02/03 ceiling above 0.000 %) are in `config/rtx.conf` and TARGET §6.
+
+**4. The pack's 191 `_height` maps are real, and its metal coverage is 13 textures.** Height maps:
+median amplitude (p95−p05, 8-bit) **84**, p05 20, max 255, and only **3 of 191 are effectively
+flat** — the remastered materials have micro-relief, which is exactly what the legacy ones cannot
+have. `_metal`: 32 files, 13 of them keyed to a game texture, per-map mean median 0.382. So
+`rtx.legacyMaterial.metallicConstant = 0.1` (the default) is wrong in both directions — too
+metallic for asphalt, nowhere near the pack's real metal — and it is not free to lower either:
+metallic 0.1 with a bright albedo carries real specular energy. Left at the default, deliberately,
+as the next one-value step.
+
+**5. Six of the pack's own USD sub-layers point at files this install does not have.**
+`Materials.usda → SARemix/SARemix_Vehicles_Meshes.usda`, `meshes/CJHouse/outdoor.usda →
+CJ_House_outdoor_01/02/03.usd`, `texture/Vehicles/vehicles_materials.usda →
+Planes/Plane_materials.usda` and `Trains/Train_materials.usda`. Those materials therefore fall back
+to whatever the layer below them says, and the bridge log (2026-11-12 11:48) never mentions them.
+Distinct from the 18 sub-layers whose **case** does not match the on-disk directories
+(`@./texture/Asphalt/…@` against `texture/asphalt/`), which do load: the runtime resolves paths
+case-insensitively under Proton (notes-n20 read the same fact out of the log). The rule for our own
+offline tools is the one `tools/pack_pbr_census.py` follows: resolve USD references
+case-insensitively, and treat "the file is not there byte-exactly" as a question, not a bug.
+
+**6. Before-numbers, measured; after-numbers, owed.** `build/tmp/n18/gap.json` (5 reference frames +
+the four daytime stops) reproduces n15/n17's numbers exactly: specular area 3.5–12.9 ‰ (reference)
+against 4.0–27.6 ‰ (ours), blobs 67–213 against 43–479, largest blob 64–324 against 128–1192,
+local contrast 0.137–0.294 against 0.131–0.214, ceiling 0.010–3.95 % against 0.003–0.027 %. Note
+the direction: our specular *area* already beats the reference while our ceiling is 100–1000×
+smaller, because our "bright" pixels are lifted flat sky — so this change is aimed at **blobs and
+largest blob** (real, local, near-neutral highlights), not at the permille row. `KEEP WHAT WORKS`
+baseline `build/tmp/n18/good-before.json` (02 p50 17.4 / 03 7.0 / 04 63.6 / 08a 100.6 / 08b 86.3 /
+09 27.8, all with ceiling 0.000 %). The after-numbers need a run, which rule 1 forbids here —
+[TARGET.md §6](TARGET.md) is the protocol.
+
+**7. What the next task (the offline PBR-ify pass) gets.** `build/tmp/n18/pack-uncovered.txt`:
+**2197** `mat_<HASH>` hashes with no replacement albedo, each with the number of USD layers that
+reference it and the category of that layer — meshes 765, SARemix 674, SARemix+vehicles 608, props
+44, ground 11, buildings 8, asphalt 5, pavement 5, wall 5 … (the vehicle and interior blocks are
+large but rarely on screen; the ground/road/wall blocks are small and dominate a daytime frame).
+`build/tmp/n18/pack-covered.txt` is the 166 already covered, so a pass never redoes them. `build/` is git-ignored, so if it is cleaned the two lists come back in eight seconds:
+`python3 tools/pack_pbr_census.py "<game>/rtx-remix/mods/gameReadyAssets" --no-decode \
+    --list-prefix build/tmp/n18/pack --json build/tmp/n18/census.json` Two
+routes the census makes visible: patch the pack's material layer per material (MIT; the
+`over "RootNode" { over "Looks" { over "mat_<HASH>" } }` recipe is in
+[MIRRORS.md](MIRRORS.md) §7, and `tools/water_normal_soft.py` plus n20's `tools/bcn.py` prove we can
+write BC4/BC5/BC7), or use the runtime's own **second** legacy constant —
+`rtx.terrainBaker.material.properties.roughnessConstant` (0.7) with
+`.roughnessAnisotropy` / `.metallicConstant`, gated by `rtx.terrainBaker.enableBaking` (True) and
+driven by the `rtx.terrainTextures` hash list. GTA SA blends two ground textures per world sector,
+which is exactly the case the Terrain Baker exists for, so that is the only place a per-class legacy
+roughness exists without touching the pack — unshipped here because it needs the hash list
+(`tools/remix_texhash.py` computes those hashes offline) and bakes a texture per frame.
+
 ## Vegetation that reads as real plants: the pack, the typo, the wind shader (2026-11-13, n21)
 
 MUST-HAVE #2 of `.strata/target-2026-11-12.md`. Nothing was run in the game; every number below

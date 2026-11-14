@@ -584,6 +584,7 @@ prove it. Why those nine, and why `rtx.demodulate.enableDirectLightBoilingFilter
 one of them, is the table in FINDINGS ("the renderer's own time knobs").
 
 | Night frames darkened by a noon number: one static EV anchor served 13:00 and 21:00 at once | Global tonemapping (n16) makes the exposure of the whole frame `2^(rtx.tonemap.exposureBias + userEVBias)`, and `rtx.conf` is read once and cannot know the clock | `[tonemap] day_ev → night_ev` blended over **solar elevation** and pushed at runtime (`plugin/src/exposure.cpp`, `sun.cpp`), slew-limited at `max_ev_per_sec` by the new `RhySignedRate` (`plugin/src/smooth.cpp`); `day_ev` equals the profile's −0.5 so noon is a no-op (n22) |
+| ~2190 of the pack's 2363 materials have no PBR maps, so they render with one constant roughness for the whole game | `LegacyMaterialData::as()` (`rtx_materials.cpp`, tag `remix-1.6.1`) builds a legacy material from constants plus the game's colour texture: a roughness **map** is not possible, and `rtx.opaqueMaterial.roughnessScale/Bias` would rescale the pack's own 121 rough maps with it | `rtx.legacyMaterial.roughnessConstant = 0.65` in all three profiles, taken from the decoded roughness of the pack's own maps (paving 0.58-0.65, per-map median 0.582) by `tools/pack_pbr_census.py`; the ladder and the abort condition are in `config/rtx.conf` and TARGET §6 (n18) |
 
 ## The exposure anchor is a function of the sun, not of the clock (n22)
 
@@ -822,6 +823,42 @@ running** — invoking `wineserver` with none up starts one just to kill it — 
 `watch_run_end` (armed only after the window has been seen). Two rules worth keeping: a signal that
 cannot be measured must not be guessed at, and the cleanup after the wait returns is unconditional —
 `RHYS_EXIT_GRACE=0` stops the watchdog, never the cleanup.
+
+## Counting the asset pack before changing a material key (n18)
+
+`tools/pack_pbr_census.py` is the tool that turns "the pack has PBR maps" into numbers, and every
+material claim in `config/rtx.conf`'s n18 block, FINDINGS and TARGET rests on it:
+
+```
+python3 tools/pack_pbr_census.py "<game>/rtx-remix/mods/gameReadyAssets" \
+    --json build/tmp/n18/census.json --list-prefix build/tmp/n18/pack
+python3 tools/pack_pbr_census.py "<game>/rtx-remix/mods/gameReadyAssets" --no-decode   # structure only
+```
+
+Three traps it exists to avoid, all of them hit us once:
+
+* **`grep -r` on the pack's USD silently under-counts.** 2174 of its 3065 layers are binary crates,
+  and grep prints "binary file matches" instead of the matches unless you pass `-a`: n15's
+  "2334 `mat_<HASH>` materials" is 29 short for that reason. The census reads bytes
+  (`open(p,'rb')` + a bytes regex), which is also what `tools/remix_texhash.py` had to learn for
+  crate texture references.
+* **file counts are not coverage.** 352 files end in `_albedo`/`_color`, but only **174** are keyed
+  to a game texture (`<HASH>_albedo.dds`); 724 maps are hand-named and belong to the pack's own new
+  geometry, and 778 hashes ship only a bare `<HASH>.dds` - the game's own texture, un-remastered.
+  Coverage means "a `<HASH>_albedo.dds` exists for that `mat_<HASH>`", and the census prints all
+  three numbers separately.
+* **paths are case-insensitive at runtime and case-sensitive on our disk.** The pack says
+  `@./texture/Asphalt/...@` against an on-disk `texture/asphalt/`; under Proton that resolves, and
+  the bridge log proves it loads. So the census resolves USD references component-by-component
+  case-insensitively and reports the 18 mismatches as a separate line from the 6 layers that point
+  at files this install genuinely does not have. An offline tool that used `os.path.exists` alone
+  would conclude the pack is broken and throw away real data.
+
+The decode pass is what defends the shipped number instead of a taste: Pillow's DDS plugin reads the
+BC4/BC5/BC7 maps, mip 0, strided (`--sample 8` default; `tests/test_pack_pbr_census.py` uses
+`--sample 1` on a synthetic pack so the arithmetic is exact). A `_rough` map is raw, non-colour data,
+so texel/255 **is** the perceptual roughness the renderer will use - which is how "the runtime's
+default 0.7 is mattier than the pack's own paving (0.58-0.65)" became a measurement.
 
 ## Repo notes that bite
 

@@ -117,7 +117,7 @@ Two extra facts worth keeping:
 
 | # | what they use | what we have | concrete fix | effort | licence / hosting |
 |---|---|---|---|---|---|
-| **T1** PBR materials | the pack's PBR maps **plus DLSS 5's learned materials** on an RTX 5090 | the same pack: **2334** `mat_<HASH>` materials, of which only ~300 have maps (315 `_normal`, 280 `_rough`, 185 `_height`, **32 `_metal`**); the rest get the runtime's default legacy BRDF | (a) turn the runtime's own material knobs: `rtx.legacyMaterial.roughnessConstant` / `.metallicConstant` / `.roughnessAnisotropy`, `rtx.opaqueMaterial.roughnessScale/roughnessBias/metallicScale/metallicBias`; (b) offline PBR-ify pass (normal+roughness from albedo) for the top ground/road textures by hash — we already read and write DDS in `tools/water_normal_soft.py`; (c) probe `rtx.dlssNeuralRendering` and record the verdict | (a) 40 min · (b) 3–4 h · (c) 45 min | pack is **MIT** — patchable and re-hostable with credit; Proper Shaders is proprietary, link only |
+| **T1** PBR materials | the pack's PBR maps **plus DLSS 5's learned materials** on an RTX 5090 | the same pack, counted exactly by n18's `tools/pack_pbr_census.py`: **2363** `mat_<HASH>` materials, of which **174** have a replacement albedo (147 normal, 121 rough, 71 height, **13 metal** keyed to a game texture); ~**2190** are legacy, and `rtx_materials.cpp` shows a legacy material can only carry a **constant** roughness — a map is impossible | **(a) shipped by n18:** `rtx.legacyMaterial.roughnessConstant = 0.65` in all three profiles — one step from the runtime default 0.7 onto the matte end of the pack's own measured paving band (wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584; per-map median 0.582), while `rtx.opaqueMaterial.roughnessScale/Bias` are refused because they would rescale the pack's 121 rough maps too; (b) offline PBR-ify pass (normal+roughness from albedo) for the top ground/road textures by hash — the list is `build/tmp/n18/pack-uncovered.txt` (2197 hashes, ranked by USD references), and we already read and write DDS in `tools/water_normal_soft.py`; (c) probe `rtx.dlssNeuralRendering` and record the verdict | (a) 40 min · (b) 3–4 h · (c) 45 min | pack is **MIT** — patchable and re-hostable with credit; Proper Shaders is proprietary, link only |
 | **T2** HD geometry / textures | an "8K texture pack" claim; the pack itself is 2K/4K; Remix 1.6 adds OpenEXR/HDR skyboxes and ComfyUI 2.0 AI texture pipelines | the pack's 2K albedo set (164 of 345 at 2048 px), `rtx.texturemanager.budgetPercentageOfAvailableVram = 40` on a 16 GB card, no HDR sky | measure the texture budget and the streaming cost of the pack's 4K set; HDR sky is pack/Toolkit work, not ours | 1–2 h to measure; the assets are upstream | MIT pack; the runtime zip is NVIDIA's EULA (`redistribute: ask` in `deps/manifest.json`) |
 | **T3** atmosphere | Remix volumetrics; DLSS 5's foliage light scattering + volumetric control mask | `rtx.volumetrics.enable = True` and the froxel keys — but **no fog-remap keys at all**, so San Andreas' fixed-function fog never became volumetric (and the profile's `rtx.enableFogMaxDistanceRemap = False` was a dead name, so the option had always run at its default) | **shipped by n17:** `rtx.volumetrics.enableFogRemap = True`, input bounds `fogRemapMaxDistanceMin/MaxMeters = 400 / 4000` (the game's own `FarClp` range in `data/timecyc.dat`), output bounds `fogRemapTransmittanceMeasurementDistanceMin/MaxMeters = 2 / 6` (3.4–10.3 km of air), `fogRemapColorMultiscatteringScale = 0`, and the dead key renamed to `rtx.volumetrics.enableFogMaxDistanceRemap = True`. `enableHeterogeneousFog` deliberately left commented out. Targets far/near 0.5–0.9 and sky luma ≥ 150 are **not both reachable with this block** — see §6 and FINDINGS (n17) | 60–90 min + one tour | none (runtime knobs) |
 | **T4** grading | warm filmic with real roll-off (ceiling 1–4 %, headroom 2.4–3.5), partly DLSS 5's tone model | `rtx.tonemap.finalizeWithACES = True`, but `tonemappingMode` left at its default **Local**, `localtonemap.shadows = 2.5`, auto-exposure off → headroom 1.4-1.8, ceiling ≤ 0.03 %, warmth −67…+10 | **shipped by n16:** `rtx.tonemappingMode = 0` (Global — not `rtx.tonemap.tonemappingMode`, which is not an option), `rtx.tonemap.exposureBias = -0.5` as the anchor, `localtonemap.shadows 2.5 → 1.0` and `highlights 4 → 2.0` for the Local A/B, `finalizeWithACES` kept. Targets: ceiling 0.5–3 %, headroom ≥ 2.0, warmth ≥ +15, warm share ≥ 70 % — **not yet measured**, see §6 | 60–90 min + measure | none (runtime knobs) |
@@ -133,7 +133,7 @@ files, so "before" and "after" are two commands.
 |---|---|---|---|
 | **n16-tonemap-highlights** | T4 | Global tonemap + an exposure anchor that lets highlights exist; the biggest measured number in the table | **config shipped, after-numbers owed** (see §6) |
 | **n17-fog-aerial-perspective** | T3 | map San Andreas' fixed-function fog onto Remix volumetrics so distance fades instead of staying crisp | **config shipped, after-numbers owed** (see §6). The dead key it inherited (`rtx.enableFogMaxDistanceRemap`) is fixed; the medium is 10.3 km of air in clear weather instead of 344 km |
-| **n18-legacy-material-brdf** | T1a | give the ~2000 materials that have no PBR maps a sane roughness/metallic instead of the runtime default | queued |
+| **n18-legacy-material-brdf** | T1a | give the ~2190 materials that have no PBR maps a sane roughness instead of the runtime default | **config shipped, after-numbers owed** (see §6). Census, the decoded roughness of the pack's own maps, and the uncovered-hash list: FINDINGS (n18) and `build/tmp/n18/` |
 | **n19-dlss5-neural-probe** | T1c/T4 | find out whether `rtx.dlssNeuralRendering` does anything on an RTX 4070 Ti SUPER under Proton, and write the answer down either way | queued |
 
 ## 6. Re-measuring this at any time
@@ -299,6 +299,65 @@ sunset shots are unchanged by n22**; at 21:00 it publishes **+0.5** (2x the ligh
 4. The dump check, corrected: at a **21:00** stop the effective value should read **+0.5**, not
    -0.5, because the plugin writes the user layer, which outranks `rtx.conf`. At 13:00 it should
    read -0.5 — the same number from two directions, which is the no-op property in the log.
+
+### The n18 run: the legacy-material BRDF constant is in the tree and has never been rendered
+
+n18 put one live key in `config/rtx.conf`, `config/rtx.conf.perf` and `config/rtx.conf.nopops`:
+`rtx.legacyMaterial.roughnessConstant = 0.65` (the runtime default is **0.7**). It could not render
+it (rule 1), so this subsection is the protocol; the before side is `build/tmp/n18/gap.json`
+(daytime, five reference frames) and `build/tmp/n18/good-before.json` (the six good shots plus the
+two Santa Maria water stops).
+
+Why one number is worth a task: `tools/pack_pbr_census.py` counted the pack read-only — **2363**
+`mat_<HASH>` materials, **174** with a replacement albedo — and `src/dxvk/rtx_render/rtx_materials.cpp`
+(`LegacyMaterialData::as()`, tag `remix-1.6.1`) shows a legacy material gets constants plus the
+game's colour texture and nothing else: **no roughness map, no normal map, no per-texture anything**.
+So ~2190 materials share one perceptual roughness, and the pack's own maps for the same surface
+classes average 0.58–0.65 (wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584, buildings 0.503,
+props 0.419, floor 0.434). 0.65 is that band's matte end, one step from the default.
+
+1. Confirm the layer resolved, free, before anything else:
+   ```
+   grep -A200 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log | grep -i legacymaterial
+   ```
+   It must show `rtx.legacyMaterial.roughnessConstant = 0.65`. If it shows 0.7, the profile was not
+   installed (`tools/rtxprofile.sh current <game>`) or the Remix UI's Material section overwrote it
+   into the user layer, which outranks `rtx.conf`.
+2. Daytime, against the before file:
+   ```
+   python3 tools/target-gap.py <the 5 reference frames> <the 4 new daytime shots> \
+       --json build/tmp/n18/gap-after.json
+   ```
+   Aim at the **blob** columns, not the area column: before, ours is 43–479 blobs / 128–1192 px
+   largest against the reference's 67–213 / 64–324, while our *area* permille (4.0–27.6) already
+   exceeds the reference's 2.9–12.9 because our bright pixels are lifted flat sky, not highlights.
+   A good run makes the blobs more numerous-but-local and the largest blob smaller than 1192 while
+   local contrast (0.131–0.214, reference 0.137–0.294) goes up. **The brake is the ceiling row:
+   0.003–0.027 % before, and past 3 % this change is wrong.**
+3. KEEP WHAT WORKS, before tuning: the six good shots against `build/tmp/n18/good-before.json`.
+   What must not move: 02 p50 17.4 / 03 p50 7.0 / 04 p50 63.6 / 08a 100.6 / 08b 86.3 / 09 27.8, and
+   above all their **ceiling, which is 0.000 % in every one of them** — a night shot that gains a
+   sheen is the failure mode this task was warned about, and it shows up there first.
+4. Ladder, one line per run:
+   * paving/walls still read as one matte sheet, blobs still below the reference band →
+     `0.65 → 0.62` (the pack's paving mean) `→ 0.58` (its overall median and its ground mean);
+   * night gains a sheen, or noon ceiling > 3 % → back to `0.7`, and the fix belongs in the pack's
+     material layer, not in this file;
+   * roads look wet while walls/roofs/vegetation look wrong → that is the **uniformity**, not the
+     value: there is no per-texture legacy knob (source, above), so it is the PBR-ify pass —
+     `build/tmp/n18/pack-uncovered.txt` is the ranked list and [MIRRORS.md](MIRRORS.md) §7 the
+     `over "RootNode" { over "Looks" { over "mat_<HASH>" } }` recipe;
+     (`build/` is git-ignored: `tools/pack_pbr_census.py <pack> --no-decode --list-prefix \\
+     build/tmp/n18/pack` rebuilds both lists in eight seconds;)
+   * want a second constant for ground without touching the pack → the runtime has one:
+     `rtx.terrainBaker.material.properties.roughnessConstant` (0.7) with `.roughnessAnisotropy` /
+     `.metallicConstant`, gated by `rtx.terrainBaker.enableBaking` (True) and driven by
+     `rtx.terrainTextures` hashes. SA blends two ground textures per world sector, which is what the
+     baker exists for; it bakes a texture per frame, so it is a data + VRAM task, not a config line.
+5. Eyes, in this order: whether the paving under the camera has **patches** of different gloss
+   (it will not — that is the point of the next task) while the pack's own remastered surfaces stay
+   as they were; whether chrome, glass and car paint are unchanged (they are replaced materials, so
+   they must be); and whether the 21:00 sodium lamps still sit on a dark road.
 
 After those, the two bigger bets are recorded but not scheduled: an offline **PBR-ify pass**
 (generate normal/roughness for the most-seen ground and road textures, patch the pack's material

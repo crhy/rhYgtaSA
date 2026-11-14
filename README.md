@@ -35,6 +35,7 @@ install and test it. What is in the box today:
 | **Vegetation** | the pack's 234 foliage card textures tagged as cutouts (`rtx.hairCardTextures`) instead of being blended into scribbled lines, its mis-named LOD dictionary fixed, and its real cost measured (18x the triangles, 92-188 MB pinned) | `tools/vegetation.sh` (`check` / `--step 5` / `--step 6`), `tools/vegetation_hashes.py`, `tools/vegetation_ide_check.py`, `tools/vegetation_stream.py`, `tools/vegetation_edge_measure.py` |
 | **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf` | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops` |
 | **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with an exposure anchor that follows the sun, so the sun, chrome and wet patches can be bright instead of grey and 21:00 is not darkened by a noon number | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16), and `[tonemap] day_ev → night_ev` driven off solar elevation at runtime (n22); **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
+| **Materials** | the ~2190 materials the asset pack never gave PBR maps get a *measured* BRDF instead of the runtime's guess: `rtx.legacyMaterial.roughnessConstant = 0.65`, taken from the roughness of the pack's own maps (paving 0.58-0.65, per-map median 0.582) - and a census that proves no per-texture knob for them exists | `tools/pack_pbr_census.py` (coverage, decoded rough/metal/height, the uncovered-hash list) + the n18 block in all three profiles; **not yet seen in game** - [docs/TARGET.md](docs/TARGET.md) §6 |
 | **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
 | **Safety** | every install step reversible, the plugin stops touching a dead Remix bridge, and the launcher ends the Wine tree if the game hangs on Quit | `apply.sh` backups, `plugin/src/shutdown.cpp`, `launcher/launch-rtx.sh` |
 
@@ -219,6 +220,17 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   ```
   python3 tools/fog-budget.py config/rtx.conf
   python3 tools/fog-budget.py --bounds 400 4000 2 6 --color 0.6,0.6,0.6   # what-if
+  ```
+- What the asset pack actually covers is countable without running anything, and
+  `tools/pack_pbr_census.py` counts it: every `mat_<HASH>` material in the pack's USD layers (it
+  reads the binary crates as bytes, which plain `grep -r` silently skips), which of them have a
+  `<HASH>_albedo/_normal/_rough/_height/_metal` map, and - decoded from mip 0, texel/255 being the
+  perceptual roughness - what roughness the pack's own maps carry, per category. That is how the
+  shipped legacy roughness in `config/rtx.conf` is defended without a screenshot, and
+  `build/tmp/n18/pack-uncovered.txt` is the ranked work list for the offline PBR-ify pass:
+  ```
+  python3 tools/pack_pbr_census.py "<game>/rtx-remix/mods/gameReadyAssets" --json build/tmp/n18/census.json
+  python3 tools/pack_pbr_census.py "<game>/rtx-remix/mods/gameReadyAssets" --no-decode   # structure only
   ```
 - `nopops` is the other kind of switch: the same shipped profile with **only** the keys that
   decide *when* a lighting change lands (temporal reuse, accumulation windows, the TAA blend
