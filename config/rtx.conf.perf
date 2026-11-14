@@ -27,9 +27,10 @@
 rtx.restirGI.boilingFilterRemoveReservoirThreshold = 30
 rtx.decalTextures = 0x0270E41E9BF89516, 0x11C6FD244CAED049, 0x1A1B9A4E6CAF5E9E, 0x1A2F5F13EC1D6CDD, 0x1B91964934D3E1B1, 0x20D2BD9A8F8CB7F1, 0x26626F3D0B9542FD, 0x2E80B8878F003D7A, 0x35BF4E34E77A0B7C, 0x38FA6E19237E82FE, 0x39E5406DC4D3006D, 0x3F3E25323C1E0220, 0x432E891037A5F4CE, 0x45ABC0B544E897FF, 0x470163CEBDD9080F, 0x4B0B6CE7E032DD29, 0x56190D6EE7379FE5, 0x5B1F839051230514, 0x5F3832E42403337A, 0x62DC87C416A654CD, 0x64DC83584D2F7779, 0x66EFA5FE769C8102, 0x6BD6FA2D62E32EDA, 0x73AC780C8EDE6485, 0x76CF04376B04B8B4, 0x78F9BBFB79156E88, 0x791CFC283E2D00E1, 0x86E7F5D9BDCB6871, 0x960E9DA1FBC8D55C, 0x98F1B88719A0D2C8, 0xA244C9C2D5956E1A, 0xA29AEC4A3D81DFDC, 0xA6D7045F8740A5DF, 0xB97DAA02F39D2524, 0xBBB8BF8C92DEC94F, 0xBE686B6B6B8AE7ED, 0xC1DEE32B1A6EDBE3, 0xC7593BF9215112DD, 0xC8EDDFB620CA8A5F, 0xCA4EAF478D3E998C, 0xD0A66A65C7528968, 0xDB4F6AFB517CAA97, 0xDD0B477219193EA2, 0xE099A3A212027ADE, 0xE857B38281B72432, 0xFC343E2104C444F9, 0xFDFC58D603A94554
 rtx.restirGI.validateVisibilityChange = True
-# n16 audit: dead name in 1.6.1 (the option is rtx.volumetrics.enableFogMaxDistanceRemap,
-# default True), so it has never run. Left alone - n17 owns fog. See config/rtx.conf.
-rtx.enableFogMaxDistanceRemap = False
+# n16 audit found this key DEAD in 1.6.1 (the option is rtx.volumetrics.enableFogMaxDistanceRemap,
+# default True), so it has never run. n17 fixed the name; the value is the default, so this line
+# changes nothing on its own - the fog block at the end of this file is what changes anything.
+rtx.volumetrics.enableFogMaxDistanceRemap = True
 rtx.dlfg.enable = False
 rtx.fallbackLightRadius = 3
 rtx.ignoreTextures = 0x04931B9EC8F68722, 0x0748B4991EA9E481, 0x0801DDFEFD4AD85F, 0x12327A08E725DEE0, 0x188BFFED5020950B, 0x4DBD066761A29F5B, 0x63F56BAD1D42704D, 0x650AB0CEFBAFD10F, 0x6D2446E17BAC3050, 0x6F0AB36E2C7DB1A6, 0x72F44E5A77F84F90, 0x8CA564E68A98C4A7, 0x8F34BF39FA23F39D, 0x9D6A9F7B9355F09F, 0xB1B3C04B07B5ACEA, 0xB5C86BEE8E84357E, 0xBC9E2A1A5E437634, 0xBCCFDFAAE0F4E2AF, 0xE2D32425EB3234C0
@@ -299,3 +300,37 @@ rtx.localtonemap.highlights = 2.0
 #   src/util/config/config.cpp:1137), so a second copy only invites a future edit of the wrong one.
 #   What does change is that in Global mode it is live for the first time: in Local mode it was
 #   rtx.localtonemap.finalizeWithACES (default True) that ran.
+
+
+# ---------------------------------------------------------------------------
+# n17 (2026-11-13, docs/TARGET.md §3 T3): SA's fixed-function fog, remapped onto the volumetric
+# medium, so distance fades. Same six keys and the same values as config/rtx.conf - the tooltips,
+# the 1.6.1 source lines, the density arithmetic (tools/fog-budget.py), the not-shipped list and
+# the retune ladder are in config/rtx.conf's n17 block and .strata/notes-n17-fog-aerial-perspective.md.
+# Nothing here costs rays. The froxel march and the analytic transmittance tail already ran in every
+# frame of this profile (rtx.volumetrics.enable is True, so volumeArgs.enable is True and the
+# composite's depth-based fog has always been skipped - composite.comp.slang:653); what changes is
+# the sigma they integrate, from 1.1e-5 /m (344 km of air, i.e. nothing) to 3.8e-4 /m (10.3 km) at
+# the game's own daytime fog end of 4000 m. Measured before: far/near local contrast 1.22-3.67,
+# sky luma 92-128 at saturation 0.28-0.61 (build/tmp/n17/gap.json). This task could not render
+# (rule 1), so the after-numbers are owed by the next live run - docs/TARGET.md §6.
+rtx.volumetrics.enableFogRemap = True
+rtx.volumetrics.fogRemapMaxDistanceMinMeters = 400
+rtx.volumetrics.fogRemapMaxDistanceMaxMeters = 4000
+rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMinMeters = 2
+rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMaxMeters = 6
+rtx.volumetrics.fogRemapColorMultiscatteringScale = 0
+#   The input bounds bracket the game's own fog end (data/timecyc.dat FarClp: 4000 m for every
+#   weather type except 5 AM smog at 800 m; vanilla timecycp.dat 400-1150 m). The runtime does NOT
+#   clamp normalized, so leaving the defaults (1 / 40 m) in place would have mapped SA's 4000 m to
+#   d_meas 8200 m - thinner than the nothing it replaces. The output bounds are the density:
+#   10.3 km of air at the clear end, 3.4 km at the densest the game asks for, and never more than
+#   2 % of contrast lost inside 50 m in clear weather (5.5 % at the densest) - the "haze must not
+#   blur the ground under the camera" bound.
+# NOT here on purpose, same as config/rtx.conf: rtx.volumetrics.enableFogColorRemap (a dark game fog
+#   colour multiplies sigma by hundreds: 0.1 sRGB at d_meas 6 m is 0.77 /m, the street gone),
+#   rtx.volumetrics.enableHeterogeneousFog (its noise defaults are 12 cm cells - room scale, and it
+#   adds a density sample per march step, which is the one part of this that would cost fps), and
+#   rtx.volumetrics.froxelMaxDistanceMeters (20 m: bounds the in-scatter march, not the attenuation,
+#   which has an analytic tail; raising it changes the pack's lamp cones - a perf call).
+#   rtx.volumetrics.enableAtmosphere is inert in 1.6.1: no shader reads it.

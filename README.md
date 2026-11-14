@@ -209,6 +209,17 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   python3 tools/rtx-option-audit.py config/rtx.conf.perf        # audit a profile
   python3 tools/rtx-option-audit.py --show rtx.tonemappingMode  # type + default of one key
   ```
+- What an atmosphere block actually does to the air is arithmetic, and
+  `tools/fog-budget.py` is that arithmetic transcribed from the 1.6.1 source: the fog-remap mapping
+  (including the clamp the runtime does **not** apply), Beer-Lambert
+  (`σ = −ln(linear(transmittanceColor)) / d_meas`) and Koschmieder (`visibility = 3.912 / σ`), with
+  the unit scale (`100 × rtx.sceneScale`, so the bounds are SA metres). It turns six numbers into
+  "10.3 km of air at noon, 3.4 km at the game's densest fog, and never more than 2 % of contrast lost
+  inside 50 m" - which is how `config/rtx.conf`'s n17 block is defended without a screenshot:
+  ```
+  python3 tools/fog-budget.py config/rtx.conf
+  python3 tools/fog-budget.py --bounds 400 4000 2 6 --color 0.6,0.6,0.6   # what-if
+  ```
 - `nopops` is the other kind of switch: the same shipped profile with **only** the keys that
   decide *when* a lighting change lands (temporal reuse, accumulation windows, the TAA blend
   weight), and not one look key or texture list changed. Use it when the lighting still changes

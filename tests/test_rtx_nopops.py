@@ -60,6 +60,14 @@ LOOK = [
     "rtx.demodulate.enableDirectLightBoilingFilter",
     "rtx.di.permutationSamplingNthFrame", "rtx.autoExposure.enabled",
     "rtx.neeCache.enableModeAfterFirstBounce", "rtx.russianRouletteMode",
+    # n17: the atmosphere. Look keys, so the temporal profile inherits them untouched - but they
+    # are the one thing here whose value can move during a session (the density follows the game's
+    # own fog end, which SA cross-fades). See the generator's header.
+    "rtx.volumetrics.enableFogRemap", "rtx.volumetrics.enableFogMaxDistanceRemap",
+    "rtx.volumetrics.fogRemapMaxDistanceMinMeters", "rtx.volumetrics.fogRemapMaxDistanceMaxMeters",
+    "rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMinMeters",
+    "rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMaxMeters",
+    "rtx.volumetrics.fogRemapColorMultiscatteringScale",
 ]
 TEXTURES = [
     "rtx.decalTextures", "rtx.ignoreTextures", "rtx.uiTextures", "rtx.skyBoxTextures",

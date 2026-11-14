@@ -8,6 +8,9 @@
 # key<TAB>what it really is / why it is still in the file
 rtx.enableVolumetricLighting	replaced by rtx.volumetrics.enable in 1.6.1; kept in config/rtx.conf because rtx.conf.orig (the runtime's own first-launch file) carries it and `tools/rtxprofile.sh current` must be able to put the shipped file back byte for byte (s22)
 rtx.minReplacementTextureMipMapLevel	already a no-op in 1.6.1 (same reason as above: it is in rtx.conf.orig, and `current` restores the shipped file)
-rtx.enableFogMaxDistanceRemap	the option is rtx.volumetrics.enableFogMaxDistanceRemap (default True). Found by n16's audit; NOT renamed here because making it live would turn fog max-distance remap OFF, which is a fog change and n17 owns fog
+# Fixed (moved out of this list) by n17: rtx.enableFogMaxDistanceRemap -> rtx.volumetrics.enableFogMaxDistanceRemap,
+# written True (its default) in all three profiles next to the n17 fog block. n16 found it dead and left it
+# because "n17 owns fog"; n17 fixed it. The name is still in the FAKE list of tests/test_rtx_option_audit.py as a
+# negative control, so the audit cannot go soft on it.
 rtx.antiCulling.object	the option is rtx.antiCulling.object.enable (default False), so n04's anti-culling never actually ran. Found by n16's audit; NOT renamed here because enabling it keeps up to rtx.antiCulling.object.numObjectsToKeep = 10000 instances in the TLAS - a VRAM decision on a card that already ate one OOM device loss (docs/VEGETATION.md), i.e. a perf task's call
 rtx.antiCulling.light	the option is rtx.antiCulling.light.enable (default False); same reasoning as the line above

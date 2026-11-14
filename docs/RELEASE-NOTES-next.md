@@ -109,6 +109,20 @@ If something in the update looks wrong, everything is reversible
   place the plugin writes. **We have not seen this in game yet** —
   the numbers behind it are measurements of the old frames, and the first live run is what tells us
   whether the night shots got better.
+- **Distance is allowed to fade.** San Andreas draws its own fog (a start distance and an end
+  distance per hour and weather, in `data/timecyc.dat`), but with volumetrics on the renderer throws
+  that fog away and replaces it with its own air — which had never been configured, so the air was
+  344 km clear and the whole map sat there crisp to the horizon. The profiles now hand that fog to
+  the volumetric system: the game's own end distances (400–4000 m) set how thick the air is, which
+  comes out at **10.3 km of visibility on a clear day and 3.4 km when the game asks for fog** — the
+  skyline loses a third to a half of its contrast while the pavement under your feet keeps 98 % of
+  its. Two honest warnings. **We have not seen this in game yet**, and the arithmetic says the haze
+  will be milder than the reference video's unless we make the air denser. And the same haze darkens
+  the sky a little, because in this renderer the haze only glows within about 20 m of you — so if the
+  sky goes dull, that is this change, and the knob is the density
+  (`fogRemapTransmittanceMeasurementDistanceMaxMeters`, 6 → 12 → 20 to back it off, 4 → 3 → 2 to
+  lean in), not a colour key. `python3 tools/fog-budget.py config/rtx.conf` prints exactly what a
+  number does before you try it.
 
 ### Traffic signals
 

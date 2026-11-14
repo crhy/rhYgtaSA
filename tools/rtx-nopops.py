@@ -99,6 +99,18 @@ HEADER = """# rhyremix "no pops" A/B profile - n01. Install with:
 #       filtering"). That is a second, independent smoothing of a lighting change, on top of the
 #       nine temporal keys this profile moves. Read the A/B with that in mind: if a step now lags,
 #       it may be the curve, not the reservoirs.
+#   The n17 atmosphere block is carried through byte-identical (enableFogRemap True, the four
+#       fogRemap bounds 400/4000 m in and 2/6 m out, fogRemapColorMultiscatteringScale 0, and the
+#       fixed rtx.volumetrics.enableFogMaxDistanceRemap). It is a look key, so it is not part of
+#       this A/B - but it is the one thing in the shipped profile whose value can move DURING a
+#       session without the plugin touching it: the density follows the game's own fog end
+#       (data/timecyc.dat FarClp), which SA cross-fades between weather types, and the runtime
+#       re-derives sigma from the frame's fog state (rtx_global_volumetrics.cpp:470-540). A scripted
+#       instant weather change therefore moves the medium in one frame, and plugin/src/smooth.cpp
+#       cannot rate-limit it: rtxconf.cpp refuses every "volumetrics." key at runtime (kUnsafeKeys,
+#       :245-252 - pushing that subsystem mid-run killed the bridge server once). If a haze pop on a
+#       weather change shows up in this A/B, the fix is the game's data (timecyc rows), not a key
+#       here. Density arithmetic: python3 tools/fog-budget.py config/rtx.conf.nopops.
 #
 # HOW TO READ THE A/B: scripts/lighting-test.sh, driving under the lamps at dusk with
 # [clock] apply=1. Two things the plugin cannot fix from its own side: the shadow-direction jump

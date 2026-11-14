@@ -2245,3 +2245,157 @@ through the sea, so the sky and the lamp pools arrive under the pier; bloom's de
 linear model puts the under-lamp night frame at 10.6-30.0 % of noon with the lamps at 40 % of their
 flux (measured today: 57.3 %). Both branches carry the tools (`tools/night-brightness.py`,
 `tools/night_ambient.py`, `tools/night-report.py`); neither is in the tree.
+
+## Aerial perspective: what the game's fog is, what the runtime does with it, and the six numbers between (2026-11-13, n17)
+
+docs/TARGET.md §4 **T3** ("distance must fade"). Nothing was run in the game — rule 1 — so this
+section separates three things the repo has been mixing up: what the **game** draws, what the
+**runtime** does with it, and what **we** can therefore change. Every file:line is the 1.6.1 source
+(`build/tmp/n16-dxvk/dxvk-remix-remix-1.6.1`, upstream `NVIDIAGameWorks/dxvk-remix`, MIT) or the
+read-only game folder.
+
+**1. San Andreas' fog is two timecycle columns, and the pack's values are enormous.**
+`data/timecyc.dat` (101,910 B, 2026-11-09, header "Custom Time Cycle for RTX-Remix only created By
+Discord Hemry") has 52 columns per row; column 28 is `FarClp`, column 29 is `FogSt`, 8 rows per
+weather type. Census (metres, which is what SA's units are):
+
+| weather types | FarClp | FogSt range |
+|---|---|---|
+| the LA / SF / Vegas / countryside / desert sets | **4000** | −22 … +200 |
+| EXTRASUNNY_SMOG_LA | 800 (5 AM) / 4000 | 10 … 100 |
+| RAINY_SF / RAINY_COUNTRYSIDE / UNDERWATER | 4000 | 5 … 188 |
+| FOGGY_SF | 4000 | −200 … −30 |
+| SANDSTORM_DESERT | 4000 | −111 |
+
+The tour pins weather 1 = SUNNY_LA (`moonloader/SARemix_Tour.lua:180 forceWeatherNow(1)`), whose
+daytime rows are **FarClp 4000 / FogSt 100 m at every hour**. Vanilla `data/timecycp.dat` uses
+FarClp 400–1150 m. So the daytime shots the haze metric runs on were taken with a fog that was
+meant to finish at 4 km — an almost clear atmosphere by design, and the reason "the whole map is
+laid out like the palm of your hand" is a property of the *game*, not only of the renderer.
+
+**2. Our plugin never touches fog, and its "weather" is not the game's.** `main.cpp` hooks two
+vtable entries (`Present`, `SetGammaRamp`); `grep -rn "SetRenderState\|D3DRS\|fog" plugin/src` finds
+a comment and one key name inside the never-send list. `plugin/src/tod.h` states the boundary
+outright: "there is no verified offset for the game's CWeather, and `rtx.ignoreGameDirectionalLights
+= True` means the game's own timecycle/weather blend never reaches the renderer anyway".
+`rhyWeatherInit/Update` (`tod.cpp:244-300`) smooths ini `sky.cloud` / `sky.turbidity` into the sun's
+extinction and the sky ambient (`sun.cpp:696-710`); `solar.cpp` has no weather or fog at all. Two
+separate atmospheres: n17 moves only the renderer's, and the plugin's cloud knob cannot change the
+game's fog.
+
+**3. The runtime captures the fog per draw call and then throws it away.** `setFogState`
+(`d3d9_rtx_utils.cpp:227`) copies `D3DRS_FOGEND` into `fogState.end` and `1/(end−start)` into
+`fogState.scale`; `SceneManager::submitDrawState` (`rtx_scene_manager.cpp:657-680`) keeps the
+**first** non-`D3DFOG_NONE` state of the frame as `m_fog`. `rtx.enableFog` (default **True**) would
+re-apply it as depth fog in the composite (`rtx_composite.cpp:406-421`, `applyFog` at
+`composite/comp.slang:648`) — but `applyFog` starts with
+`if (cb.volumeArgs.enable) return 1.0f; // Volumetric fog is applied in volume integration`
+(`composite.comp.slang:653`), and `volumeArgs.enable = enable() && canUsePhysicalFog` with
+`rtx.volumetrics.enable` default **True** (`rtx_global_volumetrics.cpp:576`). The density test at
+`:435-452` passes for any linear fog SA sets (its `approximateDensity` uses `fogState.scale`, not
+the fog start, so it disagrees with its own comment and lands at ~0.0017 for every SA row — always
+under the 0.065 threshold). Net effect: **the game's fog has not been drawn at all**, and the medium
+that replaced it is the untouched default — `transmittanceColor 0.999` measured at
+`transmittanceMeasurementDistanceMeters 200` — which is σ = 1.14e-5 /m, i.e. **344 km of air**.
+That is the mechanism behind n15's far/near local contrast 1.22–3.67.
+
+**4. `enableFogRemap` is the bridge, and its bounds are in metres.** With
+`rtx.volumetrics.enableFogRemap` (default **False**) and `enableFogMaxDistanceRemap` (default
+**True**), LINEAR fog maps the captured end distance into the medium
+(`rtx_global_volumetrics.cpp:470-546`):
+
+```
+normalized = (fogEnd − fogRemapMaxDistanceMinMeters) / (Max − Min)      # NOT clamped
+d_meas     = normalized * (TransMax − TransMin) + TransMin
+σ          = −ln(srgb_to_linear(transmittanceColor)) / d_meas ; T(x) = exp(−σ x)
+```
+
+`getMeterToWorldUnitScale() = 100 * rtx.sceneScale` (`rtx_options.h:1473`) and our profiles carry
+`rtx.sceneScale = 0.01`, so the scale is **1.0** and the bounds are SA metres. The missing clamp is
+a trap: with the runtime's own defaults (1 / 40 m) SA's 4000 m gives `normalized = 102` and
+`d_meas = 8200 m` — a medium *thinner* than the nothing it replaces. `tools/fog-budget.py` now
+computes all of this from a profile, and `tests/test_fog_budget.py` pins it.
+
+**5. What n17 ships, and the density in weather-report units.** Six keys in all three profiles
+(`config/rtx.conf`, `.perf`, `.nopops`): input bounds **400 / 4000 m** (bracketing both timecycle
+files), output bounds **2 / 6 m**, `enableFogRemap = True`, `enableFogMaxDistanceRemap = True`
+(explicit, it is the default), `fogRemapColorMultiscatteringScale = 0`.
+
+| game fog end | d_meas | σ (1/m) | visibility | T@50 m | T@500 m | T@1 km | T@2 km | T@4 km |
+|---|---|---|---|---|---|---|---|---|
+| 4000 m (clear, every daytime row) | 6.00 | 3.79e-4 | **10.3 km** | 0.981 | 0.827 | 0.684 | 0.468 | 0.219 |
+| 1500 m | 3.22 | 7.06e-4 | 5.5 km | 0.965 | 0.702 | 0.493 | 0.243 | 0.059 |
+| 800 m (5 AM smog) | 2.44 | 9.31e-4 | 4.2 km | 0.955 | 0.628 | 0.394 | 0.155 | 0.024 |
+| 400 m (densest the game asks for) | 2.00 | 1.14e-3 | 3.4 km | 0.945 | 0.566 | 0.320 | 0.103 | 0.011 |
+| *before n17 (no remap, d_meas 200)* | 200 | 1.14e-5 | 344 km | 0.999 | 0.994 | 0.989 | 0.977 | 0.956 |
+
+Visibility is Koschmieder's 3.912/σ, the distance at which a black object's contrast falls to 2 %.
+The near band (≤ 50 m) keeps ≥ 94.5 % of its contrast at every rung and 98.1 % in clear weather —
+"haze must not blur the ground under the camera" satisfied by construction, because a homogeneous
+Beer-Lambert medium only bites at hundreds of metres.
+
+**6. Two findings that change the plan, not just the config.**
+
+*The haze metric has two sides.* Our far/near is > 1 because the **near** band is featureless flat
+ground (near hp_rms 7.5–24.2) while the skyline is crisp (27.7–35.1) — `build/tmp/n17/gap.json`.
+Extinction moves one side. Predicted after (`build/tmp/n17/predicted.txt`, the same exponential
+applied to the measured bands): pershing-noon 3.67 → 2.56 with the far band at 1 km, 1.75 at 2 km.
+The 0.5–0.9 target needs TransMax 2–3 m (3.4–5.2 km of air, i.e. SA's *foggy* end, not its clear
+end) **and** a near band with detail in it — which is T1 (n18/n20, materials and textures), not this
+task.
+
+*The haze row and the sky row are in direct conflict in 1.6.1.* The same exponential attenuates the
+sky: SA's sky is tagged (`rtx.skyBoxTextures`, `config/rtx.conf:51`) and the composite multiplies
+sky by the volume's transmittance (`composite.comp.slang:627-636`), so at the shipped value the
+skybox — drawn at the far clip, 4000 m — arrives at 0.219 of its radiance instead of 0.956. The
+target wants sky luma ≥ 150 while our sky is already 92–128. Real atmospheres pay for extinction with
+in-scatter; this runtime cannot, at distance: the volume's in-scatter comes from the light pool
+inside `froxelMaxDistanceMeters` (**20 m**) plus `multiScatteringEstimate = fogState.color *
+fogRemapColorMultiscatteringScale`, whose own tooltip says it is "just a simple ambient term … may
+not look very good" and which n17 sets to **0** because it is the fog-that-lights-the-night knob.
+The next knob for the sky is `froxelMaxDistanceMeters` (20 → 200–1000 m: the froxel grid's memory
+does not change, its cells get coarser), and it is a separate step.
+
+**7. Knobs that are hazardous, inert, or both.**
+
+* `rtx.volumetrics.enableFogColorRemap` (default False) is a **density knob wearing a colour mask**:
+  σ = −ln(colour)/d_meas, so a mid-grey game fog colour (0.6 sRGB) gives 0.19 /m and a dark one
+  (0.1) 0.77 /m — transmittance at 50 m would be 1e-9. Not shippable without re-deriving d_meas.
+* `rtx.volumetrics.enableAtmosphere` and its four parameters are **inert in 1.6.1**: the C++ fills
+  them (`rtx_global_volumetrics.cpp:618-625`) but no shader in the tree reads `enableAtmosphere`,
+  `atmosphereHeight`, `planetCenter`, `atmosphereRadiusSquared` or
+  `maxAttenuationDistanceForNoAtmosphere` (only `volume_args.h` declares them). Do not spend a
+  session on them.
+* `rtx.volumetrics.enableHeterogeneousFog` (default False) is commented out in the config with its
+  starting values: its noise field is sampled inside the march (`sampleDensityField`,
+  `composite.comp.slang:390`) with defaults sized for a room — `noiseFieldInitialFrequencyPerMeter 8`
+  (12 cm cells), `noiseFieldSubStepSizeMeters 10`, `noiseFieldOctaves 2`. For SA the starting point
+  is ~0.002 /m (500 m cells), sub-step 50, octaves 3. Its helper
+  `rtx/algorithm/volume_composite_helpers.slangh` is **not in the public 1.6.1 tarball**
+  (`https://raw.githubusercontent.com/NVIDIAGameWorks/dxvk-remix/remix-1.6.1/src/dxvk/shaders/rtx/algorithm/volume_composite_helpers.slangh`
+  → 404), so `calcVolumetricAttenuation` / `sampleDensityField` cannot be audited offline.
+* A preset picked in the Remix UI **turns the remap off**: `DxvkGlobalVolumetricsPass::setPreset()`
+  ends with `rtx.volumetrics.enableFogRemap.setDeferred(false)` (`rtx_global_volumetrics.cpp:313`),
+  and the presets are the UI's "Volumetric Preset" dropdown. Our profiles do not set
+  `rtx.graphicsPreset` to a volumetric preset, but a session that touches that dropdown silently
+  loses the atmosphere.
+* The runtime's own **Portal RTX profile** (`src/util/config/config.cpp:842-846`) writes
+  `rtx.volumetrics.fogRemapMaxDistanceMin/Max` and `…TransmittanceMeasurementDistanceMin/Max` —
+  **without** the `Meters` suffix. Those four strings are why `config/rtx-runtime-keys.txt` carries
+  dotted fog names that are not options (lines 232-236) and why `tools/rtxkeycheck.py` accepts both
+  spellings. Conversely `rtxkeycheck.py` FAILs on `rtx.enableFog` and `rtx.fogColorScale`, which
+  *are* options: the strings vocabulary has false negatives as well as false positives, and
+  `tools/rtx-option-audit.py` against `config/rtx-options-1.6.1.tsv` is the authority.
+
+**8. The dead key n16 left for this task is fixed.** `rtx.enableFogMaxDistanceRemap = False` had
+been in all three profiles since the runtime's first launch and is not an option of 1.6.1; it is
+now `rtx.volumetrics.enableFogMaxDistanceRemap = True` (the default, so behaviour is unchanged) and
+`config/rtx-dead-keys.txt` drops it, 5 entries → 4. The dead name stays in
+`tests/test_rtx_option_audit.py`'s FAKE negative controls so the audit cannot go soft on it.
+
+**9. Measured or not.** Measured: the timecycle census, the option names and defaults, the mechanism
+(source), the before numbers (`build/tmp/n17/gap.json`, `good-before.json`), the density arithmetic
+(`tools/fog-budget.py`, 9 tests). Predicted: the after numbers (`build/tmp/n17/predicted.txt`) —
+rule 1 forbids running the game, wine or Steam, and a fog change only becomes a number once the
+runtime draws a frame. The live protocol, the ladder in both directions and the abort conditions are
+[TARGET.md §6](TARGET.md).

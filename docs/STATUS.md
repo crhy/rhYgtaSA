@@ -68,18 +68,19 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 | gap | what the measurement says | status | owner |
 |---|---|---|---|
 | **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **config shipped by n16 + plugin anchor shipped by n22, after-numbers owed** — neither has ever been rendered (rule 1 forbids running the game here) | n16 shipped `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` + `localtonemap.shadows 1.0` / `highlights 2.0` in all three profiles; n22 drives that same option from solar elevation at runtime (`[tonemap] day_ev -0.5 → night_ev +0.5`, ≤ 0.05 EV/s), so noon is unchanged and 21:00 gets 2× the light. The run and the abort ladder are [TARGET.md §6](TARGET.md); the mechanism is FINDINGS ("The tonemapper…", "One exposure anchor cannot serve noon and 21:00") |
-| **T3 atmosphere** | haze far/near local contrast 1.22–3.67 vs 0.46–1.18; sky 92–128 luma at saturation 0.28–0.61 vs 160–199 at 0.13–0.26 | **open** | n17 (`rtx.volumetrics.enableFogRemap` and its bounds — we ship volumetrics but no fog remap at all) |
+| **T3 atmosphere** | haze far/near local contrast 1.22–3.67 vs 0.46–1.18; sky 92–128 luma at saturation 0.28–0.61 vs 160–199 at 0.13–0.26 | **config shipped by n17, after-numbers owed** — never rendered (rule 1) | n17 shipped `rtx.volumetrics.enableFogRemap = True` + input bounds 400/4000 m (the game's own `FarClp` in `data/timecyc.dat`) + output bounds 2/6 m (3.4–10.3 km of air, was 344 km) + `fogRemapColorMultiscatteringScale = 0` in all three profiles, and fixed the dead `rtx.enableFogMaxDistanceRemap`. Predicted far/near 3.67 → ~2.6 at 1 km (`build/tmp/n17/predicted.txt`); the 0.5–0.9 target also needs the near band to have detail (T1) and the sky target needs in-scatter, which 1.6.1 only has inside 20 m — see FINDINGS (n17) and [TARGET.md §6](TARGET.md) |
 | **T1 materials** | the pack has 2334 materials and only 315 `_normal` / 280 `_rough` / **32 `_metal`** maps: ~1 in 7 gets a real BRDF | **open** | n18 (the runtime's `rtx.legacyMaterial` / `rtx.opaqueMaterial` numbers), then an offline PBR-ify pass |
 | **T2 HD assets** | pack albedo is mostly 2048 px; the "8K pack" claim is the channel's, not verifiable | **measured** | census in FINDINGS; the asset work is upstream (MIT pack) |
 | **DLSS 5 itself** | the keys exist in our 1.6.1 runtime (`rtx.dlssNeuralRendering` + artistic controls), but DLSS 5 is RTX 50-series only and this box is an RTX 4070 Ti SUPER on 610.57.04, already logging `NVIDIA DLSS-NR support query failed (0xbad00010)` | **open** (probe) | n19 — the answer goes in the docs either way; nothing here depends on it |
 
 The reference, what it publishes (nothing) and the full table are in
 [TARGET.md](TARGET.md); the evidence is in [FINDINGS.md](FINDINGS.md), "The reference video we are
-told to beat" and "The tonemapper, and the keys our own profiles had been writing wrong". That second
-section also carries a warning for T3: three keys our own profiles have been carrying are **not
-options of 1.6.1** (`rtx.enableFogMaxDistanceRemap`, `rtx.antiCulling.object`,
-`rtx.antiCulling.light`) and have therefore never done anything — listed with their reasons in
-`config/rtx-dead-keys.txt`, deliberately not renamed.
+told to beat", "The tonemapper, and the keys our own profiles had been writing wrong" and
+"Aerial perspective…" (n17). The second of those carried a warning for T3: three keys our own
+profiles had been carrying are **not options of 1.6.1** (`rtx.enableFogMaxDistanceRemap`,
+`rtx.antiCulling.object`, `rtx.antiCulling.light`) and had therefore never done anything. n17 fixed
+the fog one; the two anti-culling ones stay deliberately unrenamed (enabling them keeps up to 10000
+instances in the TLAS — a VRAM call). The list with its reasons is `config/rtx-dead-keys.txt`.
 
 ## Parked and aborted work
 
@@ -124,6 +125,16 @@ game.
    no-op by design, so the daytime shots are predicted unchanged — if they moved, the plugin is
    pushing when it should not). Night too dark: raise `[tonemap] night_ev`; night blown: `night_ev=0`;
    undo all of it: `apply=0`. Details: [TARGET.md §6](TARGET.md), FINDINGS (n22).
+9. **The n17 atmosphere (T3)** — the profiles now turn the game's fog into the volumetric medium:
+   10.3 km of air at noon instead of 344 km. First check it is live at all —
+   `grep -i fogremap` in the `Effective RtxOption values` dump of `remix-dxvk.log` must show
+   `enableFogRemap = 1` (a **Volumetric Preset** picked in the Remix UI turns it off). Then the two
+   `tools/target-gap.py` commands in [TARGET.md §6](TARGET.md): the four daytime shots against
+   `build/tmp/n17/gap.json` (far/near has to come down — 3.67 → ~2.6 is the prediction), and the six
+   good shots plus the two water stops against `build/tmp/n17/good-before.json`. Look with your eyes
+   at the skyline versus the pavement under the camera, and at the **sky**: it will get darker, and
+   how much darker is the whole argument about how dense to make the air.
+   `python3 tools/fog-budget.py config/rtx.conf` re-derives every number in that decision.
 
 ## How this page is kept honest
 

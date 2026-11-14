@@ -67,10 +67,13 @@ for line in open("config/rtx-options-1.6.1.tsv", encoding="utf-8"):
 dead = [l.split("\t")[0] for l in open("config/rtx-dead-keys.txt", encoding="utf-8")
         if not l.startswith("#") and l.strip()]
 live = [k for k in dead if k in tab]
-print("%d %s" % (len(dead), "OK" if not live and len(dead) == 5 else "WRONG:" + (",".join(live) or "count %d" % len(dead))))
+# 4 since n17: rtx.enableFogMaxDistanceRemap was renamed to the real option
+# rtx.volumetrics.enableFogMaxDistanceRemap, so it left the allow-list. If a future task fixes one of
+# the four, delete its line here and lower this number; if one is ADDED, say why in the file.
+print("%d %s" % (len(dead), "OK" if not live and len(dead) == 4 else "WRONG:" + (",".join(live) or "count %d" % len(dead))))
 PY
 )
-[ "$deadinfo" = "5 OK" ] && ok "the dead-key allow-list is exactly the 5 documented keys and every one is still dead" || bad "dead-key allow-list is wrong ($deadinfo)"
+[ "$deadinfo" = "4 OK" ] && ok "the dead-key allow-list is exactly the 4 documented keys and every one is still dead" || bad "dead-key allow-list is wrong ($deadinfo)"
 
 # --- 2/3 switching and round-trips --------------------------------------------------------
 $TOOL status "$G" > "$T/status0.log" 2>&1

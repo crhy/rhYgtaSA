@@ -128,9 +128,13 @@ class TestOptionTable(unittest.TestCase):
     def test_without_the_allow_list_the_dead_keys_are_still_flagged(self):
         r = audit(["config/rtx.conf.perf"], allow_dead=False)
         self.assertNotEqual(r.returncode, 0)
-        for key in ("rtx.enableFogMaxDistanceRemap", "rtx.antiCulling.object",
-                    "rtx.antiCulling.light"):
+        for key in ("rtx.antiCulling.object", "rtx.antiCulling.light"):
             self.assertIn(key, r.stdout, "%s no longer flagged - fix the list" % key)
+        # n17 fixed rtx.enableFogMaxDistanceRemap (the option is
+        # rtx.volumetrics.enableFogMaxDistanceRemap), so the dead name must not sit in a profile.
+        for path in (CONF, PERF, NOP):
+            self.assertNotIn("rtx.enableFogMaxDistanceRemap", parse(path),
+                             "%s carries the dead fog name again" % os.path.basename(path))
 
     def test_the_audit_rejects_the_fake_names(self):
         tmp = os.path.join(REPO, "build", "tmp", "n16-fake-keys.conf")
@@ -146,7 +150,7 @@ class TestOptionTable(unittest.TestCase):
     def test_dead_key_list_is_short_and_still_dead(self):
         dead = [l.split("\t")[0] for l in open(DEAD, encoding="utf-8")
                 if not l.startswith("#") and l.strip()]
-        self.assertEqual(len(dead), 5, "the dead-key allow-list grew or shrank: %s" % dead)
+        self.assertEqual(len(dead), 4, "the dead-key allow-list grew or shrank: %s" % dead)
         for key in dead:
             self.assertNotIn(key, self.opts,
                              "%s is a real option now - delete it from %s" % (key, DEAD))
@@ -184,6 +188,112 @@ class TestN16Block(unittest.TestCase):
                              "%s sets the motion-blur shutter fraction; it is not an exposure knob"
                              % os.path.basename(path))
 
+
+
+# n17 (docs/TARGET.md §3 T3): the fog-remap block. The same six values in every profile, the
+# runtime defaults those numbers are measured against, and the knobs that must stay off because of
+# what the runtime's own math does with them (config/rtx.conf's n17 block, tools/fog-budget.py).
+N17 = {
+    "rtx.volumetrics.enableFogRemap": "True",                                  # runtime default False
+    "rtx.volumetrics.enableFogMaxDistanceRemap": "True",                       # default True
+    "rtx.volumetrics.fogRemapMaxDistanceMinMeters": "400",                     # default 1
+    "rtx.volumetrics.fogRemapMaxDistanceMaxMeters": "4000",                    # default 40
+    "rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMinMeters": "2",  # default 20
+    "rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMaxMeters": "6",  # default 100
+    "rtx.volumetrics.fogRemapColorMultiscatteringScale": "0",                  # default 0.1
+}
+
+
+class TestN17Block(unittest.TestCase):
+    def setUp(self):
+        self.opts = table()
+
+    def test_every_profile_ships_the_same_fog(self):
+        for path in (CONF, PERF, NOP):
+            got = parse(path)
+            for key, want in N17.items():
+                self.assertEqual(got.get(key), want,
+                                 "%s: %s is %r, n17 ships %r"
+                                 % (os.path.basename(path), key, got.get(key), want))
+
+    def test_the_defaults_the_numbers_are_measured_against(self):
+        """tools/fog-budget.py and the config comments quote these; if NVIDIA moves one, the
+        "10.3 km of air at the clear end" statement in config/rtx.conf is stale."""
+        for key, default in (("rtx.volumetrics.enableFogRemap", "False"),
+                             ("rtx.volumetrics.enableFogMaxDistanceRemap", "True"),
+                             ("rtx.volumetrics.enableFogColorRemap", "False"),
+                             ("rtx.volumetrics.fogRemapMaxDistanceMinMeters", "1"),
+                             ("rtx.volumetrics.fogRemapMaxDistanceMaxMeters", "40"),
+                             ("rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMinMeters", "20"),
+                             ("rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMaxMeters", "100"),
+                             ("rtx.volumetrics.fogRemapColorMultiscatteringScale", "0.1"),
+                             ("rtx.volumetrics.transmittanceColor", "0.999, 0.999, 0.999"),
+                             ("rtx.volumetrics.transmittanceMeasurementDistanceMeters", "200"),
+                             ("rtx.volumetrics.enableHeterogeneousFog", "False"),
+                             ("rtx.volumetrics.froxelMaxDistanceMeters", "20"),
+                             ("rtx.volumetrics.enable", "True"),
+                             ("rtx.enableFog", "True"),
+                             ("rtx.fogColorScale", "0.25")):
+            self.assertIn(key, self.opts, "%s is not an option of this runtime" % key)
+            self.assertEqual(self.opts[key]["default"], default,
+                             "%s default moved from %s - the n17 reasoning cites it" % (key, default))
+
+    def test_the_unit_scale_makes_the_bounds_metres(self):
+        """getMeterToWorldUnitScale() = 100 * rtx.sceneScale (rtx_options.h:1473). The n17 bounds
+        are SA metres only while every profile keeps rtx.sceneScale at 0.01."""
+        for path in (CONF, PERF, NOP):
+            self.assertEqual(parse(path).get("rtx.sceneScale"), "0.01",
+                             "%s changed rtx.sceneScale - the fog bounds are no longer metres"
+                             % os.path.basename(path))
+
+    def test_the_two_dangerous_knobs_stay_off(self):
+        """enableFogColorRemap puts the game's fog COLOUR into sigma = -ln(colour)/d_meas: a dark
+        fog colour multiplies the density by hundreds (0.1 sRGB at d_meas 6 m is 0.77 /m, the street
+        gone). The multiscattering ambient term is a constant glow that ignores the clock - the
+        fog-that-lights-the-night failure this task is told to avoid."""
+        for path in (CONF, PERF, NOP):
+            got = parse(path)
+            self.assertNotEqual(got.get("rtx.volumetrics.enableFogColorRemap"), "True",
+                                "%s turned fog COLOUR remap on - re-derive d_meas with "
+                                "tools/fog-budget.py first" % os.path.basename(path))
+            self.assertEqual(got.get("rtx.volumetrics.fogRemapColorMultiscatteringScale"), "0",
+                             "%s re-armed the multiscattering ambient term" % os.path.basename(path))
+
+    def test_heterogeneous_fog_is_not_shipped(self):
+        """One knob per step, and its noise defaults are 12 cm cells - room scale, not SA."""
+        for path in (CONF, PERF, NOP):
+            self.assertNotIn("rtx.volumetrics.enableHeterogeneousFog", parse(path),
+                             "%s ships heterogeneous fog; it has never been measured" % path)
+
+    def test_the_near_band_and_far_band_bounds_hold(self):
+        """The task's "haze must not blur the ground under the camera", as arithmetic: at the
+        shipped output bounds even the densest mapping keeps > 93 % of the light inside 50 m, while
+        the far band (2 km) must still lose at least 30 %."""
+        import importlib.util
+        import math
+        spec = importlib.util.spec_from_file_location(
+            "fog_budget", os.path.join(REPO, "tools", "fog-budget.py"))
+        fbg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fbg)
+        for path in (CONF, PERF, NOP):
+            p = fbg.parse_profile(path)
+            mn = p["rtx.volumetrics.fogRemapMaxDistanceMinMeters"]
+            mx = p["rtx.volumetrics.fogRemapMaxDistanceMaxMeters"]
+            tmin = p["rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMinMeters"]
+            tmax = p["rtx.volumetrics.fogRemapTransmittanceMeasurementDistanceMaxMeters"]
+            color = p["rtx.volumetrics.transmittanceColor"]
+            # the fog ends the game can actually ask for: FarClp is 400-4000 m across
+            # data/timecyc.dat (pack) and data/timecycp.dat (vanilla).
+            for fog_end in (400.0, 800.0, 1500.0, 4000.0):
+                n, d = fbg.remap_d_meas(fog_end, mn, mx, tmin, tmax)
+                self.assertGreater(d, 0.0, "%s: d_meas <= 0 at fog end %g" % (path, fog_end))
+                sig = fbg.sigma_per_m(color, d)[0]
+                self.assertGreater(math.exp(-sig * 50.0), 0.93,
+                                   "%s: the near band loses more than 7 %% at fog end %g"
+                                   % (os.path.basename(path), fog_end))
+                self.assertLess(math.exp(-sig * 2000.0), 0.70,
+                                "%s: the far band would barely fade at fog end %g"
+                                % (os.path.basename(path), fog_end))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

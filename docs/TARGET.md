@@ -99,7 +99,7 @@ direct comparison), `grove-noon`, `vinewood-noon`, `carmirror-1300`.
 | warm-hue share of mid-tones | 81 – 95 % | 6 – 53 % | same story, hue-wise |
 | saturation (mid-tones) | 0.17 – 0.41 | 0.20 – 0.47 | we are more saturated exactly where they are not |
 | sky luma / sky saturation | 160–199 / **0.13–0.26** | 92–128 / **0.28–0.61** | their sky is bright and pale; ours is dark and deep blue (in the downtown shot the sky is *darker* than the street) |
-| haze: far/near local contrast | 0.46 – 1.18 | 1.22 – **3.67** | our near field has 2–4× **less** detail than the distance: flat ground under the camera, and no aerial perspective |
+| haze: far/near local contrast | 0.46 – 1.18 | 1.22 – **3.67** | our near field has 2–4× **less** detail than the distance: flat ground under the camera, and no aerial perspective — **fog shipped by n17, after-numbers owed, see §6** |
 | local contrast (normalised) | 0.137 – 0.294 | 0.131 – 0.214 | not the gap |
 | specular area ‰ (luma ≥ p95) | 2.9 – 12.9 | 4.0 – 27.6 | we score *higher* while having no real highlights — our "bright" pixels are lifted flat sky |
 
@@ -119,7 +119,7 @@ Two extra facts worth keeping:
 |---|---|---|---|---|---|
 | **T1** PBR materials | the pack's PBR maps **plus DLSS 5's learned materials** on an RTX 5090 | the same pack: **2334** `mat_<HASH>` materials, of which only ~300 have maps (315 `_normal`, 280 `_rough`, 185 `_height`, **32 `_metal`**); the rest get the runtime's default legacy BRDF | (a) turn the runtime's own material knobs: `rtx.legacyMaterial.roughnessConstant` / `.metallicConstant` / `.roughnessAnisotropy`, `rtx.opaqueMaterial.roughnessScale/roughnessBias/metallicScale/metallicBias`; (b) offline PBR-ify pass (normal+roughness from albedo) for the top ground/road textures by hash — we already read and write DDS in `tools/water_normal_soft.py`; (c) probe `rtx.dlssNeuralRendering` and record the verdict | (a) 40 min · (b) 3–4 h · (c) 45 min | pack is **MIT** — patchable and re-hostable with credit; Proper Shaders is proprietary, link only |
 | **T2** HD geometry / textures | an "8K texture pack" claim; the pack itself is 2K/4K; Remix 1.6 adds OpenEXR/HDR skyboxes and ComfyUI 2.0 AI texture pipelines | the pack's 2K albedo set (164 of 345 at 2048 px), `rtx.texturemanager.budgetPercentageOfAvailableVram = 40` on a 16 GB card, no HDR sky | measure the texture budget and the streaming cost of the pack's 4K set; HDR sky is pack/Toolkit work, not ours | 1–2 h to measure; the assets are upstream | MIT pack; the runtime zip is NVIDIA's EULA (`redistribute: ask` in `deps/manifest.json`) |
-| **T3** atmosphere | Remix volumetrics; DLSS 5's foliage light scattering + volumetric control mask | `rtx.volumetrics.enable = True` and the froxel keys — but **no fog-remap keys at all**, so San Andreas' fixed-function fog never becomes volumetric | `rtx.volumetrics.enableFogRemap = True` + `fogRemapMaxDistanceMin/MaxMeters` + `fogRemapTransmittanceMeasurementDistanceMin/MaxMeters` + `fogRemapColorMultiscatteringScale` (and try `enableHeterogeneousFog`); target far/near 0.5–0.9 and sky luma ≥ 150 | 60–90 min + one tour | none (runtime knobs) |
+| **T3** atmosphere | Remix volumetrics; DLSS 5's foliage light scattering + volumetric control mask | `rtx.volumetrics.enable = True` and the froxel keys — but **no fog-remap keys at all**, so San Andreas' fixed-function fog never became volumetric (and the profile's `rtx.enableFogMaxDistanceRemap = False` was a dead name, so the option had always run at its default) | **shipped by n17:** `rtx.volumetrics.enableFogRemap = True`, input bounds `fogRemapMaxDistanceMin/MaxMeters = 400 / 4000` (the game's own `FarClp` range in `data/timecyc.dat`), output bounds `fogRemapTransmittanceMeasurementDistanceMin/MaxMeters = 2 / 6` (3.4–10.3 km of air), `fogRemapColorMultiscatteringScale = 0`, and the dead key renamed to `rtx.volumetrics.enableFogMaxDistanceRemap = True`. `enableHeterogeneousFog` deliberately left commented out. Targets far/near 0.5–0.9 and sky luma ≥ 150 are **not both reachable with this block** — see §6 and FINDINGS (n17) | 60–90 min + one tour | none (runtime knobs) |
 | **T4** grading | warm filmic with real roll-off (ceiling 1–4 %, headroom 2.4–3.5), partly DLSS 5's tone model | `rtx.tonemap.finalizeWithACES = True`, but `tonemappingMode` left at its default **Local**, `localtonemap.shadows = 2.5`, auto-exposure off → headroom 1.4-1.8, ceiling ≤ 0.03 %, warmth −67…+10 | **shipped by n16:** `rtx.tonemappingMode = 0` (Global — not `rtx.tonemap.tonemappingMode`, which is not an option), `rtx.tonemap.exposureBias = -0.5` as the anchor, `localtonemap.shadows 2.5 → 1.0` and `highlights 4 → 2.0` for the Local A/B, `finalizeWithACES` kept. Targets: ceiling 0.5–3 %, headroom ≥ 2.0, warmth ≥ +15, warm share ≥ 70 % — **not yet measured**, see §6 | 60–90 min + measure | none (runtime knobs) |
 
 **KEEP WHAT WORKS still applies.** Every one of these tasks must re-measure the shots the 2026-11-12
@@ -132,7 +132,7 @@ files, so "before" and "after" are two commands.
 | task | gap | one line | state |
 |---|---|---|---|
 | **n16-tonemap-highlights** | T4 | Global tonemap + an exposure anchor that lets highlights exist; the biggest measured number in the table | **config shipped, after-numbers owed** (see §6) |
-| **n17-fog-aerial-perspective** | T3 | map San Andreas' fixed-function fog onto Remix volumetrics so distance fades instead of staying crisp | queued — and read §6 of FINDINGS first: `rtx.enableFogMaxDistanceRemap` in our profiles is a **dead key**, the option is `rtx.volumetrics.enableFogMaxDistanceRemap` and it has been running at its default True |
+| **n17-fog-aerial-perspective** | T3 | map San Andreas' fixed-function fog onto Remix volumetrics so distance fades instead of staying crisp | **config shipped, after-numbers owed** (see §6). The dead key it inherited (`rtx.enableFogMaxDistanceRemap`) is fixed; the medium is 10.3 km of air in clear weather instead of 344 km |
 | **n18-legacy-material-brdf** | T1a | give the ~2000 materials that have no PBR maps a sane roughness/metallic instead of the runtime default | queued |
 | **n19-dlss5-neural-probe** | T1c/T4 | find out whether `rtx.dlssNeuralRendering` does anything on an RTX 4070 Ti SUPER under Proton, and write the answer down either way | queued |
 
@@ -149,6 +149,65 @@ Options: `--scale WxH` (default 640x360, `0` = native), `--jpeg Q` (default 72, 
 round-trip). Use the same options on both sides or the comparison is meaningless. The tool's
 docstring defines every metric and its constants; `tests/test_target_gap.py` keeps the definitions
 from drifting.
+
+### The n17 run: the fog remap is in the tree and has never been rendered
+
+n17 put the atmosphere in `config/rtx.conf`, `config/rtx.conf.perf` and `config/rtx.conf.nopops`:
+`rtx.volumetrics.enableFogRemap = True`, `enableFogMaxDistanceRemap = True`, the input bounds
+`fogRemapMaxDistanceMin/MaxMeters = 400 / 4000`, the output bounds
+`fogRemapTransmittanceMeasurementDistanceMin/MaxMeters = 2 / 6`, and
+`fogRemapColorMultiscatteringScale = 0`. Like n16 and n22 it could **not** measure the result
+(rule 1), so this subsection is the protocol. The before side is `build/tmp/n17/gap.json` (daytime)
+and `build/tmp/n17/good-before.json` (night / sunset / dawn / the two Santa Maria water stops, which
+are the pier material — there is no pier *video* in the repo or the game folder to take frames from).
+
+0. Confirm the layer resolved, free, before anything else:
+   ```
+   grep -A120 'Effective RtxOption values' <game>/rtx-remix/logs/remix-dxvk.log | grep -i fogremap
+   ```
+   It must show `enableFogRemap = 1` and the four bounds. If it does not, either the profile was not
+   installed (`tools/rtxprofile.sh current <game>`) or someone picked a **Volumetric Preset** in the
+   Remix UI, which forces `enableFogRemap = False` (`rtx_global_volumetrics.cpp:313`).
+1. Daytime, against the before file:
+   ```
+   python3 tools/target-gap.py <the 5 reference frames> <the 4 new daytime shots> \
+       --json build/tmp/n17/gap-after.json
+   ```
+   Predicted (arithmetic, `build/tmp/n17/predicted.txt`): far/near 1.71 / 2.38 / 3.67 / 1.22 →
+   roughly 1.2 / 1.7 / 2.6 / 0.85 with the far band at 1 km. The 0.5–0.9 target needs the ladder
+   below, and it also needs the near band to stop being featureless — the ratio has two sides.
+2. KEEP WHAT WORKS, before tuning: the six good shots plus the two water stops against
+   `build/tmp/n17/good-before.json`. What must not move badly: the sodium-lamp night shots
+   (02 p50 17.4 / 03 p50 7.0 / 04 p50 63.6), the sunset (08a 100.6 / 08b 86.3), and the pier-deck
+   noon shot 10 (p50 149.7, sky luma 142.9 — the one this change can darken).
+3. Ladder, one line per run, re-deriving the density with
+   `python3 tools/fog-budget.py config/rtx.conf` before each:
+   * distance still too crisp → `fogRemapTransmittanceMeasurementDistanceMaxMeters` 6 → 4 (6.9 km)
+     → 3 (5.2 km) → 2 (3.4 km). Near-band cost at 50 m only goes 0.981 → 0.945, so the ground under
+     the camera stays safe all the way down; the price is the sky (T at 4000 m: 0.219 → 0.103).
+   * sky too dark, or night washed grey → the other direction: 6 → 12 (20.6 km) → 20 (34 km), then
+     `enableFogRemap = False` for a clean A/B. There is no glow to turn off first: the ambient term
+     is already 0, so the density is the only knob this block gives.
+   * haze that reads grey instead of blue, or distance that should **glow** → that is in-scatter,
+     not extinction: `rtx.volumetrics.froxelMaxDistanceMeters` 20 → 200–1000 m (same grid memory,
+     coarser cells, and it changes the pack's lamp cones), and colour means a fixed
+     `rtx.volumetrics.transmittanceColor` with `d_meas` re-derived — **never**
+     `enableFogColorRemap`, whose σ = −ln(game fog colour)/d_meas puts the street inside 50 m at
+     1e-9 transmittance for a dark fog colour.
+   * a good shot moved badly and none of the above fixes it → **the change is wrong, not the shot**:
+     delete the six keys of the n17 block (the `enableFogMaxDistanceRemap = True` line can stay, it
+     is the default) or `tools/rtxprofile.sh current <game>`.
+4. Eyes, in this order: whether the far skyline is paler than the near buildings **without** the
+   pavement under the camera going soft; whether the sky went darker (it should, and how much is the
+   whole argument of the ladder); whether the 21:00 lamps still read; whether the sea at stop 10 still
+   has a horizon.
+5. If the day/night split turns out to matter (bright haze at noon, dim haze at night): the remap is
+   time-of-day blind because the pack's `FarClp` is 4000 m at every hour, and it cannot be gated from
+   the plugin — `plugin/src/rtxconf.cpp` refuses every `volumetrics.` key at runtime (the 2026-11-11
+   bridge crash). The honest route is the game's own data: write `FarClp` per hour into
+   `data/timecyc.dat` and the medium follows the clock with no plugin involvement. That is a
+   data-pack task (apply.sh territory), not a config edit.
+
 
 ### The n16 run: the tonemap change is in the tree and has never been rendered
 

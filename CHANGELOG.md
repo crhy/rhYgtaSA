@@ -1110,6 +1110,72 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   To take the tools out of the tree: delete the three `tools/vegetation_*.py` files, their three test
   files, and the step-5/6 blocks in `tools/vegetation.sh` + `scripts/vegetation-selftest.sh`.
 
+### Atmosphere (n17) — distance stayed crisp: the game's fog is now the volumetric medium (on top of `4bf18c2`)
+
+- **Fixed (n17, T3): San Andreas' fog was being captured and then thrown away.** The runtime reads
+  the D3D9 fog state per draw call (`d3d9_rtx_utils.cpp:227`) and keeps the first non-`NONE` one of
+  the frame, but `applyFog` starts with `if (cb.volumeArgs.enable) return 1.0f; // Volumetric fog is
+  applied in volume integration` (`composite.comp.slang:653`) and volumetrics are on — so the depth
+  fog was skipped and the medium that replaced it was the untouched default, `transmittanceColor
+  0.999` measured at 200 m: **σ = 1.14e-5 /m, 344 km of air**. That is the mechanism behind the
+  measured haze gap (far/near local contrast 1.22–3.67 against the reference's 0.46–1.18).
+  `rtx.volumetrics.enableFogRemap = True` is the bridge, and it is now in all three profiles with
+  input bounds `fogRemapMaxDistanceMin/MaxMeters = 400 / 4000` — the game's own `FarClp` range
+  (`data/timecyc.dat` column 28: 4000 m for every weather type except 5 AM smog at 800 m; vanilla
+  `timecycp.dat` 400–1150 m) — and output bounds
+  `fogRemapTransmittanceMeasurementDistanceMin/MaxMeters = 2 / 6`, which is **3.4 km of air at the
+  game's densest fog and 10.3 km at its clear end** (Koschmieder, 3.912/σ). The runtime does **not**
+  clamp the normalized fog end, so leaving the defaults (1 / 40 m) would have mapped the game's
+  4000 m to `d_meas = 8200 m` — a medium *thinner* than the nothing it replaced.
+  `rtx.volumetrics.fogRemapColorMultiscatteringScale = 0` (default 0.1) kills the runtime's own
+  "simple ambient term … may not look very good", i.e. the glow that would light the night by itself.
+  **Undo:** delete the six keys of the n17 block in the three profiles (the
+  `rtx.volumetrics.enableFogMaxDistanceRemap = True` line is the default and can stay), or
+  `tools/rtxprofile.sh current <game>`.
+- **Fixed (n17): the dead key n16 found and left for this task.** `rtx.enableFogMaxDistanceRemap =
+  False` had sat in all three profiles since the runtime's first launch and is not an option of
+  1.6.1; it is now `rtx.volumetrics.enableFogMaxDistanceRemap = True` (its default, so behaviour is
+  unchanged) and `config/rtx-dead-keys.txt` drops the entry, 5 → 4. The dead name stays in
+  `tests/test_rtx_option_audit.py`'s negative controls.
+- **Added: `tools/fog-budget.py`** — the arithmetic of a fog block, transcribed from the runtime:
+  the remap (`normalized`, `d_meas`, unclamped), Beer-Lambert (`σ = −ln(linear(colour))/d_meas`,
+  `T(x) = exp(−σx)`) and Koschmieder (`V = 3.912/σ`), with the unit scale (`100 × rtx.sceneScale`,
+  = 1.0 for us, so the bounds are SA metres). `python3 tools/fog-budget.py config/rtx.conf` prints
+  the density for the fog ends the game can actually ask for and flags a fog end the bounds do not
+  cover. `tests/test_fog_budget.py` (9 tests) pins the sRGB conversion, the missing clamp, the
+  344 km default, the shipped 10.3 km / 3.4 km, and the fact that `enableFogColorRemap` is a density
+  bomb (a 0.1 sRGB fog colour gives σ = 0.77 /m).
+- **Measured, and it changes the plan (T3 has two sides, and it collides with the sky row).** The
+  haze ratio is > 1 in our frames because the **near** band is featureless flat ground (near hp_rms
+  7.5–24.2) while the skyline is crisp (27.7–35.1) — fog moves one side of the ratio, so the
+  0.5–0.9 target needs T1 (materials/textures) as well. And the same exponential attenuates the sky:
+  SA's sky is tagged (`rtx.skyBoxTextures`) and the composite multiplies sky by the volume's
+  transmittance, so at the shipped density the skybox at the far clip arrives at **0.219** of its
+  radiance instead of 0.956, while the target wants sky luma ≥ 150 and our sky is already 92–128.
+  1.6.1 cannot pay for that at distance — in-scatter exists only inside `froxelMaxDistanceMeters`
+  (20 m) plus the ambient term we set to 0, and `rtx.volumetrics.enableAtmosphere` is **inert** (set
+  in C++ at `rtx_global_volumetrics.cpp:618-625`, read by no shader in the tree). Predicted after:
+  `build/tmp/n17/predicted.txt`; the live protocol and the ladder in both directions are
+  [docs/TARGET.md §6](docs/TARGET.md).
+- **Not shipped, with the reason in the config comment:** `enableFogColorRemap` (σ =
+  −ln(game fog colour)/d_meas — a dark fog colour puts the street inside 50 m at 1e-9
+  transmittance); `enableHeterogeneousFog` (commented out, one knob per step; its noise defaults are
+  12 cm cells — room scale — and its helper `volume_composite_helpers.slangh` is not in the public
+  1.6.1 tarball, 404); `froxelMaxDistanceMeters` (20 m bounds the in-scatter march, not the
+  attenuation, which has an analytic tail at `composite.comp.slang:414-422`); `enableAtmosphere`
+  (inert). Also recorded: picking a **Volumetric Preset** in the Remix UI forces
+  `enableFogRemap = False` (`rtx_global_volumetrics.cpp:313`), and the runtime's own Portal RTX
+  profile writes four `fogRemap…` names **without** the `Meters` suffix
+  (`src/util/config/config.cpp:842-846`) — which is why `tools/rtxkeycheck.py` accepts both
+  spellings and `tools/rtx-option-audit.py` is the authority.
+- **Docs:** FINDINGS "Aerial perspective: what the game's fog is, what the runtime does with it, and
+  the six numbers between (2026-11-13, n17)"; TARGET §3/§4/§5 rows and the §6 "n17 run" protocol;
+  STATUS T3 row and "what to test next" item 9. Before-measurements are
+  `build/tmp/n17/gap.json` and `build/tmp/n17/good-before.json` (the two Santa Maria water stops are
+  the pier material — there is no pier video in the repo or the game folder). **Not measured in
+  game:** rule 1 forbids running the game, wine or Steam here, and a fog change only becomes a
+  number once the runtime draws a frame.
+
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 
 ### Installer and launcher
