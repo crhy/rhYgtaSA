@@ -271,6 +271,47 @@ see the old glowing puffs).
 - **Vegetation is one switchable step too**: `tools/vegetation.sh on|off|status [--step N]` installs
   "V Vegetation Mix" with the fixes for the freeze it caused, one ranked step at a time.
 
+### Frame pacing — "fps a little less steady than the previous build" (n08)
+
+- **What was actually measured first.** Both 2026-11-12 sessions kept a MangoHud log, so the sentence
+  became numbers before anything was changed. The **average frame got better** between the two builds
+  (17.72 → 17.50 ms) and the **hitches got worse**: frames taking more than 25 ms went from 1869 to
+  2242, i.e. 77 → 137 per minute. Split at the first five minutes, which is what "stabilised as he
+  played" means: the beginning was already fine (24 → 22 per minute) and everything after minute 5 is
+  where the regression lives (91 → 188 per minute). The card was not the limit in either run — half
+  utilisation, never throttled, 4.4 GB of 16.4 GB of video memory used at worst.
+- **Fixed: the plugin could release hundreds of lights in a single frame.** Since the anti-pop work,
+  one frame has been limited in how many lights it may *create*; nothing limited how many it may
+  *release*. The two runs' own logs measured that queue at 320 and 205 handles, all of them released
+  inside one frame. It is now bounded at 32 per frame (`[fade] destroys_per_frame` in
+  `scripts/rhyremix.ini`; `0` puts the old behaviour back), which spreads a whole street layer going
+  out over about a sixth of a second instead of one frame. The two lamp layers also no longer
+  re-check their lists on the same frame.
+- **Not blamed on us, on the evidence:** the hitch minutes are the minutes the plugin is quietest.
+  The worst minute of the 10:22 run has 1098 slow frames while the plugin held ~100 lights, had no
+  street lamps lit and created nothing; across both runs the correlation between slow frames and our
+  live light count is *negative*. What that run added, on the renderer side, was 119 vegetation
+  textures tagged as hair cards (the foliage work) — that tag turns those materials into alpha-tested
+  cutouts, and cutouts are what the runtime builds opacity micromaps for, work it budgets per second
+  and defers until the textures have streamed in. That is where the slow frames cluster.
+- **So the 60 fps profile now bounds that work** (`bash tools/rtxprofile.sh perf "<game>"`): half the
+  micromap build/bake budget, a quarter of the per-frame measuring pass, and a staged request must be
+  on screen for half a second before it is worth building. Nothing in that list changes how anything
+  looks. What is deliberately *not* in the profile: turning micromaps off, and changing the hair-card
+  mip bias — both change how the hillside renders, so they are offered as one-line A/B legs in
+  [docs/NEXT-TEST.md](NEXT-TEST.md) rather than shipped as defaults.
+- **New tool: `tools/perf-report.py`.** Give it the MangoHud CSVs from `<game>/logs/perf/` and it
+  prints frames, fps mean/median/p1/p0.1, frametime mean/median/spread/p99/p99.9/max, slow-frame
+  counts per minute, the first-five-minutes-vs-after split, and an A/B table when you give it two
+  runs. `--log rhyremix.log` puts the plugin's own counters beside the spike series and names the
+  last plugin event before each of the worst frames; `--gpu-csv` takes the `gpu-*.csv` nvidia-smi
+  because MangoHud cannot read the video memory of this process (its own column is a constant, and
+  the report says so instead of graphing it). **Keep both `logs/perf/` files after every run.**
+- **The one enormous startup stall is still there and is not a hitch:** both runs contain exactly one
+  ~787 ms frame, 13.7 s in, in both builds, at the moment the street light set comes up. It is one
+  frame per session; it is why "worst frametime" is not a useful number here and why the report
+  quotes p99 and slow-frames-per-minute instead.
+
 ### Install, launch, and getting the card back
 
 - **The launcher refuses to start when the GPU is already full** and tells you which process holds
@@ -365,6 +406,18 @@ What each shot should prove, and the knobs to A/B if it does not, are in
    worth a run (`bash tools/rtxprofile.sh dlss5 $G`, a noon street and a close character, then
    `bash tools/rtxprofile.sh current $G`); if it turns into "not available on this hardware/platform"
    then the GPU is the gate and the question is closed for good.
+10. **Frame pacing (n08) — two files and one command, no looking.** Keep `<game>/logs/perf/`
+   (MangoHud's `NvRemixBridge_<stamp>.csv` **and** the `gpu-<stamp>.csv` nvidia-smi trace — start one
+   with the command in [docs/NEXT-TEST.md](NEXT-TEST.md) §5; MangoHud cannot
+   read this process's video memory, so the second file is the only VRAM source) and run
+   `python3 tools/perf-report.py <the csv> --log <game>/scripts/rhyremix.log --gpu-csv <the gpu csv>
+   --series`. The number that decides it is **spikes/min after the first 300 s**: 90.6 was the good
+   run, 187.8 the regressed one, and the 60 fps profile's new micromap bounds are aimed at that
+   column. In the log, `config: fade … destroys/frame=32` confirms the build, and
+   `remix: … due_destroy=N deferred_destroy=M` says whether the new bound is actually biting (always 0
+   means the burst never happened in that session). If the hillside hitches worse with
+   `rtx.opacityMicromap.enableBuilding = False` added, that is the answer the A/B is after — say which
+   way it moved.
 
 ---
 

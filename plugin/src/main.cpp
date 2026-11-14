@@ -176,7 +176,12 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
     rhyStreetlightsInitOnce(); // loads rhyremix.ini and the lamp list once
     rhyTrafficInitOnce();      // loads rhyremix_traffic.txt once
     rhyVehicleLightsInitOnce(); // n12: the corona store's layout, checked once
-    rhyFlushDelayed();         // destroy handles retired on earlier frames
+    // n08: bounded. The handles retired on earlier frames are destroyed at most
+    // [fade] destroys_per_frame per frame - the 2026-11-12 runs show why (320 and
+    // 205 handles pending at once, all of them destroyed inside one Present).
+    rhyFlushDelayed(rhyConfigGet()
+                        ? static_cast<unsigned>(rhyConfigGet()->destroys_per_frame)
+                        : 0u);
     rhyConfigReloadIfChanged(); // re-read rhyremix.ini when it changed on disk
     // s28: a fade is a sequence of CreateLight calls, so the frame gets an
     // explicit create budget before any module runs. Without it, the street
@@ -218,10 +223,12 @@ static HRESULT __stdcall hkPresent(IDirect3DDevice9* dev, const RECT* srcRect,
         if (now - s_tick >= 1000) {
             s_tick = now;
             rhyLog("remix: live=%u create_fail=%u draw_fail=%u budget_refused=%u "
-                   "| pending_destroy=%u creates_this_frame=%u deferred=%u "
+                   "| pending_destroy=%u due_destroy=%u deferred_destroy=%u "
+                   "creates_this_frame=%u deferred=%u "
                    "| player: lost_events=%u gone_ms=%u",
                    rhyLiveLights(), rhyCreateFailures(), rhyDrawFailures(),
-                   rhyBudgetRefusals(), rhyDelayedPending(), rhyFrameCreates(),
+                   rhyBudgetRefusals(), rhyDelayedPending(), rhyDelayedDue(),
+                   rhyDelayedDeferred(), rhyFrameCreates(),
                    rhyCreateDeferred(), rhyPlayerLostEvents(),
                    rhyPlayerLostMs(now));
         }

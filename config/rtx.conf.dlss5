@@ -95,6 +95,16 @@ rtx.opacityMicromap.cache.maxVidmemSizePercentage = 0.15
 rtx.opacityMicromap.building.conservativeEstimation.maxTexelTapsPerMicroTriangle = 64
 rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False
 rtx.opacityMicromap.building.splitBillboardGeometry = True
+# n08: the same six opacity-micromap work bounds config/rtx.conf.perf carries (the frame-tail
+# fix of finding G - the evidence and the source citations are in that file and in
+# docs/FINDINGS.md). They are repeated here because this profile is perf plus the DLSS 5 probe
+# and nothing else, so the two stay comparable frame for frame.
+rtx.opacityMicromap.building.maxMicroTrianglesToBakeMillionPerSecond = 150
+rtx.opacityMicromap.building.maxMicroTrianglesToBuildMillionPerSecond = 150
+rtx.opacityMicromap.building.conservativeEstimation.maxTrianglesToCalculateTexelDensityForPerFrame = 512
+rtx.opacityMicromap.buildRequests.minNumFramesRequested = 30
+rtx.opacityMicromap.buildRequests.minNumRequests = 30
+rtx.opacityMicromap.buildRequests.maxRequests = 2000
 # n07: 1.0 pairs with the regenerated water sheets (tools/water.sh remix-ref / soft); 0.35 is the
 # number for the pack's own sheet (tools/water.sh realistic / calm). See config/rtx.conf.
 rtx.translucentMaterial.normalIntensity = 1.0

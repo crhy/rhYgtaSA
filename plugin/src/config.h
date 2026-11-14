@@ -284,6 +284,10 @@ struct RhyConfig {
     int   fade_out_ms;        // ... and down (clamped >= 500)
     float fade_step;          // largest gain change one handle may carry (0.05..0.5)
     int   creates_per_frame;  // per-frame CreateLight budget (0 = unlimited)
+    // n08: and the same bound for the other half of a light's life. s28 bounded
+    // creates; the 2026-11-12 runs then showed `pending_destroy` reaching 320 (the
+    // 00:48 run) and 205 (the 10:22 run), all of them destroyed inside one Present.
+    int   destroys_per_frame;  // per-frame DestroyLight budget (0 = unlimited)
     int   player_grace_ms;    // hold the last player position this long when the
                               // ped pointer reads 0, then FADE the lamp layers out
                               // instead of destroying them in one frame

@@ -535,7 +535,11 @@ void rhyStreetlightsFrame() {
     }
 
     ++g_frame;
-    if ((g_frame % cfg->resync_frames) == 1) {  // every resync_frames, first too
+    // n08: phase 0. The street layer keeps the frame the old `frame % 30 == 1`
+    // used, and the signal layer moves half a period away so the two full list
+    // scans (11.7 us over the 7002-lamp street list, 8.0 us over the 1522-entry
+    // signal list, measured) never land on the same frame again.
+    if (rhyResyncDue(g_frame, static_cast<unsigned>(cfg->resync_frames), 0u)) {
         g_night = isNight(rhyGameHour(), *cfg);
         if (!cfg->enabled || g_lamps.empty() || !g_night || g_apiBroken ||
             ps == kRhyPlayerGone) {

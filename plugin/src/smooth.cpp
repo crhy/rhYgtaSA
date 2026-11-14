@@ -572,3 +572,20 @@ unsigned rhySelectLights(const float* xy, unsigned n, const int* active,
     }
     return written;
 }
+
+// ------------------------------------------------------- frame pacing (n08)
+
+// Which frame a periodic job runs on. The two lamp modules both used
+// `frame % period == 1`, so both full list scans landed on the same frame every
+// 30 frames; a phase slides one schedule along the frame axis so they cannot.
+// (frame % period) == (phase % period) would be the obvious form, but the old
+// code's "first frame too" behaviour is what the modules rely on for the frame a
+// layer first appears on, so the comparison is against (1 + phase) and the
+// period-1 case degenerates to "every frame" exactly as it did before.
+unsigned rhyResyncDue(unsigned frame, unsigned period, unsigned phase) {
+    if (period <= 1u) {
+        return 1u;
+    }
+    const unsigned slot = (1u + phase) % period;
+    return (frame % period) == slot ? 1u : 0u;
+}

@@ -95,6 +95,76 @@ rtx.opacityMicromap.cache.maxVidmemSizePercentage = 0.15
 rtx.opacityMicromap.building.conservativeEstimation.maxTexelTapsPerMicroTriangle = 64
 rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False
 rtx.opacityMicromap.building.splitBillboardGeometry = True
+
+# =========================================================================================
+# n08 (finding G of the 2026-11-12 10:22 report: "FPS a little less steady than previous
+# builds"). tools/perf-report.py prints the measurements; docs/FINDINGS.md has the full
+# write-up. Between the 00:48 build and the 10:22 build the MEAN frametime got better
+# (17.72 -> 17.50 ms) and the TAIL got worse (76.9 -> 137.2 frames over 25 ms per minute,
+# 2.27 % -> 4.00 % of frames), with the median of both runs at 16.68 ms - exactly the 60 Hz
+# budget. The GPU is not the limit in either run (nvidia-smi over the 10:22 run: 48-56 % mean
+# utilisation, SM at its 2790 MHz boost clock, 160 W of ~285 W, 3.5-4.4 GB of 16.4 GB used),
+# so the tail is work landing on top of a frame that already had no headroom.
+#
+# What the 10:22 run added on the runtime side is 119 textures in rtx.hairCardTextures (s32/n21
+# vegetation) and the water variant's normalIntensity 1.0. Hair-card tagging is not free, and
+# the runtime source (build/tmp/n16-dxvk/dxvk-remix-remix-1.6.1) says what it costs:
+#
+#   rtx_types.cpp:412              the hash list sets InstanceCategories::HairCards on the draw call
+#   rtx_instance_manager.cpp:721   that FORCES an alpha test - "render as cutouts instead of alpha
+#                                  blends" (rtx_options.h:215-217)
+#   rtx_instance_manager.cpp:86    and disables backface culling for those instances
+#   rtx_options.h:218              tagged materials sample at rtx.hairCardMipBias, whose DEFAULT is
+#                                  -32.0: always the sharpest mip, on all 119 textures, and neither
+#                                  config/rtx.conf nor the live rtx.conf sets it
+#   rtx_opacity_micromap_manager.cpp:1005-1030
+#                                  an OPAQUE instance with an albedo/opacity texture and texcoords
+#                                  is an opacity-micromap candidate - which is exactly what an
+#                                  alpha-tested cutout vegetation material becomes
+#
+# So that run switched 119 vegetation materials from alpha-blended (no OMM, culled) to
+# alpha-tested cutouts (OMM candidates, double-sided, sharpest mip). The OMM work is budgeted
+# per SECOND and is deferred until the textures are resident
+# (rtx_opacity_micromap_manager.cpp:1441-1445) - i.e. it lands right after a stream-in, which is
+# where the spike clusters are: the 10:22 run's worst minute (10:27:54-10:28:54, 42 % of its
+# frames over 25 ms) is the tour's teleport stretch, and the plugin had 81 live lights, 0 street
+# lamps and made no light calls in it. NVIDIA's own numbers for these budgets
+# (rtx_opacity_micromap_manager.h:118-122, 172-176): "Baking: 2 mil ~ 0.15 ms", "Building:
+# 10 mil ~ 0.04 ms", and for the texel-density pass "2*1024 translates to ~0.65ms overhead per
+# frame on a i9-12900K. Setting it to 1K to be at <0.35 ms max/spike overhead per frame" - the
+# word the runtime uses for what finding G is about is "spike".
+#
+# Tier A, applied: bound the per-second and per-frame OMM work. Halving the build/bake budget
+# costs no pixel (an OMM simply arrives a few frames later, and until then the geometry renders
+# the way it rendered in the 00:48 run), and it is the only part of this mechanism that is a
+# per-frame cost rather than a look change.
+rtx.opacityMicromap.building.maxMicroTrianglesToBakeMillionPerSecond = 150
+rtx.opacityMicromap.building.maxMicroTrianglesToBuildMillionPerSecond = 150
+# 1536 -> 512: by NVIDIA's own scaling, ~0.12-0.17 ms of host work in the worst frame instead
+# of ~0.35 ms, and only in the frames where new cutout geometry is measured for the first time.
+rtx.opacityMicromap.building.conservativeEstimation.maxTrianglesToCalculateTexelDensityForPerFrame = 512
+# A staged request must be seen for 30 frames and 30 uses before it is built (defaults 5 and
+# 10, rtx_opacity_micromap_manager.h:91,93), and at most 2000 may be staged at once (default
+# 5000, :82). Those three are the "do not spend a frame building the micromap of something that
+# only flashed past the camera during a teleport" rule, and the 10:22 run's worst minute is
+# exactly such a minute.
+rtx.opacityMicromap.buildRequests.minNumFramesRequested = 30
+rtx.opacityMicromap.buildRequests.minNumRequests = 30
+rtx.opacityMicromap.buildRequests.maxRequests = 2000
+#
+# NOT in this profile, on purpose:
+#   rtx.opacityMicromap.enable / .enableBuilding = False
+#       the A/B that would decide whether the OMM path is the cost at all. It is a look change
+#       (an alpha-tested cutout with no micromap traces more triangles), so it belongs in a run
+#       where someone is looking at the hillside - docs/NEXT-TEST.md asks for it as a leg.
+#   rtx.hairCardMipBias = 0
+#       the -32 default is what keeps strand detail at a distance, which is the point of the n21
+#       vegetation work. Look knob first; the next run should read it on screen, not inherit it.
+#   rtx.opacityMicromap.building.numFramesAtStartToBuildWithHighWorkload / highWorkloadMultiplier
+#       the opposite direction (20x the per-frame work for the first frames). The single worst
+#       frame of BOTH runs - 787 ms at +13.7 s, identical to 0.2 ms in the two runs - is a
+#       startup frame, so this stays at its default 0.
+# =========================================================================================
 # n07: 1.0 pairs with the regenerated water sheets (tools/water.sh remix-ref / soft); 0.35 is the
 # number for the pack's own sheet (tools/water.sh realistic / calm). See config/rtx.conf.
 rtx.translucentMaterial.normalIntensity = 1.0

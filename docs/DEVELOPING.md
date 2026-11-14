@@ -861,6 +861,67 @@ BC4/BC5/BC7 maps, mip 0, strided (`--sample 8` default; `tests/test_pack_pbr_cen
 so texel/255 **is** the perceptual roughness the renderer will use - which is how "the runtime's
 default 0.7 is mattier than the pack's own paving (0.58-0.65)" became a measurement.
 
+## Frame pacing: a bounded drain, a phased resync, and what a MangoHud CSV can and cannot tell you (n08)
+
+Finding G ("fps a little less steady") is a statement about the tail, and the tail is 1.78x worse in
+the newer build while the mean is slightly better. Two rules come out of the measurements in
+[FINDINGS.md](FINDINGS.md) ("Frame pacing, bisected") and both are enforced in code:
+
+**1. Anything the plugin releases must be bounded per frame, in both directions.** s28 bounded
+`CreateLight` (`[fade] creates_per_frame=24`) because a fade is a sequence of creates. The other half
+was never bounded: `rhyFlushDelayed()` destroyed every due handle inside one `Present`, and the two
+2026-11-12 runs' own heartbeat lines measured that queue at **320** and **205** handles. So
+`plugin/src/delayed.cpp` now keeps its handles in `smooth.h`'s `RhyDrainQueue<T>` and releases at most
+`[fade] destroys_per_frame` (default 32) per frame, **oldest-due first** (a bounded drain must not
+starve an old handle behind a stream of new ones), with the `GetTickCount()` wrap handled by the
+`int32(now - due) >= 0` idiom the rest of the plugin uses. Two design points worth keeping:
+
+- `perFrame = 0` means "no bound" and is the documented escape hatch, not dead code — the ini can put
+  the old behaviour back and `tests/drain_spread_check.cpp` asserts that it does.
+- `rhyFlushDelayedTag(tag)` is deliberately **not** bounded. It exists because a replacement light
+  reuses the destroyed handle's hash, so the destroy has to land first; it covers one list index, and
+  deferring it is what makes a lamp blink out and stay out. Bounding it would trade a correctness
+  rule for a performance rule, which is the trade this repo does not make silently.
+
+**2. Two periodic jobs must not share a frame.** `streetlights` and `trafficlights` both used
+`frame % 30 == 1`, so one frame every 30 carried the 7002-lamp scan, the 1522-entry scan and up to 24
+creates. `rhyResyncDue(frame, period, phase)` slides a schedule along the frame axis; the street layer
+keeps phase 0 (asserted to reproduce `frame % 30 == 1` exactly, including the first frame a layer
+appears on) and the signal layer takes half a period. The measured cost of the scans is 12 µs and
+8.5 µs, so this is not a performance win — it is removing a *periodic* hitch, which is the kind a
+player notices even when it is small.
+
+**What is NOT in here, and why.** A spatial cache for `rhySelectLights` would cut ~15 µs from a
+16 670 µs frame budget. It was measured (12 µs/pass on the real 7002-lamp list, 1.0 ms for the init
+worst-case scan) and rejected on the numbers: our selection is not what makes a 25 ms frame, and the
+correlation between the spike series and our live light count is negative in both runs (-0.37,
+-0.52). If someone later wants the grid, the correctness bar is that it must return the identical
+selection to the brute-force scan, including the `hardRadius` rule of n04.
+
+**Reading a MangoHud CSV (the three traps).** `tools/perf-report.py` is now the only sanctioned way
+to read these files, and it encodes what n14 got wrong:
+
+- `elapsed` is **nanoseconds**, monotonic, and its span equals `sum(frametime)` to the millisecond —
+  but a per-row delta differs from that row's frametime by 0.10 ms median (MangoHud stamps the two at
+  different points). Bucket on `elapsed`; quote frametime per row; never divide by 1e6 and conclude
+  the column is broken.
+- `gpu_vram_used`, `gpu_load` and `process_rss` are **constant** for the whole run (MangoHud profiles
+  the 32-bit bridge client). The tool prints "dead column" instead of graphing them and takes VRAM
+  from the launcher's `nvidia-smi` trace (`--gpu-csv`), matched by wall clock — and refuses a trace
+  that does not overlap the run rather than borrowing the nearest one.
+- The wall clock is in the **file name** (`NvRemixBridge_2026-11-12_10-22-54.csv`), and it is the same
+  second as the plugin's `remixapi_InitializeLibrary` line, which is what lets `--log` align the two
+  to under a second without any timestamp inside the CSV.
+
+**The renderer-side half is a proposal, not a fix.** Six opacity-micromap work bounds went into
+`config/rtx.conf.perf` (and `config/rtx.conf.dlss5`, which must stay perf-plus-eleven-keys or
+`scripts/rtxprofile-selftest.sh` fails). They are aimed at the mechanism FINDINGS documents with
+source line numbers: hair-card tagging forces an alpha test, alpha-tested opaque geometry is an OMM
+candidate, and OMM work is budgeted per second and deferred until the textures are resident — i.e. it
+lands on the frames right after a stream-in. The A/B that would confirm or kill it
+(`rtx.opacityMicromap.enableBuilding = False`) is a look change, so it lives in NEXT-TEST as a leg
+instead of in a shipped profile.
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen

@@ -1006,7 +1006,10 @@ void rhyTrafficFrame() {
     bool layerOk = cfg->traffic_enabled && cfg->traffic_mode != 0 &&
                    !g_apiBroken && ps != kRhyPlayerGone &&
                    (gameMode || !g_lights.empty());
-    if ((g_frame % cfg->traffic_resync_frames) == 1) {
+    // n08: half a period of phase against the street layer, so the two list scans
+    // cannot share a frame (see streetlights.cpp and smooth.h).
+    if (rhyResyncDue(g_frame, static_cast<unsigned>(cfg->traffic_resync_frames),
+                     static_cast<unsigned>(cfg->traffic_resync_frames) / 2u)) {
         g_night = !cfg->traffic_night_only || isNight(rhyGameHour(), *cfg);
         if (!layerOk || !g_night) {
             fadeAllOut(!cfg->traffic_enabled ? "disabled"

@@ -193,6 +193,7 @@ static const char* const kIniDefaults =
     "out_ms=900\r\n"
     "step=0.25\r\n"
     "creates_per_frame=24\r\n"
+    "destroys_per_frame=32\r\n"
     "player_grace_ms=8000\r\n"
     "sky_rel_per_sec=3.0\r\n"
     "sky_abs_per_sec=0.25\r\n"
@@ -989,6 +990,18 @@ static void loadConfig() {
     if (c.creates_per_frame > 512) {
         c.creates_per_frame = 512;
     }
+    // n08: the same bound on the other half of a light's life. Measured in the
+    // 2026-11-12 logs: `pending_destroy` peaked at 320 (00:48 run) and 205 (10:22
+    // run), and every one of those DestroyLight calls happened inside one Present.
+    // 32/frame drains a 320-handle retirement in 10 frames (0.17 s at 60 fps),
+    // which is far inside destroy_delay_ms and far outside one frame.
+    c.destroys_per_frame = iniIntSec("fade", "destroys_per_frame", 32);
+    if (c.destroys_per_frame < 0) {
+        c.destroys_per_frame = 0;  // 0 = no per-frame limit (the pre-n08 flush)
+    }
+    if (c.destroys_per_frame > 4096) {
+        c.destroys_per_frame = 4096;  // the queue's own overflow guard
+    }
     c.player_grace_ms = iniIntSec("fade", "player_grace_ms", 8000);
     if (c.player_grace_ms < 0) {
         c.player_grace_ms = 0;
@@ -1318,9 +1331,11 @@ static void loadConfig() {
     // s28: the anti-pop knobs, on one line, because "why did the street take a
     // second to come on?" and "why did it still pop?" are both answered here.
     rhyLog("config: fade in=%dms out=%dms step=%.2f creates/frame=%d "
+           "destroys/frame=%d "
            "player_grace=%dms sky=%.2fx+%.2f per s sun=%.2fx %.1f deg/s "
            "phase_fade=%dms handle=%dms(min %dms, <%.2f deg, <%.1f%% lum)",
            c.fade_in_ms, c.fade_out_ms, c.fade_step, c.creates_per_frame,
+           c.destroys_per_frame,
            c.player_grace_ms, c.sky_rel_per_sec, c.sky_abs_per_sec,
            c.sun_rel_per_sec, c.sun_deg_per_sec, c.phase_fade_ms,
            c.handle_cadence_ms, c.handle_cadence_min_ms, c.handle_step_deg,

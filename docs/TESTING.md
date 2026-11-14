@@ -485,17 +485,31 @@ few seconds - no restart.
 | The sun's shadow edge still jumps instead of creeping | `cad=` and `step<=` on the `sky:` line decide whether this is ours. `step<=` near 1.0 means the cadence is not running (check the `config: fade ... handle=` startup line); `step<=` near 0.25 and the jump is the renderer's - try `tools/rtxprofile.sh nopops` |
 | Lighting changes now arrive late (a lamp takes a quarter second to reach full brightness) | `[fade] handle_cadence_ms=1000` and `handle_cadence_min_ms=100` on our side; on the renderer side `tools/rtxprofile.sh current` (the A/B's accumulation windows are what add the lag) |
 | Head light sits just inside the lens instead of on it | `[trafficlights] head_normal=1 head_forward=0.15` - the 2DFX entry has no direction, so this uses the model's own "at" axis and may point the wrong way; it is a knob to A/B, not a fix |
+| 60 fps most of the time, but the run hitches more than the previous build, especially after ~5 minutes | n08. Ours: `[fade] destroys_per_frame=32` bounds the handles one frame may release (the 2026-11-12 runs measured 320 and 205 released inside a single frame); `0` puts the old one-frame flush back. The renderer's half is the six opacity-micromap work bounds `tools/rtxprofile.sh perf` installs (build/bake 150 M micro-triangles/s, texel-density 512/frame, 2000 staged requests behind 30-frame/30-use filters). Measure it, don't feel it: `python3 tools/perf-report.py <game>/logs/perf/NvRemixBridge_<stamp>.csv --log <game>/scripts/rhyremix.log --gpu-csv <game>/logs/perf/gpu-<stamp>.csv --series` — the number is **spikes/min after the first 300 s** (90.6 in the good run, 187.8 in the regressed one), and `due_destroy=`/`deferred_destroy=` on the `remix:` line say whether our bound is biting |
 
 ## Step 5 - send back
 
 ```bash
 cp /media/rhy/data/Gamez/GTASA-RTX/scripts/rhyremix.log /tmp/rhyremix.log
 grep -c 'Invalid light handle' /media/rhy/data/Gamez/GTASA-RTX/rtx-remix/logs/bridge64.log
+# frame pacing (n08): the MangoHud CSV and the nvidia-smi trace, then the report
+# (start the trace BEFORE the run - nothing in this repo starts it for you:
+#  nvidia-smi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu,temperature.gpu,
+#    power.draw,clocks.current.sm,clocks_event_reasons.active --format=csv -l 1 \
+#    > "$G/logs/perf/gpu-$(date +%Y%m%d-%H%M%S).csv" &)
+cp /media/rhy/data/Gamez/GTASA-RTX/logs/perf/NvRemixBridge_*.csv /tmp/
+cp /media/rhy/data/Gamez/GTASA-RTX/logs/perf/gpu-*.csv /tmp/
+python3 tools/perf-report.py /tmp/NvRemixBridge_<stamp>.csv --log /tmp/rhyremix.log \
+    --gpu-csv /tmp/gpu-<stamp>.csv --series --top 8
 ```
 
 The log is what makes the next round fast: it contains the exact radii,
 radii and cone angles every created light was given, so a picture plus that log
-is enough to diagnose without guessing.
+is enough to diagnose without guessing. The two `logs/perf/` files are what make
+a pacing report possible: MangoHud's own `gpu_vram_used` column is dead for this
+process (it samples the 32-bit bridge client), so VRAM has to come from the
+launcher's `gpu-*.csv` (the name the 2026-11-12 runs used) — start one yourself with the
+`nvidia-smi --query-gpu=… -l 1` line above.
 
 ## Reverting
 

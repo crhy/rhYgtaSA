@@ -18,7 +18,13 @@
 void rhyDelayDestroy(remixapi_LightHandle handle, int tag);
 
 // Called once per frame from hkPresent, before the light managers run.
-void rhyFlushDelayed();
+//
+// n08: `perFrame` bounds how many due handles ONE frame may destroy. There was
+// no bound before, and the 2026-11-12 runs show what that costs: `pending_destroy`
+// reached 320 in the 00:48 run and 205 in the 10:22 run, every one of them
+// destroyed inside a single Present, while creates were bounded by
+// [fade] creates_per_frame since s28. 0 = no bound (the pre-n08 behaviour).
+void rhyFlushDelayed(unsigned perFrame = 0u);
 
 // Destroy now the pending handles of one tag, before creating that index again.
 void rhyFlushDelayedTag(int tag);
@@ -45,5 +51,11 @@ enum LightTagNamespace {
 
 // Number of handles still waiting to be destroyed (for the log line).
 unsigned rhyDelayedPending();
+
+// n08: how many of those are due RIGHT NOW and were refused by the per-frame
+// bound on the last frame. This is the number that says whether the bound is
+// actually biting (0 means the queue never had more than perFrame due handles).
+unsigned rhyDelayedDue();
+unsigned rhyDelayedDeferred();
 
 #endif  // RHY_DELAYED_H_

@@ -1,6 +1,10 @@
 #ifndef RHY_SMOOTH_H_
 #define RHY_SMOOTH_H_
 
+#include <cstddef>  // size_t (the n08 drain queue)
+#include <cstdint>  // int32_t (wraparound-safe tick comparison)
+#include <vector>   // the n08 drain queue's storage
+
 // s28: the time behaviour of every lighting value this plugin publishes.
 //
 // WHY THIS FILE EXISTS
@@ -269,5 +273,137 @@ unsigned rhySelectLights(const float* xy, unsigned n, const int* active,
                          unsigned activeN, float px, float py, float rIn,
                          float rOut, unsigned cap, unsigned stickyExtra,
                          RhyWant* out, unsigned outCap, float hardRadius = 0.0f);
+
+// ------------------------------------------------------- frame pacing (n08)
+//
+// n08 (finding G, "FPS a little less steady than previous builds") is about the
+// TAIL, not the average: the 2026-11-12 10:22 run has a slightly BETTER mean
+// frametime than the 00:48 run (17.50 vs 17.72 ms) and 1.8x the frames over
+// 25 ms (137 vs 77 per minute). A tail is made by whatever lands on top of a
+// frame that already had no headroom - the median frame of both runs is
+// 16.68 ms, exactly the 60 Hz budget - so the plugin's job is to make sure the
+// work it owns is never a burst, whatever else is happening.
+//
+// What the two runs' own logs say we own, measured with tools/perf-report.py and
+// the numbers in docs/FINDINGS.md:
+//
+//   * `pending_destroy` reached 320 in the 00:48 run and 205 in the 10:22 run.
+//     Every one of those handles was destroyed inside ONE frame: rhyFlushDelayed()
+//     had no bound. A create is already bounded (creates_per_frame, s28); a
+//     destroy never was, and a destroy is a bridge call like any other.
+//   * the street and the signal layer re-scanned their lists on the SAME frame
+//     (both used `frame % period == 1`), so one frame every 30 carried both
+//     scans. Measured on the real lists: 11.7 us for the 7002-lamp street list
+//     plus 8.0 us for the 1522-entry signal list. Small - but it is a burst that
+//     always lands on the same frame, and "always the same frame" is how a
+//     periodic hitch becomes visible.
+//
+// So: a drain queue that can only be emptied `perFrame` items at a time, and a
+// resync schedule that can put two modules' periods out of phase. Both are pure
+// arithmetic (no windows.h, no Remix): tests/drain_spread_check.cpp asserts the
+// per-frame bound directly, the way tests/smooth_check.cpp asserts the fade ones.
+
+// Items become due at a tick (GetTickCount()-style, so the comparison is
+// wraparound-safe: an item is due when int32(now - due) >= 0). A frame takes at
+// most `perFrame` of the due items, earliest due first, so a queue that fills up
+// with 320 items drains over several frames instead of spending them all inside
+// one Present.
+template <class T>
+class RhyDrainQueue {
+public:
+    void add(unsigned dueTick, const T& value) {
+        items_.push_back(Item{dueTick, value});
+    }
+
+    size_t size() const { return items_.size(); }
+
+    bool empty() const { return items_.empty(); }
+
+    // How many items are due right now (telemetry: this is the number a frame
+    // would have had to process, bounded or not).
+    size_t dueCount(unsigned now) const {
+        size_t n = 0;
+        for (size_t i = 0; i < items_.size(); ++i) {
+            if (static_cast<int32_t>(now - items_[i].due) >= 0) {
+                ++n;
+            }
+        }
+        return n;
+    }
+
+    // Copy up to `perFrame` due items into out (earliest due first) and remove
+    // them. perFrame = 0 means no bound (the pre-n08 behaviour, kept as the
+    // documented escape hatch). Returns how many were taken.
+    size_t takeDue(unsigned now, size_t perFrame, T* out, size_t outCap) {
+        size_t taken = 0;
+        while (!items_.empty()) {
+            if (perFrame != 0 && taken >= perFrame) {
+                break;
+            }
+            if (outCap != 0 && taken >= outCap) {
+                break;
+            }
+            size_t best = items_.size();
+            for (size_t i = 0; i < items_.size(); ++i) {
+                if (static_cast<int32_t>(now - items_[i].due) < 0) {
+                    continue;  // not due yet
+                }
+                if (best == items_.size() ||
+                    static_cast<int32_t>(items_[i].due - items_[best].due) < 0) {
+                    best = i;
+                }
+            }
+            if (best == items_.size()) {
+                break;  // nothing due
+            }
+            if (out) {
+                out[taken] = items_[best].value;
+            }
+            items_.erase(items_.begin() + best);
+            ++taken;
+        }
+        return taken;
+    }
+
+    // Drop every item the predicate accepts (n08: the pending-destroy queue uses
+    // this to remove one list index's handles right before re-creating them).
+    // Returns how many were removed.
+    template <class Pred>
+    size_t removeIf(Pred p) {
+        const size_t before = items_.size();
+        size_t kept = 0;
+        for (size_t i = 0; i < items_.size(); ++i) {
+            if (p(items_[i].value)) {
+                continue;
+            }
+            if (kept != i) {
+                items_[kept] = items_[i];
+            }
+            ++kept;
+        }
+        items_.resize(kept);
+        return before - kept;
+    }
+
+    // Drop everything (n08: the overflow path of the pending-destroy queue).
+    void clear() { items_.clear(); }
+
+    // Read-only walk for telemetry/tests.
+    unsigned dueAt(size_t i) const { return items_[i].due; }
+    const T& valueAt(size_t i) const { return items_[i].value; }
+
+private:
+    struct Item {
+        unsigned due;
+        T value;
+    };
+    std::vector<Item> items_;
+};
+
+// Is this the frame on which a periodic job runs? `period` frames apart, and
+// `phase` (0 <= phase < period) slides the whole schedule along the frame axis.
+// Two modules with the same period and different phases never run together.
+// Returns 1 on a due frame, 0 otherwise; period 0 or 1 means "every frame".
+unsigned rhyResyncDue(unsigned frame, unsigned period, unsigned phase);
 
 #endif  // RHY_SMOOTH_H_

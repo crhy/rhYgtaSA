@@ -45,7 +45,7 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 | D | pier/boardwalk lamp **heads** are dark: no lit bulb, no pool under them | **open** | n06 aborted `48d93d5`, n11 stopped with no commit | count lit heads at the pier; the 2dfx inventory n11 planned does not exist yet |
 | E | highway-sign bulbs do not light; the sign's words are separate textures **casting shadows** | **open** | n06 aborted `48d93d5` (the `rtx.decalTextures` route was never tried) | photograph one sign at night |
 | F | water still bad and flickers on some edges; foliage still bad | **partly** | see session 1 rows 5 and 6, plus n07 `913b7e4` (the research and the animated-water keys) | stop 10/11, stop 14 |
-| G | fps a little less steady than the previous build, stabilising as he played | **measured**, not fixed | measured in the n14 sweep (FINDINGS, "Frame pacing"): **76.9 → 137.2 spikes/min** between the two runs, and the spikes do **not** correlate with our light churn (r ≈ −0.05). n08, the task that was supposed to fix it, never started | `logs/perf/NvRemixBridge_*.csv` + `logs/perf/gpu-*.csv` |
+| G | fps a little less steady than the previous build, stabilising as he played | **ours bounded, renderer half awaiting a run** | n08 (this tree). Measured with `tools/perf-report.py`: the mean got *better* (17.72 → 17.50 ms) and the tail got worse (76.9 → 137.2 spikes/min; first 300 s 24.0 → 22.4, after 300 s **90.6 → 187.8**). Our churn is ruled out twice (r = −0.37 / −0.52 against the spike series; the 10:22 run's worst minute has 1098 spikes with ~100 live lights and no creates; our whole periodic burst measures 20 µs). What we did own and fixed: the destroy flush (320 / 205 handles released inside one `Present`) is now `[fade] destroys_per_frame=32`, and the two lamp layers no longer scan on the same frame. The renderer half — 119 hair-card cutouts becoming opacity-micromap candidates — is bounded by six new `rtx.conf.perf` keys and needs the A/B | `python3 tools/perf-report.py <csv> --log rhyremix.log --gpu-csv <gpu.csv> --series`: **after-300 s spikes/min** is the number to bring back (187.8 → under 90.6); `config: fade … destroys/frame=32`; `remix: … due_destroy=/deferred_destroy=` |
 | H | research how other Remix projects do water and foliage | **done** | n07 `913b7e4` (Portal RTX / GTA IV / Minecraft / GTA 2 table in FINDINGS) | — |
 | + | the game hung ~2 min (and once 16 min) after Quit | **done** (unverified) | n09 parked `08dc373` → n09b `cb0aac8`: `plugin/src/shutdown.cpp` latch + the launcher ends the wine tree | `shutdown: suspect / bridge gone` in the log; the game must die within `RHYS_EXIT_GRACE` (20 s) |
 
@@ -111,8 +111,13 @@ game.
    `bash tools/water.sh status "<game>"` must say `keys ok`.
 5. **Hair cards (finding 6/F)** — if stop 14 is byte-identical to the baseline run, the
    `rtx.hairCardTextures` line was not parsed; the 45-hash fallback is in the s32 notes.
-6. **Frame pacing (finding G)** — keep `logs/perf/*.csv`; the baseline to beat is 76.9 spikes/min
-   (2026-11-12 00:48) and the regression to explain is 137.2/min (10:22).
+6. **Frame pacing (finding G)** — keep `logs/perf/*.csv` **and** the launcher's `logs/perf/gpu-*.csv`
+   (MangoHud's own VRAM column is dead for this process), then run
+   `python3 tools/perf-report.py <the two CSVs> --log $G/scripts/rhyremix.log --gpu-csv <gpu.csv> --series`.
+   The baselines to beat are 76.9 spikes/min (2026-11-12 00:48) and the regression to explain is
+   137.2/min (10:22) — and specifically the **after-300 s** column, 90.6 against 187.8/min. The n08
+   legs are in NEXT-TEST §5, including the `rtx.opacityMicromap.enableBuilding = False` A/B that
+   settles the renderer half.
 7. **The n16 tonemap (T4)** — the profiles now run the **Global** tonemapper with a −0.5 EV anchor,
    and nobody has seen it. Take the 16-stop tour, then run the two `tools/target-gap.py` commands in
    [TARGET.md §6](TARGET.md): the daytime numbers have to move toward ceiling 0.5–3 % / headroom

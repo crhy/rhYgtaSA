@@ -166,6 +166,16 @@ run nat-expo-cc "compile exposure_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/exposure_check.cpp plugin/src/exposure.cpp plugin/src/solar.cpp plugin/src/smooth.cpp -o build/tmp/expc
 warncheck nat-expo-cc "compile exposure_check"
 run nat-expo "tests/exposure_check.cpp (n22: the exposure anchor follows the sun, bounded)" 120 build/tmp/expc
+# n08 (finding G, "FPS a little less steady"): the tail, not the average. The median frame of
+# both 2026-11-12 runs is 16.68 ms - exactly the 60 Hz budget - so any work the plugin owns has
+# to be spread over frames or it becomes a spike. smooth.cpp's drain queue and resync schedule
+# are pure C++, so the two bounds are asserted here: no frame destroys more than
+# [fade] destroys_per_frame handles (the runs measured that queue at 320 and 205, all of them
+# released inside one Present), and the street and signal list scans never share a frame.
+run nat-drain-cc "compile drain_spread_check" 600 \
+  g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/drain_spread_check.cpp plugin/src/smooth.cpp -o build/tmp/drainc
+warncheck nat-drain-cc "compile drain_spread_check"
+run nat-drain "tests/drain_spread_check.cpp (n08: per-frame destroy bound + resync phase)" 120 build/tmp/drainc
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),

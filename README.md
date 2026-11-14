@@ -33,7 +33,7 @@ install and test it. What is in the box today:
 | **Never a pop** | no lighting change is one frame wide: lamps fade in and out, the ambient and the sun are rate-limited, and a handle change is budgeted per frame | `plugin/src/smooth.cpp`, floors in `[fade]`, asserted in `tests/smooth_check.cpp` |
 | **Water** | five variants, `remix-ref` by default, installed by the installer and re-ensured on every start, with the `rtx.conf` keys each variant needs | `tools/water.sh`, `tools/rtx_water_keys.py`, `config/water/*.usda` |
 | **Vegetation** | the pack's 234 foliage card textures tagged as cutouts (`rtx.hairCardTextures`) instead of being blended into scribbled lines, its mis-named LOD dictionary fixed, and its real cost measured (18x the triangles, 92-188 MB pinned) | `tools/vegetation.sh` (`check` / `--step 5` / `--step 6`), `tools/vegetation_hashes.py`, `tools/vegetation_ide_check.py`, `tools/vegetation_stream.py`, `tools/vegetation_edge_measure.py` |
-| **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf` | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops` |
+| **Frame rate** | a 60 fps profile and a temporal A/B profile, switchable without hand-editing `rtx.conf`; the 60 fps profile now also bounds the runtime's opacity-micromap work, which is where the 2026-11-12 frame tail clusters, and the plugin bounds its own per-frame handle releases | `tools/rtxprofile.sh`, `config/rtx.conf.perf`, `config/rtx.conf.nopops`, `tools/perf-report.py` (MangoHud CSV → spikes/min, A/B), `[fade] destroys_per_frame` |
 | **DLSS 5, measured (n19)** | the reference video's single biggest advantage does **not** run here: the runtime's own capability query fails on every run (`NVIDIA DLSS-NR support query failed (0xbad00010)`, driver 610.57.04 on an RTX 4070 Ti SUPER, model DLL present), so nothing is shipped for it and the look is bought with materials, fog and grading instead | `config/rtx.conf.dlss5` + `tools/rtxprofile.sh` (the `dlss5` action: a reversible probe, **not** a shipped profile), `tests/test_dlss5_probe_keys.py`; verdict and re-check: [docs/TARGET.md](docs/TARGET.md) §2/§6, FINDINGS (n19) |
 | **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with an exposure anchor that follows the sun, so the sun, chrome and wet patches can be bright instead of grey and 21:00 is not darkened by a noon number | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16), and `[tonemap] day_ev → night_ev` driven off solar elevation at runtime (n22); **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
 | **Materials** | the ~2190 materials the asset pack never gave PBR maps get a *measured* BRDF instead of the runtime's guess: `rtx.legacyMaterial.roughnessConstant = 0.65`, taken from the roughness of the pack's own maps (paving 0.58-0.65, per-map median 0.582) - and a census that proves no per-texture knob for them exists | `tools/pack_pbr_census.py` (coverage, decoded rough/metal/height, the uncovered-hash list) + the n18 block in all three profiles; **not yet seen in game** - [docs/TARGET.md](docs/TARGET.md) §6 |
@@ -198,6 +198,16 @@ writes); if you move the checkout later, point the launcher at it with `RHYS_ASI
   tools/rtxprofile.sh current "/path/to/GTASA-RTX"   # this repo's shipped profile
   tools/rtxprofile.sh status  "/path/to/GTASA-RTX"
   tools/rtxprofile.sh restore "/path/to/GTASA-RTX"  # the exact bytes that were there before
+
+  # n08: what the frame pacing actually was, from the MangoHud CSV the run wrote
+  python3 tools/perf-report.py "$G/logs/perf/NvRemixBridge_<stamp>.csv" \
+      --log "$G/scripts/rhyremix.log" --gpu-csv "$G/logs/perf/gpu-<stamp>.csv" --series --top 8
+  # two CSVs and you also get an A/B delta table; --json for the machine-readable form.
+  # MangoHud's gpu_vram_used / gpu_load / process_rss columns are constant for this process
+  # (it samples the 32-bit bridge client), so VRAM comes from the gpu-*.csv nvidia-smi trace
+  # (start one before the run: nvidia-smi --query-gpu=timestamp,memory.used,memory.total,
+  #  utilization.gpu,temperature.gpu,power.draw,clocks.current.sm,clocks_event_reasons.active \
+  #  --format=csv -l 1 > "$G/logs/perf/gpu-$(date +%Y%m%d-%H%M%S).csv" &)
   ```
   Every switch keeps `<game>/.rhys-rtxprofile/rtx.conf.prev` and one never-overwritten
   `rtx.conf.pristine`; `orig` puts back the runtime's own first-launch file. Evidence and the

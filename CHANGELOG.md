@@ -1233,7 +1233,7 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   `build/tmp/n18/good-before.json`. **Not measured in game:** rule 1 forbids running the game, wine
   or Steam here, and a material change only becomes a number once the runtime draws a frame.
 
-### DLSS 5 (n19) — the reference's biggest single advantage, measured: this driver refuses it (on top of `141bcf8`, the n18 commit; this work is uncommitted in the tree)
+### DLSS 5 (n19) — the reference's biggest single advantage, measured: this driver refuses it (`0cd7e54`, on top of `141bcf8`, the n18 commit)
 
 - **Answered (n19): DLSS 5 (`rtx.dlssNeuralRendering.*`) does nothing on this box, and the runtime
   already says so on every run.** `<game>/rtx-remix/logs/remix-dxvk.log:328` (2026-11-12 11:48,
@@ -1283,6 +1283,85 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   measured — unavailable** plus "what to test next" item 11; README's profile list names `dlss5`.
   The consequence for the plan is stated in TARGET §2: T1/T3/T4 are won with materials (n18), fog
   (n17) and grading (n16/n22), not with a DLSS 5 switch.
+
+### Frame pacing (n08) — finding G: the average got better and the tail got worse (this commit)
+
+- **Measured (finding G, "FPS a little less steady than previous builds"): the regression is the
+  tail, not the frame rate.** `tools/perf-report.py` over the two MangoHud CSVs of 2026-11-12 —
+  00:48:44 (build `2f67e4a`, 82 305 frames, 1459 s) against 10:22:54 (build `ba4c2c3`, 56 041
+  frames, 980 s): frametime mean **17.72 → 17.50 ms** (better), median **16.679 → 16.676 ms**,
+  stddev **4.21 → 4.67**, frames over 25 ms **1869 → 2242** = **76.9 → 137.2 per minute**, and the
+  split the task asked for: first 300 s **24.0 → 22.4/min** (no regression at all), after 300 s
+  **90.6 → 187.8/min**. The median of both runs is 16.68 ms — exactly the 60 Hz budget — so a frame
+  that already has no headroom is what a spike is made of. fps p1 barely moved (36.07 → 36.28) and
+  p0.1 moved the wrong way (24.00 → 23.77): "less steady", in numbers.
+- **Measured: not the GPU, and not VRAM.** The launcher's `nvidia-smi` trace over the 10:22 run
+  (1048 samples, 100 % coverage): 48-56 % mean utilisation, SM at its 2790 MHz boost clock, 160 W of
+  ~285 W, 3.5-4.4 GB of 16.4 GB used. MangoHud's own `gpu_vram_used`, `gpu_load` and `process_rss`
+  columns are **dead** — one value for the whole run in both files — because MangoHud profiles the
+  32-bit bridge client while the VRAM belongs to `NvRemixBridge.exe`; the tool says so instead of
+  graphing a constant, and takes VRAM from `--gpu-csv` instead.
+- **Bisected (00:48 build → 10:22 build): the plugin's per-frame work is not the cost, and the
+  numbers say so.** Measured natively on the real lists: `rhySelectLights` costs **12 µs** over
+  the 7002-lamp street list and **8.5 µs** over the 1522-entry signal list, once every 30 frames,
+  and the init worst-case-density scan costs **1.0 ms** — about 20 µs of burst per half second.
+  Against the spike series the correlation is **negative**: r(spikes/min, live lights) = **-0.37**
+  (00:48) and **-0.52** (10:22), and the 10:22 run's worst minute (10:27:54-10:28:54, **1098**
+  spikes, 42 % of its frames) is the tour's teleport stretch, with 81-101 live lights, no street
+  lamps and no creates. The single worst frame of both runs is **787 ms at +13.7 s** in each — the
+  same frame, the light set coming up at startup, identical to 0.2 ms across two builds.
+- **Bisected: what the 10:22 run actually added is two `rtx.conf` lines, and the runtime says what
+  they cost.** The game folder keeps its own backups (`.rhys-water/rtx.conf.pristine`), and the diff
+  between the two runs' configs is exactly `rtx.translucentMaterial.normalIntensity 0.35 → 1.0` and
+  119 hashes added to `rtx.hairCardTextures`. Hair-card tagging is not free, and the runtime source
+  says where it lands: `rtx_types.cpp:412` sets the category, `rtx_instance_manager.cpp:721` then
+  **forces an alpha test** and `:86` **disables backface culling**, `rtx_options.h:218` samples those
+  materials at `rtx.hairCardMipBias` whose **default is -32** (always the sharpest mip, and nothing
+  sets it), and `rtx_opacity_micromap_manager.cpp:1005-1030` makes an opaque instance with an
+  opacity texture an **opacity-micromap candidate** — which is what an alpha-tested cutout card is.
+  That work is budgeted per **second** and deferred until the textures are resident (`:1441-1445`),
+  i.e. it lands right after a stream-in, which is where the spike clusters are. NVIDIA's own comment
+  on one of those budgets: "2*1024 translates to ~0.65ms overhead per frame … Setting it to 1K to be
+  at <0.35 ms max/**spike** overhead per frame".
+- **Fixed (n08, ours): the destroy half of a light's life had no per-frame bound.** s28 bounded
+  creates (`[fade] creates_per_frame=24`) and the runs then measured the unbounded half:
+  `pending_destroy` reached **320** (00:48) and **205** (10:22), every one of those `DestroyLight`
+  calls released inside a single `Present`. `plugin/src/delayed.cpp` now drains that queue through
+  `smooth.h`'s `RhyDrainQueue` at most `[fade] destroys_per_frame` (default **32**) handles per
+  frame — a 320-handle retirement costs 10 frames (0.17 s), far inside `destroy_delay_ms` (500 ms)
+  and far outside one frame — oldest-due first, `0` putting the old flush back. The heartbeat line
+  now carries `due_destroy=`/`deferred_destroy=` so the next run can see whether the bound bites.
+- **Fixed (n08, ours): the two lamp layers re-scanned on the same frame.** Both used
+  `frame % 30 == 1`, so one frame every 30 carried the 7002-lamp scan **and** the 1522-entry scan.
+  `rhyResyncDue(frame, period, phase)` gives the signal layer half a period of phase; phase 0 is
+  asserted to reproduce the old rule exactly, so the street layer keeps the frame it appeared on.
+- **Not optimized, on purpose (measured first):** a spatial cache for the selection scan. It would
+  save ~15 µs per half second against a 16 670 µs frame budget — the honest answer is that our scan
+  is not what makes a 25 ms frame, and `docs/FINDINGS.md` says so instead of shipping a benchmark.
+- **Added: `tools/perf-report.py`,** the tool that produced every number in this entry. MangoHud CSV
+  → frames/span, fps mean/median/p1/p0.1, frametime mean/median/sd/p99/p99.9/max, spikes over
+  `--spike-ms` as a count and a per-minute rate, first-window vs after-it, an A/B delta table for
+  two or more files, `--gpu-csv` for the nvidia-smi VRAM trace (matched by wall clock, and it
+  refuses a trace that does not overlap), and `--log rhyremix.log` to put the plugin's counters
+  beside the spike series and name the last plugin event before each of the `--top` worst frames.
+  `tests/test_perf_report.py` pins its tail arithmetic with synthetic CSVs whose answer is known.
+- **Proposed (renderer side, needs the next run's eyes): six opacity-micromap work bounds in
+  `config/rtx.conf.perf`** (and the same six in `config/rtx.conf.dlss5`, which is perf plus the
+  probe): build/bake 300 → **150** M micro-triangles/s, the texel-density pass 1536 → **512**
+  triangles/frame, and a staged request must be seen for **30** frames and **30** uses before it is
+  built with at most **2000** staged (defaults 5, 10, 5000). What is deliberately **not** there:
+  `rtx.opacityMicromap.enable = False` and `rtx.hairCardMipBias = 0` — both change how the hillside
+  looks, so they are A/B legs for a run with someone looking, not defaults
+  ([docs/NEXT-TEST.md](docs/NEXT-TEST.md)).
+- **Tests:** `tests/drain_spread_check.cpp` (29 checks: no frame destroys more than the bound, a
+  320-handle retirement drains in 10 frames, oldest-due first, the `GetTickCount()` wrap, the
+  `perFrame=0` escape hatch, phase 0 == the old rule, and two modules on the same period never
+  sharing a frame) is now part of `scripts/check-all.sh`; `tests/test_perf_report.py` (11 checks);
+  `tests/test_ini_keys.py` now pins `[fade] destroys_per_frame=32` in the shipped ini, in
+  `kIniDefaults` and in `config.cpp`.
+- **Docs:** FINDINGS "Frame pacing (2026-11-12 10:22 run, n08)"; TESTING's after-every-run step is
+  now `tools/perf-report.py`; NEXT-TEST's perf section asks for the OMM A/B; STATUS finding G is
+  **measured, ours bounded, renderer half awaiting a run**.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

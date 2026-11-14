@@ -2621,3 +2621,194 @@ now `rtx.volumetrics.enableFogMaxDistanceRemap = True` (the default, so behaviou
 rule 1 forbids running the game, wine or Steam, and a fog change only becomes a number once the
 runtime draws a frame. The live protocol, the ladder in both directions and the abort conditions are
 [TARGET.md §6](TARGET.md).
+
+## Frame pacing, bisected: the tail, the hair cards, and the one burst we did own (2026-11-14, n08)
+
+finding G of the 2026-11-12 10:22 report: *"FPS a little less steady than previous builds;
+stabilised a bit as he played."* [The n14 section](#frame-pacing-what-the-2026-11-12-mangohud-logs-actually-say-2026-11-12-measured-during-the-n14-docs-sweep-finding-g-task-n08-never-ran)
+settled what the symptom is and ruled our light churn out; this section is the bisect, the fix and
+the tool that made both reproducible: `tools/perf-report.py` (11 tests in
+`tests/test_perf_report.py`).
+
+```
+python3 tools/perf-report.py \
+    <game>/logs/perf/NvRemixBridge_2026-11-12_00-48-44.csv \
+    <game>/logs/perf/NvRemixBridge_2026-11-12_10-22-54.csv \
+    --log <game>/scripts/rhyremix.log \
+    --gpu-csv <game>/logs/perf/gpu-20261112-102247.csv --series --top 8
+```
+
+**1. The average got better and the tail got worse. That is the whole finding.**
+
+| window | metric | 00:48:44 (`2f67e4a`) | 10:22:54 (`ba4c2c3`) | B − A |
+|---|---|---|---|---|
+| whole run | frametime mean | 17.724 ms | 17.496 ms | **−0.228** |
+| whole run | frametime median | 16.679 ms | 16.676 ms | −0.003 |
+| whole run | frametime sd | 4.210 ms | 4.671 ms | **+0.461** |
+| whole run | frametime p99 / p99.9 | 27.73 / 41.67 ms | 27.56 / 42.08 ms | −0.17 / +0.41 |
+| whole run | frames > 25 ms | 1869 = **76.9/min** | 2242 = **137.2/min** | **1.78x** |
+| whole run | fps p1 / p0.1 | 36.07 / 24.00 | 36.28 / 23.77 | +0.22 / −0.23 |
+| first 300 s | spikes/min | 24.00 | 22.40 | **−1.60** |
+| after 300 s | spikes/min | 90.56 | **187.81** | **+97.25** |
+
+The median of both runs is 16.68 ms, which is exactly the 60 Hz budget: the present is capped at
+60 and the game thread spends essentially all of it. A frame that has no headroom is what a spike
+is made *of* — so the question is never "what is the average cost" but "what lands on top of a
+full frame, and how often". The first five minutes are not worse in the new build (22.4 against
+24.0/min); everything after minute 5 is (187.8 against 90.6). "Stabilised as he played" is the
+same fact seen from the inside: both runs calm down after the warm-up, and the new one then degrades
+again, twice as hard.
+
+**2. Not the card, not VRAM.** `nvidia-smi` at 1 s: 1048 samples over the 10:22 run, 986 of them
+while the game actually held the GPU (memory.used > 1 GB). Over those: VRAM mean **4007 MiB**, peak
+**4418 MiB** of 16 376; utilisation mean **49.8 %**, median 52 %, p95 63 %, max 100 %; power mean
+**150.8 W**, max 194 W of a ~285 W card; SM clock at or above 2700 MHz in 878 of the 986 samples
+(max 2805) with `clocks_event_reasons.active` = 0x0 in 867 samples and 0x1 (GPU idle) in 181 - never
+a power, thermal or voltage throttle. A card at half utilisation holding 60 fps is waiting on
+something else. The 00:48 run has **no** usable trace: `gpu-20261112-004710.csv` has six rows and
+stops before the game launches, and its 15 825 MiB belongs to whatever held the GPU before -
+`perf-report.py` matches a trace to a run by wall clock and prints "no VRAM source" rather than
+borrowing the wrong one.
+
+**3. Two corrections to the n14 note, both learned writing the tool.** (a) MangoHud's `elapsed` is
+**monotonic** and is in **nanoseconds**: first 18 890 131, last 980 501 836 637, span 980.483 s,
+which equals `sum(frametime)` = 980.5 s to the millisecond (same check on the 00:48 file: 1458.7 s
+both ways). n14 divided by 1e6 and read 980 501 as a broken value. (b) It is *not* the frametime
+column re-integrated: a per-row delta differs from that row's frametime by 0.10 ms median, 2.3 ms
+at p90 and 786 ms at the worst, because MangoHud stamps the two at different points. Bucket on
+`elapsed`, quote frametime per row. (c) `gpu_vram_used`, `gpu_load` and `process_rss` are constant
+for the whole run in both files (0.0243416 GB, 0, 4723 KB) — MangoHud is inside the 32-bit bridge
+client — so the tool calls them dead columns instead of graphing them.
+
+**4. What actually changed between the two builds.** The plugin diff `2f67e4a..ba4c2c3` is nine
+commits (s28, s29, s30, s31, s32, s27, n01, n02, n02b) and ~4100 inserted lines. The *config* diff is
+two lines, and the game folder keeps its own backup so it is not a guess
+(`<game>/.rhys-water/rtx.conf.pristine`, mtime 2026-11-12 10:22):
+
+```
+- rtx.translucentMaterial.normalIntensity = 0.35
++ rtx.translucentMaterial.normalIntensity = 1.0
++ rtx.hairCardTextures = <119 hashes>
+```
+
+plus the water material USD swapped to the `soft` variant by `tools/water.sh soft` — which makes the
+water sheet *smaller*, not bigger: the pack's `water_normal.dds` is 512 px frames / 6 990 900 bytes,
+the generated `water_normal_soft.dds` is 128 px frames / 1 747 812 bytes. So the water half of the
+delta is a look change and a VRAM saving; the hair-card half is the one with a cost mechanism.
+
+**5. Our per-frame work, measured — and why there is no spatial cache in this task.** A host
+benchmark against the real lists (`build/tmp/n08/bench_select.cpp`, throwaway):
+
+| what | cost |
+|---|---|
+| `rhySelectLights` over the 7002-lamp street list (rIn 300, rOut 380, cap 320+90, hardRadius 300) | **12 µs** mean, 27-38 µs worst, 216 lamps chosen |
+| `rhySelectLights` over the 1522-entry signal list | **8.5 µs** mean, 21-27 µs worst, 248 chosen |
+| the init worst-case-density scan in `streetlights::loadList()` (every 8th lamp x all, 6.1 M pairs) | **1.0 ms**, one time |
+
+Both scans ran every 30 frames, on the **same** frame, so the plugin's periodic burst was ~20 µs
+every 0.5 s — 0.004 % of the render thread's time, about 0.7 µs of a 16 670 µs frame. A grid cache
+would take ~15 µs of that. It is not
+nothing, it is **not** what makes a 25 ms frame, and shipping a cache for it would be a change whose
+only evidence is that it felt like the task asked for one. So the measured answer goes in this table
+and the cache does not go in the tree.
+
+**6. The spike series does not follow us.** Per-minute buckets of the two runs
+(`--series`, `--log`):
+
+| | 00:48 run | 10:22 run |
+|---|---|---|
+| r(spikes/min, live lights) | **−0.37** | **−0.52** |
+| r(spikes/min, creates in the frame) | n/a (older build) | −0.22 |
+| r(spikes/min, handles pending destroy) | +0.04 | −0.13 |
+| worst minute | 276 spikes, live 110 | **1098** spikes, live 101 |
+| that minute | 01:08:44-01:09:44, 8.7 % of its frames | 10:27:54-10:28:54, **41.9 %** of its frames, the tour's teleport stretch |
+
+The 10:22 run's worst minute has 42 % of its frames over 25 ms while the plugin holds ~100 handles,
+has no street lamps lit, and makes no creates. The correlation with our live count is *negative* in
+both runs, because the minutes with the most lights (night, standing still) are the calmest.
+
+**7. The one burst we did own: the destroy flush.** s28 bounded creates
+(`[fade] creates_per_frame=24`) and left the other half of a light's life unbounded:
+`rhyFlushDelayed()` destroyed **every** due handle inside one `Present`. The two runs' own heartbeat
+lines measured that queue:
+
+| | 00:48 run | 10:22 run |
+|---|---|---|
+| `pending_destroy` max | **320** | **205** |
+| `pending_destroy` mean over heartbeats | 0.95 | 1.76 |
+| heartbeats with anything pending | 138 of 1447 | 232 of 972 |
+| `creates_this_frame` max | (no such counter in that build) | 24 (the budget holds) |
+
+Fix: `plugin/src/delayed.cpp` now drains through `smooth.h`'s `RhyDrainQueue` at most
+`[fade] destroys_per_frame` (default **32**) per frame, oldest-due first; a 320-handle retirement
+takes 10 frames = 0.17 s, which is inside `destroy_delay_ms` (500 ms, the delay that exists to
+protect the bridge) and outside one frame. `rhyFlushDelayedTag()` stays unbounded on purpose: it is
+a correctness rule (the replacement light has the destroyed handle's hash), it covers one index, and
+deferring it is what makes a lamp blink out and stay out. `tests/drain_spread_check.cpp` asserts the
+bound, the drain length, the order, the `GetTickCount()` wrap and the `0` escape hatch.
+
+**8. The second thing we owned: both layers scanned on the same frame.** `streetlights` and
+`trafficlights` both used `frame % 30 == 1`, so one frame every 30 carried the 7002-lamp scan *and*
+the 1522-entry scan *and* up to 24 creates. `rhyResyncDue(frame, period, phase)` gives the signal
+layer half a period of phase; the test asserts that phase 0 reproduces the old rule exactly (so the
+street layer keeps the frame a layer first appears on) and that two modules on the same period never
+share a frame over 100 000 frames. This is 20 µs, and it is in the tree because "always the same
+frame" is how a periodic hitch becomes visible, not because 20 µs is a frame.
+
+**9. The worst frame of both runs is the same frame.** 786.8 ms at +13.7 s (00:48) and 787.0 ms at
++13.7 s (10:22) — identical to 0.2 ms across two builds, and in both it sits in the window where the
+street set comes up (`live` goes 1 → 361 by +15 s in the 00:48 log, 2 → 321 by +15.4 s in the 10:22
+one). The 10:22 build had the create budget and the 00:48 build did not, and the frame did not move:
+so it is a one-time renderer cost, not a per-create cost, and `creates_per_frame` is not the lever
+for it. It is 0.05 % of a 24-minute run; it is also the reason "worst frametime" is a useless number
+and why this task quotes p99/p99.9 and spikes/min instead.
+
+**10. The renderer-side mechanism, from the runtime's own source**
+(`build/tmp/n16-dxvk/dxvk-remix-remix-1.6.1`, the 1.6.1 tree n16 fetched):
+
+| where | what it does |
+|---|---|
+| `rtx_types.cpp:412` | `rtx.hairCardTextures` sets `InstanceCategories::HairCards` on the draw call |
+| `rtx_instance_manager.cpp:721-735` | that category **forces an alpha test** on the material (`forceHairCardAlphaTest`) |
+| `rtx_instance_manager.cpp:86-88` | and sets `VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR` — double-sided |
+| `rtx_options.h:215-218` | the documented effect: "preserve fine texture detail, render as cutouts instead of alpha blends, and disable backface culling"; and `hairCardMipBias`, **default −32.0** — always the sharpest mip, and no profile or live `rtx.conf` sets it |
+| `rtx_opacity_micromap_manager.cpp:1005-1030` | an **opaque** instance with an albedo/opacity texture and texcoords is an **opacity-micromap candidate** — which is exactly what an alpha-tested cutout card becomes |
+| `rtx_opacity_micromap_manager.cpp:1441-1445` | a candidate whose textures are not resident is **deferred and retried** — the work lands right after a stream-in |
+| `rtx_opacity_micromap_manager.cpp:1323-1330` | "Per-frame processing budget: limits how many non-deferred candidates are fully processed to spread work across frames and **avoid spikes** when many deferrals expire at once" |
+| `rtx_opacity_micromap_manager.h:118-122` | the budgets: `maxMicroTrianglesToBake/ToBuildMillionPerSecond = 60*5 = 300`, "Parameterized to <1% FPS overhead on 4090. Baking: 2 mil ~ 0.15 ms. Building: 10 mil ~ 0.04 ms" |
+| `rtx_opacity_micromap_manager.h:172-176` | `conservativeEstimation.maxTrianglesToCalculateTexelDensityForPerFrame = 1536`: "2*1024 translates to ~0.65ms overhead per frame on a i9-12900K. Setting it to 1K to be at <0.35 ms max/**spike** overhead per frame" |
+| `rtx_opacity_micromap_manager.h:82,91,93` | `maxRequests = 5000` staged, `minNumFramesRequested = 5`, `minNumRequests = 10` |
+
+So the 10:22 run switched 119 vegetation materials from alpha-blended (no OMM, culled) to
+alpha-tested cutouts (OMM candidates, double-sided, sharpest mip), and the runtime's own words for
+that work are "spread across multiple frames", "budget per second", "deferred until resident" and
+"spike". That is the right shape of explanation for a tail that grows after minute 5 and clusters
+where the memory steps up. MangoHud's `ram_used` column is one of the columns that is **not** dead:
+system RAM used grows 12.90 → 34.31 GB across the 00:48 session and 12.88 → 31.04 GB across the
+10:22 one, and the 10:22 curve is where it steepens exactly where its tail is: minute 5 = 16.2 GB,
+minute 6 = 20.0, minute 10 = 29.1 (the 00:48 curve takes the same 13 minutes to go 15.7 → 24.0). VRAM
+over the same window goes 1785 MiB → 4296 MiB (`nvidia-smi`, first and last in-session sample).
+Swap sits at 2.06-2.09 GB the whole way in both runs, so this is cache growth, not thrash.
+
+**11. What is proposed, and what is deliberately not.** `config/rtx.conf.perf` (and
+`config/rtx.conf.dlss5`, which is perf plus the probe) gains six OMM work bounds: build and bake
+300 → **150** M micro-triangles/s, the texel-density pass 1536 → **512** triangles/frame (NVIDIA's
+own scaling: ~0.12-0.17 ms instead of ~0.35 ms in the worst frame), and a staged request must be
+seen for **30** frames and **30** uses before it is built, with at most **2000** staged. Those are
+the parts of the mechanism that are a per-frame cost and change no pixel: an OMM arrives a few
+frames later, and until then the geometry renders the way it rendered in the 00:48 run.
+
+Not in the profile: `rtx.opacityMicromap.enable = False` (the A/B that would decide whether the OMM
+path is the cost at all — it changes how a cutout shades, so it belongs in a run with someone
+looking), `rtx.hairCardMipBias = 0` (the −32 default is what keeps strand detail, which is the point
+of n21), and `numFramesAtStartToBuildWithHighWorkload`/`highWorkloadMultiplier` (the opposite
+direction, and the worst frame of both runs is a startup frame).
+
+**12. Measured and predicted.** Measured here: every frametime, spike, VRAM, utilisation, log-counter
+and native-cost number above, from files already on disk, plus the two plugin-side bounds
+(`tests/drain_spread_check.cpp`, 29 checks). **Predicted:** that the six OMM keys buy back the tail.
+Rule 1 forbids running the game here, and the Remix log of the 10:22 run was overwritten by the
+11:45/11:48 runs, so the OMM statistics of that run (staged/baked/built counts) are gone and the
+mechanism is source-and-timing evidence, not a counter. [docs/NEXT-TEST.md](NEXT-TEST.md) asks for
+the A/B: same tour, `rtxprofile.sh perf`, and one extra leg with
+`rtx.opacityMicromap.enableBuilding = False` to settle it either way.
