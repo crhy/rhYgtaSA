@@ -1,3 +1,79 @@
+## Vegetation that reads as real plants: the pack, the typo, the wind shader (2026-11-13, n21)
+
+MUST-HAVE #2 of `.strata/target-2026-11-12.md`. Nothing was run in the game; every number below
+comes from the staged pack and the read-only game folder, with three new tools
+(`tools/vegetation_ide_check.py`, `tools/vegetation_stream.py`,
+`tools/vegetation_edge_measure.py`) and `tools/dff_stats.py`.
+
+**1. The staged pack is v2.00, the wind-shader build.** The 7z in `GTAmods/`
+(`v-vegetation-mix-with-wind-shader_1793477728_486060.7z`, 75,255,432 B) and the staged folder
+`GTAmods/removed-from-game/rtx-copy/V Vegetation Mix` (338 files, 190.4 MB) agree on all 336 file
+names and sizes. Its readme: v2.00 (2026-10-31) "Los Modelos han sido Adaptados a Wind Shader".
+The 2026-11-11 freeze therefore happened with wind-adapted geometry.
+
+**2. Cause 1 of docs/VEGETATION.md is one letter.** Of 278 IDE lines the pack ships, exactly one
+dictionary name resolves to nothing: `lod_veg_firs` (vegepart ids 784-788) while the pack ships
+`lod_veg_fist.txd`. `tools/vegetation_ide_check.py` names it and emits the pair; step 5 of
+`tools/vegetation.sh` writes the missing file instead of deleting 278 lines of correct data.
+
+**3. The pinned-streaming number depends on those IDEs.** Same ImprovedStreaming ranges
+(`[Range4] 615-792`, `[Range5] 800-906`, both `KeepLoaded=1`), two answers:
+
+| which IDEs map the ids | Range4 | Range5 | pinned |
+|---|---|---|---|
+| the game's vanilla IDEs (steps 1-3, 6) | 7.4 → 73.9 MB | 2.3 → 18.1 MB | 9.8 → **92.0 MB** |
+| the pack's own IDEs (step 0 / step 5) | 5.2 → 162.6 MB | 2.5 → 24.9 MB | 7.6 → **187.5 MB** |
+
+s03's 190.5 MB is the second row. With LAA now set (4096 MB address space) and the effective cap
+`max(1900, 1024) = 1900 MB`, the pinned pack is 4.8 % (92 MB) or 9.9 % (187.5 MB) of the cap and
+the cap is 46 % of the address space: **cause 2 is no longer the prime suspect** for the freeze.
+
+**4. New cause: the pack needs a wind shader the RTX copy does not have.**
+https://www.mixmods.com.br/2022/10/wind-project/ (discontinued, folded into Proper Fixes v2;
+"Necessário SkyGfx Extended v1.5 ou mais novo! Senão os modelos ficarão transparentes e bugados"),
+https://www.mixmods.com.br/2021/06/sa-skygfx/ (Extended v1.5, 2022-10-03, added the wind shader;
+Extended has published source), https://www.mixmods.com.br/2026/06/sa-proper-fixes/ (v2.1.1: wind
+on all vegetation, LOD on every tree, random tree rotation, grass colour fix, ~30 % less RAM).
+`$G/modloader/` has none of Essentials Pack / Proper Fixes / SkyGfx / Proper Shaders. And Remix
+1.6.1 has no fallback: `cut -f1 config/rtx-options-1.6.1.tsv | grep -i wind` → **no key** (its
+animation options are water and particles), so wind is game-side only. Coupling:
+`rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False` is pinned in our profiles, so
+vertex-shader sway will not rebuild opacity micromaps.
+
+**5. What the pack costs the RT pipeline, in triangles** (286 `.dff` vs their vanilla twins,
+extracted from `$G/models/gta3.img`): vertices 56,745 → 1,003,148 (17.7×), triangles 42,312 →
+765,921 (18.1×), bytes 3.06 → 35.68 MB (11.7×). `sm_firtbshg` 192 → 21,590 triangles,
+`lod_redwoodgrp` (an LOD) 4 → 2,857. All alpha-tested foliage — the workload
+`rtx.opacityMicromap.enable` and the "more texel taps than allowed" log line name.
+
+**6. Installing the pack silently un-does s32's hair-card fix.** The pack contributes **234**
+alpha-cutout card textures (`tools/vegetation_hashes.py --pattern @pack`), of which only **5**
+hashes are among the 119 vanilla hashes in `config/rtx.conf`. Step 6 joins them (348 hashes,
+6958 chars, one line). That line is safe: the config parser uses `std::getline(stream, line)` and
+parses a hash set with `while (std::getline(ss, s, ','))` — no fixed buffer, no element cap
+(dxvk-remix `remix-1.6.1`, `src/util/config/config.cpp:1058`, `:1205`).
+
+**7. Leaf edge quality, measured.** Frame metric (calibrated on synthetic ramps: hard 1-px step →
+0.00 % mid, 2-px ramp → 16.67 % / 1.0 px, 4-px ramp → 50.0 % / 3.0 px):
+
+```
+stop 14-vegetation-vinewood-noon 2026-11-12 10:28:05: foliage 17.97%  mid_alpha 17.63%  ramp 2.59 px
+stop 14 (00:53 tour)             2026-11-12 00:53:39: foliage 37.48%  mid_alpha 11.17%  ramp 1.85 px
+stop 00-baseline-noon-grove      2026-11-12 10:23:37: foliage 32.11%  mid_alpha 13.16%  ramp 2.46 px
+```
+
+At the source (mip-0 alpha): vanilla foliage dictionaries 190 textures — 45.5 % alpha 0 / **14.6 %
+mid** / 39.9 % opaque; the pack 343 textures — 44.1 / **4.0** / 51.9. Its tree cards are harder
+than vanilla's; its grass (`plant1`) is 57.8 / **36.3** / 5.9, the softest set in either install,
+which is where a blend still reads as strokes.
+
+**8. Translucency is not a config key.** Of the 28 texture-category `hash set` options in the
+1.6.1 table none is "foliage"; the thin-wall/subsurface path (`rtx.subsurface.enableThinOpaque`,
+`.enableTransmission`, `rtx.minOpaqueDiffuseTransmissionLobeSamplingProbability`) is per-material.
+Translucent leaves need `mat_<HASH>` USD prims keyed to the hashes step 6 already prints — a
+separate task. Two-sided leaves need nothing extra: `rtx.hairCardTextures` disables backface
+culling by itself.
+
 ## One exposure anchor cannot serve noon and 21:00: driving `rtx.tonemap.exposureBias` from the sun (2026-11-13, n22)
 
 Task n22 (`.strata/n22-daynight-exposure-anchor.md`), the follow-up n16 queued. n16 shipped

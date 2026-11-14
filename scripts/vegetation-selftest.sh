@@ -13,10 +13,18 @@
 # opacity-micromap keys), then hashes every file in the tree and runs
 #
 #     status -> off -> on --step 3 -> on --step 4 -> on --step 2 -> off -> off
+# plus (n21) on --step 5 -> check -> on --step 3 -> on --step 6 -> off
 #
 # checking the fixes really land, and finally that the tree hashes back to the pre-"on"
 # manifest: sha256 of every file, byte-identical, no state dir, no leftovers. It also checks
 # the two guards (a hand-installed pack folder, and the RHYREMIX_INSTALLER_SANDBOX marker).
+#
+# n21 added the two look/consistency steps to that ladder: step 5 installs the pack's own
+# procobj.ide/vegepart.ide AND writes the dictionary those IDEs mis-name
+# (gta3.img/lod_veg_firs.txd, a copy of the pack's lod_veg_fist.txd), step 6 joins the pack's
+# card-texture hashes into rtx.conf's rtx.hairCardTextures. The fixture pack carries the same
+# one-letter typo as the real one, so the shim path runs on the synthetic tree too, and the
+# real-pack round-trip proves the generated shim is recorded in added.txt and removed by `off`.
 # Ends with "ALL PASS" or "N FAILED".
 set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -81,6 +89,7 @@ grep -v '^RemoveUnusedWhenPercent' "$FAKE/modloader/Remix_fix/ImprovedStreaming.
 echo "   seeded rtx.conf with the live opacity-micromap values; dropped RemoveUnusedWhenPercent from the Remix_fix copy"
 
 manifest() { (cd "$FAKE" && find . -type f -print0 | sort -z | xargs -0 sha256sum); }
+hash_count() { local n; n=$(awk '/^rtx\.hairCardTextures = /{print gsub(/0x[0-9A-Fa-f]{16}/,"")}' "$FAKE/rtx.conf"); echo "${n:-0}"; }
 val() { awk -v k="$2" -v s="${3:-}" 'function t(x){sub(/^[ \t]+/,"",x);sub(/[ \t]+$/,"",x);return x}
         /^[ \t]*\[/{sec=t($0);next} {if(s!=""&&sec!="["s"]")next; i=index($0,"="); if(i&&t(substr($0,1,i-1))==k){v=substr($0,i+1); sub(/[ \t]*[;#].*$/,"",v); print t(v); exit}}' "$FAKE/$1"; }
 
@@ -89,12 +98,14 @@ PACK="$WORK/pack/V Vegetation Mix"
 mkpack() {
   rm -rf "$WORK/pack"; mkdir -p "$PACK/gta3.img" "$PACK/models/grass" "$PACK/data/maps/generic"
   local n
-  for n in tree_a.dff tree_b.dff bush_a.dff other.txd insanity_pines.txd gta_tree_boak.txd; do
+  for n in tree_a.dff tree_b.dff bush_a.dff other.txd insanity_pines.txd gta_tree_boak.txd lod_veg_fist.txd; do
     printf 'fake %s, 1 byte of story\n' "$n" > "$PACK/gta3.img/$n"
   done
   printf 'fake plant1\n' > "$PACK/models/grass/plant1.txd"
-  printf 'deftype 1000 tree_a 1\n' > "$PACK/data/maps/generic/procobj.ide"
-  printf 'deftype 1001 tree_b 1\n' > "$PACK/data/maps/generic/vegepart.ide"
+  # real IDE shape (id, model, txd, ...): `other` is provided, `lod_veg_firs` is the pack's
+  # one-letter typo of lod_veg_fist - exactly the defect n21's shim step fixes.
+  printf '615, tree_a, other, 150, 0\n' > "$PACK/data/maps/generic/procobj.ide"
+  printf '616, tree_b, lod_veg_firs, 600, 0\n' > "$PACK/data/maps/generic/vegepart.ide"
 }
 mkpack
 
@@ -156,6 +167,34 @@ run on2 "$VEG" on "$FAKE" --pack "$PACK" --step 2; chk $? "on --step 2 (a lower 
 [ -f "$D/gta3.img/insanity_pines.txd" ]; chk $? "step 2 again: the withheld .txd came back"
 [ ! -f "$D/data/maps/generic/procobj.ide" ]; chk $? "step 2 still leaves the IDEs out (step 1 is part of 1..2)"
 
+echo "== n21 step 5: the pack's IDEs, with the lod_veg_firs typo shimmed"
+run on5 "$VEG" on "$FAKE" --pack "$PACK" --step 5; chk $? "on --step 5 exits 0"
+[ -f "$D/data/maps/generic/procobj.ide" ] && [ -f "$D/data/maps/generic/vegepart.ide" ]
+chk $? "step 5: the pack's own procobj.ide / vegepart.ide ARE installed"
+[ -f "$D/gta3.img/lod_veg_firs.txd" ]; chk $? "step 5: gta3.img/lod_veg_firs.txd was written (the shim)"
+cmp -s "$D/gta3.img/lod_veg_firs.txd" "$PACK/gta3.img/lod_veg_fist.txd"
+chk $? "the shim is a copy of the pack's mis-named lod_veg_fist.txd"
+grep -q '^gta3.img/lod_veg_firs.txd$' "$FAKE/modloader/.rhys-vegetation/added.txt"
+chk $? "the generated shim is recorded in added.txt (so 'off' removes it)"
+run check5 "$VEG" check "$FAKE" --pack "$PACK"; chk $? "check exits 0 (IDE + streaming + deps audit)"
+grep -q 'lod_veg_firs' "$WORK/check5.log"; chk $? "check names the missing dictionary the shim answers"
+grep -q 'lod_veg_firs.txd=lod_veg_fist.txd' "$WORK/check5.log"; chk $? "check emits the shim pair"
+grep -q 'Essentials Pack' "$WORK/check5.log"; chk $? "check reports the pack's dependencies (cause 4)"
+grep -q 'Wind Shader' "$WORK/check5.log"; chk $? "check says why the wind shader matters"
+run on3b "$VEG" on "$FAKE" --pack "$PACK" --step 3; chk $? "back down to --step 3 exits 0"
+[ ! -f "$D/gta3.img/lod_veg_firs.txd" ]; chk $? "step 3 again: the generated shim is taken back out"
+[ ! -f "$D/data/maps/generic/procobj.ide" ]; chk $? "step 3 again: the IDEs are withheld once more"
+run status5 "$VEG" status "$FAKE" --pack "$PACK"; chk $? "status after the step changes exits 0"
+grep -q 'by this tool at --step 3' "$WORK/status5.log"; chk $? "status reports the last step used"
+
+echo "== n21 step 6: the pack's card hashes joined to rtx.hairCardTextures"
+fixture_before_hc="$(hash_count)"
+run on6 "$VEG" on "$FAKE" --pack "$PACK" --step 6; chk $? "on --step 6 exits 0"
+grep -q 'rtx.hairCardTextures' "$WORK/on6.log"
+chk $? "step 6 reports what it did with rtx.hairCardTextures"
+[ "$(hash_count)" = "$fixture_before_hc" ]
+chk $? "the fixture pack added no hashes (its 'rasters' are text) - the line stayed at $fixture_before_hc"
+
 echo "== off"
 run off1 "$VEG" off "$FAKE"; chk $? "off exits 0"
 [ ! -d "$D" ]; chk $? "the pack folder is gone"
@@ -193,15 +232,27 @@ chk $? "the guard tests changed no bytes either"
 # ------------------------------------------------- the real 192 MB staged pack --
 if [ "$REALPACK" = 1 ] && [ -d "$REAL_PACK" ]; then
   echo "== the real staged pack ($(find "$REAL_PACK" -type f | wc -l) files, $(du -sh "$REAL_PACK" | cut -f1))"
-  run realon "$VEG" on "$FAKE" --pack "$REAL_PACK" --step 3; chk $? "on with the real pack exits 0"
+  before_hc="$(hash_count)"
+  run realon "$VEG" on "$FAKE" --pack "$REAL_PACK" --step 6; chk $? "on with the real pack at --step 6 exits 0"
   n=$(find "$D" -type f | wc -l)
-  [ "$n" = "$(($(find "$REAL_PACK" -type f | wc -l) - 2))" ]
-  chk $? "all but the 2 IDE files installed ($n of $(find "$REAL_PACK" -type f | wc -l))"
-  [ ! -f "$D/data/maps/generic/procobj.ide" ]
+  [ "$n" = "$(($(find "$REAL_PACK" -type f | wc -l) + 1))" ]
+  chk $? "every file of the pack installed, its two IDE files included (step 5), plus the 1 generated shim ($n files)"
+  [ -f "$D/gta3.img/lod_veg_firs.txd" ] && cmp -s "$D/gta3.img/lod_veg_firs.txd" "$REAL_PACK/gta3.img/lod_veg_fist.txd"
+  chk $? "the lod_veg_firs.txd shim is the pack's lod_veg_fist.txd (the IDEs' typo, fixed)"
   [ -f "$D/gta3.img/bsor_tree.txd" ] && [ -f "$D/models/grass/plant1.txd" ]
   chk $? "the big dictionaries and models/grass/plant1.txd are in place"
+  after_hc="$(hash_count)"
+  [ "$after_hc" -ge 234 ] && [ "$after_hc" -gt "$before_hc" ]
+  chk $? "step 6 joined the pack's card hashes: $before_hc -> $after_hc in rtx.hairCardTextures"
+  grep -c '^rtx\.hairCardTextures = ' "$FAKE/rtx.conf" | grep -qx 1
+  chk $? "the joined list is still exactly one rtx.conf line"
+  [ "$(awk '/^rtx\.hairCardTextures = /{print gsub(/, /,"")}' "$FAKE/rtx.conf")" = "$((after_hc - 1))" ]
+  chk $? "the list is ', '-joined ($((after_hc - 1)) separators)"
   run realstatus "$VEG" status "$FAKE"; chk $? "status with the real pack exits 0"
+  grep -q 'rtx.hairCardTextures = .* hash(es)' "$WORK/realstatus.log"
+  chk $? "status counts the hair-card hashes now in rtx.conf"
   run realoff "$VEG" off "$FAKE"; chk $? "off with the real pack exits 0"
+  [ "$(hash_count)" = "$before_hc" ]; chk $? "off put the pristine rtx.hairCardTextures line back ($before_hc hashes)"
   manifest > "$WORK/m-real.txt"; cmp -s "$WORK/m-before.txt" "$WORK/m-real.txt"
   chk $? "the real-pack round-trip is byte-identical too"
   cmp -s "$WORK/pack-before.txt" <(packsnap)

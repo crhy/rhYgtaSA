@@ -195,13 +195,18 @@ false`); that stays the tested-off A/B above. Research and URLs:
 
 ## Test order
 
-**One command does this whole ladder** (s16): `tools/vegetation.sh on <game> --step N` installs
-the staged pack (`/media/rhy/data/Gamez/GTAmods/removed-from-game/rtx-copy/V Vegetation Mix`)
-into `<game>/modloader/` with causes 1..N applied — step 1 leaves the two IDEs out, step 2 is
-the streaming caps, step 3 the opacity-micromap budget, step 4 the pack bisect — `status` prints
-which of them are live, and `off` puts every byte back (state + one pristine backup per edited
-file under `<game>/modloader/.rhys-vegetation/`; test: `scripts/vegetation-selftest.sh`). The
-commands below are what each step really changes, kept because they are what you check by eye.
+**One command does this whole ladder** (s16, extended by n21): `tools/vegetation.sh on <game> --step N`
+installs the staged pack (`/media/rhy/data/Gamez/GTAmods/x/V_Vegetation_Mix/V Vegetation Mix`, or the
+frozen copy under `removed-from-game/rtx-copy/` - the tool picks the first that exists) into
+`<game>/modloader/` with causes 1..N applied — step 1 leaves the two IDEs out, step 2 is the
+streaming caps, step 3 the opacity-micromap budget, step 4 the pack bisect (a diagnostic: it applies
+at exactly `--step 4`), **step 5 installs those IDEs *with* the `lod_veg_firs.txd` shim** (see the n21
+section) and **step 6 joins the pack's card textures to `rtx.hairCardTextures`**. `status` prints
+which of them are live, `check` audits the pack without touching anything (IDE resolution +
+streaming cost + the dependency/wind verdict), and `off` puts every byte back (state + one pristine
+backup per edited file under `<game>/modloader/.rhys-vegetation/`; test:
+`scripts/vegetation-selftest.sh`, 75 checks). The commands below are what each step really changes,
+kept because they are what you check by eye.
 
 0. **LAA is already applied** — `gta-sa.exe` is `0x012f` (`tools/laa.py`, backup `gta-sa.exe.noLAA-backup`),
    `apply.sh` sets it and `deploy.sh` warns if it is missing. Start every retest from that state: if the exe
@@ -275,3 +280,156 @@ allow-list is deliberate (`veg.*` matches the Las Vegas *building* dictionaries,
 matches `tikigrass`, which is pool and concrete wall textures). Note that most of these rasters
 read as "16bit" through `tools/remix_texhash.py` — their fourcc sits in the raster header, not the
 window that module scans — they are DXT3; the hash is unaffected.
+
+## n21: the pack we actually have, the typo that explains cause 1, and what "reads as real plants" costs
+
+Measured 2026-11-13 with three new tools — `tools/vegetation_ide_check.py` (does an IDE's
+dictionary column resolve?), `tools/vegetation_stream.py` (what does the pack cost the streaming
+system?) and `tools/vegetation_edge_measure.py` (leaf edge quality, frames and textures). Nothing
+here was run in the game; every number is reproducible from the staged pack and the game folder.
+
+### Which pack is staged: v2.00, the *wind-shader* build
+
+`7z l /media/rhy/data/Gamez/GTAmods/v-vegetation-mix-with-wind-shader_1793477728_486060.7z`
+(75,255,432 B) lists the same 336 files, with the same sizes, as
+`GTAmods/removed-from-game/rtx-copy/V Vegetation Mix` (338 files, 190.4 MB) — 0 differences. Its
+readme (`GTAmods/x/V_Vegetation_Mix/Léeme - Readme.txt`) says v2.00, 2026-10-31: *"Los Modelos han
+sido Adaptados a Wind Shader"*. So the freeze of 2026-11-11 happened with wind-adapted models, and
+the s03/s16 notes (which predate that check) describe the pack as if it were the older build.
+
+### Cause 1 is one letter, and it is also the 100 MB
+
+```
+$ python3 tools/vegetation_ide_check.py "<pack>" --game $G --emit-shims
+checked   : 278 IDE line(s), 20126 distinct dictionary name(s) available to load
+MISSING 1 dictionary name(s): lod_veg_firs.txd   5 model(s): lod_redwoodgrp (vegepart.ide id 784
+  line 164), lod_vbg_fir_co (785), lod_largefurs06 (786), lod_largefurs07 (787), lod_largefurs05 (788)
+      closest provided: lod_veg_fist, lod_veg
+lod_veg_firs.txd=lod_veg_fist.txd
+```
+
+The pack ships `lod_veg_fist.txd` and its `vegepart.ide` asks for `lod_veg_firs`. Deleting the two
+IDE files (the readme's advice, and s16's step 1) throws away 278 lines of correct data to dodge
+one typo. The cheap fix is the file the IDEs ask for: `gta3.img/lod_veg_firs.txd`, a copy of
+`lod_veg_fist.txd`. That is **step 5**, and it is generated inside the install folder the tool
+creates, so `off` still hashes back byte-exact.
+
+The two numbers that matter, from `tools/vegetation_stream.py` (the live inis: `[Range4] 615-792`
+and `[Range5] 800-906`, both `KeepLoaded=1`):
+
+| which IDEs map those ids | Range4 | Range5 | pinned total |
+|---|---|---|---|
+| the game's vanilla IDEs (steps 1-3, 6) | 7.4 → 73.9 MB | 2.3 → 18.1 MB | 9.8 → **92.0 MB** |
+| the pack's own IDEs (step 0 or step 5) | 5.2 → 162.6 MB | 2.5 → 24.9 MB | 7.6 → **187.5 MB** |
+
+s03's "190.5 MB pinned" is the second row: the pack's IDEs pull the 18 new dictionaries (102 MB)
+into the ranges that are never released. With the IDEs left out the same ranges cost 92 MB.
+
+### Cause 2, re-measured after LAA: it is no longer the prime suspect
+
+`gta-sa.exe` **is** Large Address Aware (4096 MB of address space), the effective cap is
+`max(StreamMemory 1900, StreamMemoryForced 1024) = 1900 MB` = 46 % of the address space, and the
+pinned vegetation is 92 MB (4.8 % of the cap) or 187.5 MB (9.9 %). The tool's verdict line: *"the
+cap is the binding limit, not the pinned pack"*. Cause 1 (a dictionary that resolves to nothing),
+cause 3 (the RT cost, below) and cause 4 (new, below) are what is left.
+
+### Cause 4 (new): v2.00 needs a wind shader this install does not have
+
+- https://www.mixmods.com.br/2022/10/wind-project/ — *"Wind Project agora é continuado dentro do
+  mod Proper Fixes v2 ou mais novo!"* and *"Necessário SkyGfx Extended v1.5 ou mais novo! Senão os
+  modelos ficarão transparentes e bugados"* — without it, wind-adapted models go **transparent**.
+- https://www.mixmods.com.br/2021/06/sa-skygfx/ — SkyGfx v4.2b + Extended v1.7 (aap/The Hero;
+  Extended by Junior_Djjr, source published). Extended v1.5 (2022-10-03) added the wind shader;
+  an adapted mod needs only its `.dff`. Proper Shaders includes almost all of SkyGfx Extended.
+- https://www.mixmods.com.br/2026/06/sa-proper-fixes/ — Proper Fixes v2.1.1: wind animation on all
+  vegetation (the Wind Project continuation, on by default), **LOD on every tree**, randomly
+  rotated trees, a grass-colour fix, mipmapping everywhere, ~30 % less disk/RAM, "Recomendado
+  SkyGfx". It is the vegetation pack's own stated requirement.
+
+`ls $G/modloader/` (2026-11-13): FramerateVigilante, GInputSA, Improved Streaming, ImVehFt,
+MixSets, OLA, Ped Spec, Proper Ragdoll, Remix_fix, SARemix — **no Essentials Pack, no Proper
+Fixes, no SkyGfx, no Proper Shaders**. The pack is installed in an install that cannot meet its
+own readme, with models of the kind that go transparent without the shader. `tools/vegetation.sh
+check` says so on every run.
+
+And there is no Remix fallback: `cut -f1 config/rtx-options-1.6.1.tsv | grep -i wind` → **no key**.
+Remix 1.6.1 has no wind and no animated-foliage option; its animation options are water and
+particles. Wind is a game-side feature (SkyGfx Extended / Proper Fixes v2 / Proper Shaders), and
+the pack v2.00 models are already prepared for it. Coupling to remember:
+`rtx.opacityMicromap.buildRequests.enableAnimatedInstances = False` is pinned in both shipped
+profiles (n07), so vertex-shader sway will not rebuild opacity micromaps — the first key to try if
+wind makes foliage flicker in reflections.
+
+### What the pack costs the RT pipeline, in triangles
+
+`tools/dff_stats.py` over the pack's 286 `.dff` and the 286 vanilla twins extracted from
+`$G/models/gta3.img`:
+
+| | vanilla | pack v2.00 | × |
+|---|---|---|---|
+| vertices | 56,745 | **1,003,148** | 17.7 |
+| triangles | 42,312 | **765,921** | 18.1 |
+| bytes | 3.06 MB | 35.68 MB | 11.7 |
+| mean triangles/model | 148 | 2,678 | 18.1 |
+
+`sm_firtbshg` 192 → 21,590 triangles, `sm_fir_tallgroup` 204 → 21,298, `vbg_fir_copse` 426 →
+21,104, `aw_streettree1` 124 → 8,292, and `lod_redwoodgrp` — an **LOD** — 4 → 2,857. All of it is
+alpha-tested foliage, i.e. exactly what `rtx.opacityMicromap.enable` and the
+"Instance requires more texel taps to resolve opacity" log line are about.
+
+### The look: the pack un-does s32's hair-card fix, and the fix is one line
+
+`tools/vegetation_hashes.py "<pack>" --pattern @pack --emit rtx.hairCardTextures` → **234 card
+textures in 44 dictionaries** (of 317 scanned; `@pack` is the n21 dictionary set — `bsor_*`,
+`insanity_*`, `vgsn_nitree`, `plant1`, `lod_veg.*`, `des_trees` — and it still refuses the rock and
+junk dictionaries the pack retextures: `badlands`, `gta_rockcuntry`, `gtarock_deserts`,
+`underwater`, `junkpiles`). Only **5** of those 234 hashes are among the 119 vanilla hashes in
+`config/rtx.conf`: installing the pack leaves 229 of its card textures untagged, so the scribbled
+look comes straight back. **Step 6** joins them (union 348 hashes, 6958 chars on one line) and
+`off` restores the pristine line.
+
+Is a 6958-char line safe? Yes, with source evidence: the config parser reads
+`while (std::getline(stream, line))` with a `std::string line`, and a hash set is parsed with
+`while (std::getline(ss, s, ','))` — no fixed buffer, no element cap
+([src/util/config/config.cpp:1058 and :1205, tag remix-1.6.1](https://raw.githubusercontent.com/NVIDIAGameWorks/dxvk-remix/remix-1.6.1/src/util/config/config.cpp)).
+s32's "the runtime's own longest list is 1246 chars" worry is answered: that was a style
+observation, not a limit.
+
+Two-sided leaves need no extra key — `rtx.hairCardTextures` itself disables backface culling, and
+`rtx.enableCulling = False` is already live. **Leaf translucency is not a checkbox**: the runtime's
+thin-wall/subsurface path (`rtx.subsurface.enableThinOpaque`, `.enableTransmission`,
+`rtx.minOpaqueDiffuseTransmissionLobeSamplingProbability`) is driven by *material* properties in a
+USD replacement, and of the 28 texture-category `hash set` options in the 1.6.1 table none is
+"foliage". A translucent-leaf pass therefore means `mat_<HASH>` USD prims keyed to the hashes this
+section already prints — a separate task, not a config edit.
+
+### The measurement to beat at tour stop 14
+
+`tools/vegetation_edge_measure.py` projects the pixels of the leaf/background boundary onto the
+leaf↔background colour axis and counts the ones that land strictly between the ends (a screenshot
+has no alpha channel; this is the rendered equivalent, and it is calibrated on synthetic ramps:
+hard 1-px step → 0.00 % and no ramp; 2-px ramp → 16.67 %, 1.0 px; 4-px ramp → 50.0 %, 3.0 px).
+
+```
+stop 14-vegetation-vinewood-noon, 2026-11-12 10:28:05: foliage 17.97%  mid_alpha 17.63%  ramp 2.59 px
+stop 14 (the 00:53 tour),          2026-11-12 00:53:39: foliage 37.48%  mid_alpha 11.17%  ramp 1.85 px
+stop 00-baseline-noon-grove,       2026-11-12 10:23:37: foliage 32.11%  mid_alpha 13.16%  ramp 2.46 px
+```
+
+At the source (`--txd`): vanilla foliage dictionaries 190 textures, 45.5 % alpha 0 / **14.6 %
+mid-alpha** / 39.9 % opaque; the pack 343 textures, 44.1 / **4.0** / 51.9 — its tree cards are
+hard-edged, but its grass dictionary `plant1` is 57.8 / **36.3** / 5.9, the softest thing in either
+set. That is where a blend still turns blades into strokes, and where the hair-card tag matters
+most.
+
+### Decision
+
+Keep **V Vegetation Mix v2.00** as the vegetation source, but stop treating "the pack" as one
+thing: run it at step 6 (its cards tagged) and decide the IDE question by the number — 92 MB
+pinned without them, 187.5 MB with them plus textured distant pine LODs. Install its stated
+dependencies (Essentials Pack, Proper Fixes v2 — which also brings the wind and the LOD trees —
+and SkyGfx Extended if we want the sway at all), and keep **Proper Vegetation Retex**
+(https://www.mixmods.com.br/2021/07/proper-vegetation-retex-vegetacao-com-texturas-hd/, HD textures
+on the vanilla geometry) as the low-risk fallback if the 18× geometry turns out to be what the RT
+pipeline cannot take. Nothing was installed into the game in this task, and nothing outside REPO
+was written: the pack stays in `GTAmods/x/` where rhY put it, and `tools/vegetation.sh` finds it.

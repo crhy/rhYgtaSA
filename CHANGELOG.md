@@ -798,9 +798,19 @@ waiting on is [docs/STATUS.md](docs/STATUS.md).
 
 ### Parked and aborted work — tried, measured, **not** in the shipped tree
 
-Four attempts did not pass `scripts/check-all.sh` and were parked on their own branch; two more never
+Five attempts did not pass `scripts/check-all.sh` and were parked on their own branch; two more never
 started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and their status in
 [docs/STATUS.md](docs/STATUS.md); none of their config or plugin changes is live.
+
+- **Parked (n20, `a96ec15` on `failed/n20-hd-pbr-textures-183453`): HD PBR textures for the most
+  visible surfaces.** The work is real and large (3,334 lines: `tools/texture_rank.py` ranks the
+  pack's materials by how much screen they own, `tools/pbrify.py` + `tools/bcn.py` generate BC7/BC5
+  replacement maps with mip chains — Pillow cannot encode BCn — `tools/textures.sh` +
+  `tools/usd_switch.py` install/remove them with a `.rhys-textures` state dir, `config/texture-pbr.json`,
+  five new test files). The gate failed 87/2: `tests/test_next_test_doc.py` (its NEXT-TEST.md rewrite
+  broke the one-screen limits) and `tests/test_changelog_coverage.py` (the entry naming that commit
+  could only exist in the commit). Nothing shipped; the census and the ranking live on in
+  [docs/TARGET.md](docs/TARGET.md) and the n21 vegetation work reuses the same hash machinery.
 
 - **Parked (n09, `08dc373` on `failed/n09-exit-hang-114604`): the first exit-hang fix.** The shutdown
   state machine and the watchdog were right — 45 of 46 selftest checks passed — and the one failure
@@ -1041,6 +1051,64 @@ becomes a pixel once the runtime draws a frame). Protocol: [docs/TARGET.md](docs
   `config/rhyremix-production.ini` and `config.cpp`'s `kIniDefaults`, the `applyExposureAnchor()` call
   in `sun.cpp`, the `RhySignedRate` block in `smooth.{h,cpp}`, and the `nat-expo` lines in
   `scripts/check-all.sh`.
+
+### Vegetation (n21) — the pack we have is the wind-shader build, and its IDEs have a one-letter typo (on top of `49e5ea9`)
+
+rhY MUST-HAVE #2 (`.strata/target-2026-11-12.md`): trees, palms, bushes and grass that read as real
+plants, without the freeze `V Vegetation Mix` caused. Measured offline — the game was not run, and
+nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION.md) ("n21") and
+[docs/FINDINGS.md](docs/FINDINGS.md) (items 1-8).
+
+- **Found: the staged pack is v2.00 (2026-10-31), the "with wind shader" build**, byte-for-byte the
+  same 336 files as `GTAmods/v-vegetation-mix-with-wind-shader_1793477728_486060.7z`. Its models are
+  *wind-adapted*, and https://www.mixmods.com.br/2022/10/wind-project/ says wind-adapted models go
+  **transparent and bugged** without SkyGfx Extended v1.5+ — which the RTX copy does not have (nor
+  Proper Fixes, Essentials Pack or Proper Shaders). That is a new candidate (cause 4) next to the
+  three in docs/VEGETATION.md, and `tools/vegetation.sh check` now says it out loud.
+- **Fixed: cause 1 is one letter, and there is a fix better than deleting the IDEs.** The pack's
+  `vegepart.ide` names `lod_veg_firs` for ids 784-788 and ships `lod_veg_fist.txd`. New
+  `tools/vegetation_ide_check.py` resolves every dictionary those IDEs name (278 lines, 20126 names
+  available) and emits the pair; `tools/vegetation.sh` **step 5** installs the IDEs *and* writes
+  `gta3.img/lod_veg_firs.txd` as a copy, so the distant pine LODs get textures instead of nothing.
+- **Measured: the pinned-streaming number depends on those IDEs.** New
+  `tools/vegetation_stream.py`: the two `KeepLoaded=1` ImprovedStreaming ranges pin **92.0 MB** with
+  the pack and its IDEs left out, **187.5 MB** with the pack's own IDEs (s03's 190.5 MB is the second
+  row). With LAA set the cap (1900 MB) is 46 % of the address space and the pinned pack is 4.8-9.9 %
+  of the cap, so cause 2 is no longer the prime suspect for the 2026-11-11 freeze.
+- **Measured: what the pack costs the RT pipeline.** `tools/dff_stats.py` over the pack's 286 `.dff`
+  and their vanilla twins: vertices 56,745 → 1,003,148, triangles 42,312 → 765,921 (18×), and an
+  *LOD* (`lod_redwoodgrp`) at 4 → 2,857 triangles. All alpha-tested foliage.
+- **Fixed: installing the pack used to un-do s32's hair-card fix.** The pack contributes **234**
+  alpha-cutout card textures and only **5** of them were in `rtx.hairCardTextures`. `tools/vegetation_hashes.py`
+  gained `--pattern @pack` (the pack's foliage dictionaries, still refusing `badlands`/`junkpiles`/
+  `underwater`/`gtarock_deserts`/`gta_rockcuntry`) and `tools/vegetation.sh` **step 6** joins the
+  union (348 hashes, 6958 chars, one line). Safe: the runtime parses config lines with
+  `std::getline(stream, line)` and hash sets with `while (getline(ss, s, ','))` — no length cap
+  (dxvk-remix `remix-1.6.1`, `src/util/config/config.cpp:1058`, `:1205`).
+- **Measured: the number to beat at tour stop 14.** New `tools/vegetation_edge_measure.py`
+  (leaf↔background projection, calibrated on synthetic ramps: hard 1-px step 0.00 %, 2-px ramp
+  16.67 %/1.0 px, 4-px ramp 50.0 %/3.0 px): stop `14-vegetation-vinewood-noon` 2026-11-12 10:28:05
+  is **mid_alpha 17.63 %, ramp 2.59 px**. At the source: vanilla foliage 14.6 % mid-alpha texels, the
+  pack's trees 4.0 %, the pack's grass `plant1` **36.3 %** — the grass is where a blend still reads
+  as strokes.
+- **Not shipped, on purpose:** leaf translucency (the 1.6.1 option table has no foliage texture
+  category; `rtx.subsurface.*` is per-material, so it needs `mat_<HASH>` USD prims — a separate
+  task) and wind (no `rtx.*wind*` key exists in 1.6.1; wind is game-side, see the SkyGfx/Proper
+  Fixes dependency above). Two-sided leaves need nothing: `rtx.hairCardTextures` disables backface
+  culling by itself.
+- **New tools, all gated:** `tools/vegetation_ide_check.py`, `tools/vegetation_stream.py`,
+  `tools/vegetation_edge_measure.py` + `tests/test_vegetation_ide_check.py`,
+  `tests/test_vegetation_stream.py`, `tests/test_vegetation_edge_measure.py`;
+  `scripts/vegetation-selftest.sh` grew the step-5/6 checks (75 checks, 0 failed) and
+  `tools/vegetation.sh` gained the `check` action, pack auto-discovery under `GTAmods/x/`, and
+  `--step` up to 6. `deps/manifest.json`: `v-vegetation-mix` is now v2.00 with its real author and
+  `requires: essentials-pack, proper-fixes, skygfx-extended`, `proper-fixes` records what v2 brings
+  (wind, LOD trees, grass colour, −30 % RAM), and a new `skygfx-extended` entry carries the wind
+  shader (MixMods: link, do not re-host).
+  **Undo:** `bash tools/vegetation.sh off <game>` (every byte back, hashes verified by the
+  self-test); the new steps are only reachable via `--step 5|6`, and `--step 3` is still the default.
+  To take the tools out of the tree: delete the three `tools/vegetation_*.py` files, their three test
+  files, and the step-5/6 blocks in `tools/vegetation.sh` + `scripts/vegetation-selftest.sh`.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

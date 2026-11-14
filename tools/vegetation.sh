@@ -1,27 +1,43 @@
 #!/usr/bin/env bash
-# s16: put the "V Vegetation Mix" pack into a GTASA-RTX modloader with the fixes from
+# s16/n21: put the "V Vegetation Mix" pack into a GTASA-RTX modloader with the fixes from
 # docs/VEGETATION.md applied as one ranked, switchable set of steps - and take it all out again.
 #
 #   tools/vegetation.sh on     [GAME_DIR] [--step N]   install the pack + fixes 1..N (default 3)
 #   tools/vegetation.sh off    [GAME_DIR]              remove exactly what `on` added, restore backups
 #   tools/vegetation.sh status [GAME_DIR]              what is installed, which fixes are live
+#   tools/vegetation.sh check  [GAME_DIR]              n21: read-only audit - does the pack's IDE
+#                                                      data resolve, what does it cost the streaming
+#                                                      system, and are its dependencies installed
 #
-#   --pack DIR   pack folder to install (default: the staged copy, see PACK_DEFAULT below)
-#   --step N     0..4; 0 = the pack as its author shipped it
+#   --pack DIR   pack folder to install (default: the first staged copy that exists, see PACK_CANDIDATES)
+#   --step N     0..6; 0 = the pack as its author shipped it
 #
 # The steps are the causes in docs/VEGETATION.md, in that doc's own "Test order":
 #   1  cause 1: leave the pack's data/maps/generic/{procobj,vegepart}.ide OUT. They re-point
 #      44 entries at dictionaries this install does not have (ids 784-788 want lod_veg_firs,
 #      which exists nowhere), and the install that runs the pack fine has them deleted.
+#      Measured (n21, tools/vegetation_stream.py): with those IDEs the two KeepLoaded=1
+#      ImprovedStreaming ranges pin 187.5 MB of this pack; without them, 92.0 MB.
 #   2  cause 2: streaming caps. StreamMemory = 1024 in both MixSets.ini copies (was 1900), and
 #      in both ImprovedStreaming.ini copies StreamMemoryForced = 1024,
 #      RemoveUnusedWhenPercent = 70, [Range4] Enabled = 0 and [Range5] Enabled = 0 - those two
-#      KeepLoaded=1 ranges pin ~190 MB of this pack's vegetation in a 32-bit process.
+#      KeepLoaded=1 ranges pin 92-188 MB of this pack's vegetation in a 32-bit process.
 #   3  cause 3: rtx.conf opacity micromap budget: maxBudgetSizeMB = 256 (was 1024),
 #      minFreeVidmemMBToNotAllocate = 3072 (was 1536).
 #   4  the pack bisect, a TEST not a fix: also leave the two heaviest dictionaries out
 #      (gta3.img/insanity_pines.txd 72 MB, gta3.img/gta_tree_boak.txd 19 MB). Those trees
-#      then have no textures; it is how you find the single file that hangs the run.
+#      then have no textures; it is how you find the single file that hangs the run. It is a
+#      diagnostic, not a rung: it applies at exactly --step 4, never at 5 or 6.
+#   5  n21: the pack's own IDEs, WITH the typo fixed. Install procobj.ide + vegepart.ide and
+#      write the dictionary they ask for: gta3.img/lod_veg_firs.txd, a copy of the pack's
+#      lod_veg_fist.txd (tools/vegetation_ide_check.py --emit-shims names the pair). This is
+#      what gives the distant pine LODs (ids 784-788) their textures instead of nothing.
+#      Costs 95 MB more pinned streaming - that is the trade, and `check` prints both numbers.
+#   6  n21: the pack's card textures joined to rtx.conf's rtx.hairCardTextures. s32 tagged the
+#      119 vanilla card textures; the pack replaces those rasters, so 229 of its 234 card
+#      textures are untagged and the scribbled-card look comes straight back. The list is
+#      regenerated with tools/vegetation_hashes.py "PACK" --pattern @pack --emit; `off` puts the
+#      pristine rtx.conf line back.
 #
 # Large Address Aware (the other half of cause 2) is apply.sh's job; this script only reports
 # the flag and never rewrites the exe.
@@ -35,24 +51,37 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GAME_DEFAULT="/media/rhy/data/Gamez/GTASA-RTX"
-PACK_DEFAULT="/media/rhy/data/Gamez/GTAmods/removed-from-game/rtx-copy/V Vegetation Mix"
+# n21: rhY stages downloaded packs under GTAmods/x/; the frozen copy stays as the fallback.
+# Both are read-only for this script - it only ever writes inside <game>/modloader/.
+PACK_CANDIDATES=(
+  "/media/rhy/data/Gamez/GTAmods/x/V_Vegetation_Mix/V Vegetation Mix"
+  "/media/rhy/data/Gamez/GTAmods/removed-from-game/rtx-copy/V Vegetation Mix"
+)
+PACK_DEFAULT=""
+for _c in "${PACK_CANDIDATES[@]}"; do
+  [ -d "$_c/gta3.img" ] && { PACK_DEFAULT="$_c"; break; }
+done
+[ -n "$PACK_DEFAULT" ] || PACK_DEFAULT="${PACK_CANDIDATES[0]}"
 STEP_DEFAULT=3
-STEP_MAX=4
+STEP_MAX=6
 
 # pack-relative paths each step leaves out
 IDE_FILES=("data/maps/generic/procobj.ide" "data/maps/generic/vegepart.ide")
 HEAVY_FILES=("gta3.img/insanity_pines.txd" "gta3.img/gta_tree_boak.txd")
+# n21 step 5: files this tool CREATES (not copied from the pack) - the corrected dictionary
+# names the pack's IDEs ask for. Generated from tools/vegetation_ide_check.py --emit-shims.
+SHIM_DIR_PREFIX="gta3.img"
 
 TMP="$REPO/build/tmp/vegetation"
 mkdir -p "$TMP"
 
-usage() { sed -n '2,33p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
-die()   { echo "vegetation.sh: $*" >&2; echo "usage: tools/vegetation.sh {on|off|status} [GAME_DIR] [--step N] [--pack DIR]" >&2; exit 1; }
+usage() { sed -n '2,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+die()   { echo "vegetation.sh: $*" >&2; echo "usage: tools/vegetation.sh {on|off|status|check} [GAME_DIR] [--step N] [--pack DIR]" >&2; exit 1; }
 
 action=""; game=""; pack="$PACK_DEFAULT"; step="$STEP_DEFAULT"; step_given=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    on|off|status)
+    on|off|status|check)
       [ -z "$action" ] || die "two actions given ('$action' and '$1')"
       action="$1"; shift ;;
     --step)
@@ -128,8 +157,8 @@ ini_set() { # <file> <key> <value> [section] - replace in place, append if the k
 
 # ------------------------------------------------------------- step bookkeeping --
 withheld() { # pack-relative paths the current step leaves out of the install
-  [ "$step" -ge 1 ] && printf '%s\n' "${IDE_FILES[@]}"
-  [ "$step" -ge 4 ] && printf '%s\n' "${HEAVY_FILES[@]}"
+  [ "$step" -ge 1 ] && [ "$step" -lt 5 ] && printf '%s\n' "${IDE_FILES[@]}"
+  [ "$step" -eq 4 ] && printf '%s\n' "${HEAVY_FILES[@]}"   # step 4 is a diagnostic, not a rung
   return 0
 }
 is_withheld() { local rel="$1"; withheld | grep -qxF -- "$rel"; }
@@ -150,7 +179,9 @@ set_key() { # <rel-path-in-game> <key> <value> [section]
   if [ "$cur" = "$val" ]; then echo "   ok    $rel: ${sec:+[$sec] }$key = $val (already)"; return 0; fi
   backup_once "$rel"
   ini_set "$game/$rel" "$key" "$val" "$sec"
-  echo "   fix   $rel: ${sec:+[$sec] }$key ${cur:-<absent>} -> $val"
+  # a hash-set value is thousands of characters; the log line names the change, not the payload
+  echo "   fix   $rel: ${sec:+[$sec] }$key ${cur:-<absent>} -> $val" | cut -c1-200
+  [ "${#val}" -gt 120 ] && echo "          (${#val} chars, $(printf '%s' "$val" | tr ',' '\n' | grep -c '0x') entries)"
   edits=$((edits + 1))
 }
 
@@ -170,6 +201,63 @@ apply_fixes() {
     set_key "rtx.conf" rtx.opacityMicromap.cache.maxBudgetSizeMB 256
     set_key "rtx.conf" rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate 3072
   fi
+  if [ "$step" -ge 6 ]; then
+    local add cur merged
+    add="$(pack_card_hashes)"
+    if [ -z "$add" ]; then
+      echo "   skip  rtx.hairCardTextures: no card texture found in this pack (numpy missing, or no foliage rasters)"
+    else
+      cur="$(ini_get "$game/rtx.conf" rtx.hairCardTextures)"
+      merged="$(merge_hashes "$cur" "$add")"
+      set_key "rtx.conf" rtx.hairCardTextures "$merged"
+    fi
+  fi
+}
+
+# ------------------------------------------------- n21 step 5: the typo shim ----
+# The pack's vegepart.ide names lod_veg_firs for ids 784-788 and ships lod_veg_fist.txd.
+# tools/vegetation_ide_check.py finds that pair by resolving every dictionary the IDEs name
+# against everything that would load; here we write the file the IDEs actually ask for.
+shim_pairs() {
+  [ -f "$pack/data/maps/generic/vegepart.ide" ] || return 0
+  python3 "$REPO/tools/vegetation_ide_check.py" "$pack" --game "$game" --exclude "$DEST" \
+    --emit-shims --quiet 2>/dev/null \
+    | grep -E '^[A-Za-z0-9_]+\.[A-Za-z]+=[A-Za-z0-9_]+\.[A-Za-z]+$' || true
+}
+
+apply_shims() {
+  local n=0 dst src srcpack
+  while IFS='=' read -r dst src; do
+    [ -n "$dst" ] && [ -n "$src" ] || continue
+    srcpack="$pack/$SHIM_DIR_PREFIX/$src"
+    [ -f "$srcpack" ] || { echo "   skip  shim $dst: $src is not in $SHIM_DIR_PREFIX/ of the pack"; continue; }
+    mkdir -p "$DEST/$SHIM_DIR_PREFIX"
+    cp -p "$srcpack" "$DEST/$SHIM_DIR_PREFIX/$dst"
+    echo "   shim  $SHIM_DIR_PREFIX/$dst = a copy of $src (the pack's IDEs name '$dst')"
+    n=$((n + 1))
+  done < <(shim_pairs)
+  echo "   $n shim(s) for mis-typed dictionary names"
+}
+
+prune_extra() { # a step below 5 must take back every file we created that the pack does not have
+  local rel n=0
+  [ -d "$DEST" ] || return 0
+  while IFS= read -r -d '' f; do
+    rel="${f#"$DEST"/}"
+    if [ ! -f "$pack/$rel" ]; then rm -f "$f"; echo "   out   $rel (not a pack file - written by a higher step)"; n=$((n + 1)); fi
+  done < <(find "$DEST" -type f -print0)
+  [ "$n" = 0 ] || echo "   $n generated file(s) removed"
+}
+
+# ------------------------------------------ n21 step 6: the pack's card hashes --
+pack_card_hashes() {
+  python3 "$REPO/tools/vegetation_hashes.py" "$pack" --pattern @pack --emit rtx.hairCardTextures 2>/dev/null \
+    | awk '/^rtx\.hairCardTextures = /{sub(/^rtx\.hairCardTextures = /, ""); print; exit}' || true
+}
+
+merge_hashes() { # existing list + new list -> one sorted, unique, ", "-joined list
+  printf '%s\n%s\n' "${1:-}" "${2:-}" | tr ',' '\n' | tr -d ' \t' \
+    | grep -E '^0x[0-9A-Fa-f]{16}$' | sort -fu | paste -sd, - | sed 's/,/, /g'
 }
 
 # ----------------------------------------------------------------- reporting --
@@ -193,10 +281,46 @@ fix_state() { # what the inis/rtx.conf say right now, installed or not
       "$(ini_get "$game/$rel" StreamMemoryForced)" "$(ini_get "$game/$rel" RemoveUnusedWhenPercent)" \
       "$(ini_get "$game/$rel" Enabled Range4)" "$(ini_get "$game/$rel" Enabled Range5)"
   done
-  echo "rtx.conf (cause 3):"
+  echo "rtx.conf (cause 3 / n21 step 6):"
   printf '  %-46s maxBudgetSizeMB = %s, minFreeVidmemMBToNotAllocate = %s\n' rtx.conf \
     "$(ini_get "$game/rtx.conf" rtx.opacityMicromap.cache.maxBudgetSizeMB)" \
     "$(ini_get "$game/rtx.conf" rtx.opacityMicromap.cache.minFreeVidmemMBToNotAllocate)"
+  local hc; hc="$(ini_get "$game/rtx.conf" rtx.hairCardTextures)"
+  printf '  %-46s rtx.hairCardTextures = %s hash(es)\n' rtx.conf \
+    "$(printf '%s' "$hc" | tr ',' '\n' | grep -c '0x')"
+}
+
+deps_line() { # n21 cause 4: what the pack's own readme demands, and whether it is installed
+  echo "the pack's dependencies (its readme + docs/VEGETATION.md cause 4):"
+  local mods="$game/modloader" d hit
+  for d in "Essentials Pack" "Proper Fixes" "SkyGfx" "Proper Shaders"; do
+    hit=""
+    if [ -d "$mods" ]; then
+      hit="$(find "$mods" -maxdepth 1 -type d -iname "*$d*" -printf '%f\n' 2>/dev/null | head -1)"
+    fi
+    printf '  %-16s %s\n' "$d" "${hit:+installed: $hit}${hit:-NOT installed}"
+  done
+  echo "  v2.00 of this pack is 'Adaptados a Wind Shader': without SkyGfx Extended v1.5+,"
+  echo "  Proper Fixes v2 (which carries the wind shader) or Proper Shaders those models can render"
+  echo "  transparent/bugged (https://www.mixmods.com.br/2022/10/wind-project/), and there is no"
+  echo "  rtx.*wind* key in Remix 1.6.1 to fall back on (config/rtx-options-1.6.1.tsv)."
+}
+
+# -------------------------------------------------------------------- check ---
+do_check() {
+  echo "== does the pack's IDE data resolve? (tools/vegetation_ide_check.py)"
+  python3 "$REPO/tools/vegetation_ide_check.py" "$pack" --game "$game" --exclude "$DEST" --emit-shims || true
+  if [ -f "$DEST/$SHIM_DIR_PREFIX/lod_veg_firs.txd" ]; then
+    echo "(this install already carries the shim: $DEST/$SHIM_DIR_PREFIX/lod_veg_firs.txd)"
+  fi
+  echo
+  echo "== what it costs the streaming system (tools/vegetation_stream.py)"
+  python3 "$REPO/tools/vegetation_stream.py" "$game" --pack "$pack" || true
+  echo
+  echo "== its card textures, for rtx.hairCardTextures (tools/vegetation_hashes.py --pattern @pack)"
+  python3 "$REPO/tools/vegetation_hashes.py" "$pack" --pattern @pack 2>/dev/null | grep '^#' | head -2 || true
+  echo
+  deps_line
 }
 
 # ---------------------------------------------------------------------- on ----
@@ -234,8 +358,10 @@ do_on() {
     cp -p "$f" "$DEST/$rel"
     n_new=$((n_new + 1))
   done < <(find "$pack" -type f -print0 | sort -z)
+  if [ "$step" -ge 5 ]; then apply_shims; else prune_extra; fi
   # added.txt is exactly what is in the folder we created - the pack dir is ours, so
-  # listing it beats tracking copies (a step change can take files back out).
+  # listing it beats tracking copies (a step change can take files back out, and step 5
+  # adds generated files the pack does not have).
   ( cd "$DEST" && find . -type f -printf '%P\n' ) | sort > "$STATE/added.txt"
   find "$DEST" -depth -type d -empty -delete 2>/dev/null || true
   echo "   $n_new copied, $n_same already there, $n_out left out by the steps"
@@ -244,6 +370,7 @@ do_on() {
   apply_fixes
   echo "   $edits key(s) changed ($(wc -l < "$STATE/backups.txt") file(s) backed up in .rhys-vegetation/backups)"
   laa_line
+  deps_line
   echo "done. Start with: $game/launch-rtx.sh - then read the first 60 s at Grove Street (docs/VEGETATION.md 'Test order')."
   echo "Roll everything back with: tools/vegetation.sh off '$game'"
 }
@@ -291,13 +418,15 @@ do_status() {
   else
     echo "installed: no"
   fi
-  echo "steps: 1 drop the pack's procobj/vegepart .ide | 2 streaming caps | 3 rtx.conf opacity micromap | 4 also drop the 2 heaviest .txd (test only; default $STEP_DEFAULT)"
+  echo "steps: 1 drop the pack's procobj/vegepart .ide | 2 streaming caps | 3 rtx.conf opacity micromap | 4 also drop the 2 heaviest .txd (test only) | 5 the pack's IDEs WITH the lod_veg_firs.txd shim | 6 the pack's card hashes in rtx.hairCardTextures (default $STEP_DEFAULT)"
   fix_state
   laa_line
+  deps_line
 }
 
 case "$action" in
   on)     do_on ;;
   off)    do_off ;;
   status) do_status ;;
+  check)  do_check ;;
 esac

@@ -56,6 +56,20 @@ VEG_RE = (r"^(gta_proc.*|gta_cactus|gta_potplants.*|gta_brokentrees|gta_deserttr
           r"gtatree.*|tree[123].*|veg_fuzzyplant|veg_leaves.*|vegtresshi.*|lod_veg|kbplantssmz.*|"
           r"canopy)$")
 
+# n21: the same set for an HD vegetation PACK, whose authors invent their own dictionary names.
+# Measured on the staged V Vegetation Mix (49 dictionaries): the new names are bsor_* (BSOR -
+# Five Stars), insanity_* (Insanity Vegetation), vgsn_nitree (V Palms Neon), plant1 (the grass
+# dictionary under models/grass/) and lod_veg_fist (the LOD trees) - and the pack also retextures
+# rock and junk dictionaries (badlands, gta_rockcuntry, gtarock_deserts, underwater, junkpiles),
+# which are NOT foliage and must not be tagged, exactly as in the vanilla set. `lod_veg` became
+# `lod_veg.*` because the pack ships lod_veg_fist.txd next to lod_veg.txd.
+# Pass it as --pattern @pack (or @veg for the vanilla set).
+PACK_VEG_RE = (r"^(gta_proc.*|gta_cactus|gta_potplants.*|gta_brokentrees|gta_deserttrees|"
+               r"gta_tree_.*|gtatree.*|tree[123].*|veg_fuzzyplant|veg_leaves.*|vegtresshi.*|"
+               r"lod_veg.*|kbplantssmz.*|canopy|des_trees|bsor_.*|insanity_.*|vgsn_nitree|plant1)$")
+
+PATTERN_ALIASES = {"@veg": VEG_RE, "@pack": PACK_VEG_RE}
+
 BLOCK4 = (b"DXT1", b"DXT3", b"DXT5")
 
 
@@ -131,20 +145,26 @@ def stats(a):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="vegetation_hashes.py", description=__doc__.splitlines()[0])
     ap.add_argument("path")
-    ap.add_argument("--pattern", default=VEG_RE)
+    ap.add_argument("--pattern", default=VEG_RE,
+                    help="dictionary-name regex, or the alias @veg (vanilla foliage) / @pack (n21 pack set)")
     ap.add_argument("--min-cut", type=float, default=5.0)
     ap.add_argument("--emit", default=None)
     ap.add_argument("--check-conf", default=None)
     ap.add_argument("--verbose", action="store_true")
     a = ap.parse_args(argv)
 
-    rx = re.compile(a.pattern, re.I)
+    rx = re.compile(PATTERN_ALIASES.get(a.pattern, a.pattern), re.I)
     rows, skipped = [], []
     for label, blob in R.iter_txd_bytes(a.path):
         base = os.path.basename(label.split(":")[-1]).rsplit(".", 1)[0]
         if not rx.match(base):
             continue
-        for t in R.parse_txd(blob, label):
+        try:
+            texs = R.parse_txd(blob, label)
+        except ValueError as e:                       # not a texture dictionary after all
+            skipped.append((base, "-", "not a .txd: %s" % e))
+            continue
+        for t in texs:
             raw = t.d3d9_mip0(blob)
             fc = fourcc_of(t, blob)
             al = alpha_of(t, raw, fc)

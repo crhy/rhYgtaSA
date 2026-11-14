@@ -92,10 +92,12 @@ through the script's own `RHYS_TEST_SESSION_SANDBOX` guard so a bug in the match
 signal a real process. It never starts the game and never stops the Strata serving this session.
 
 Since s16 the vegetation retry is one switchable command instead of a page of shell (the causes
-and their ranking live in `docs/VEGETATION.md`):
+and their ranking live in `docs/VEGETATION.md`); n21 added the audit action and the two steps that
+make the pack *look* right rather than merely not hang:
 
 ```
-tools/vegetation.sh on     /path/to/GTASA-RTX --step 3   # install the pack + causes 1..3
+tools/vegetation.sh check  /path/to/GTASA-RTX            # read-only: IDE resolution, streaming cost, deps
+tools/vegetation.sh on     /path/to/GTASA-RTX --step 6   # install the pack + steps 1,2,3,5,6
 tools/vegetation.sh status /path/to/GTASA-RTX            # which step is live, and what the inis say now
 tools/vegetation.sh off    /path/to/GTASA-RTX            # back to the pre-`on` bytes
 ```
@@ -104,16 +106,29 @@ The steps are that doc's ranking: 1 = the pack's `procobj.ide`/`vegepart.ide` le
 install, 2 = the streaming caps in the two `MixSets.ini` and two `ImprovedStreaming.ini` copies
 (`StreamMemory`/`StreamMemoryForced` 1024, `RemoveUnusedWhenPercent` 70, `[Range4]`/`[Range5]`
 `Enabled = 0`), 3 = the `rtx.opacityMicromap` budget in `rtx.conf`, 4 = also drop the two
-heaviest `.txd` (the bisect - it costs textures, so it is opt-in; the default is 3). Everything
-it copies or edits is recorded in `<game>/modloader/.rhys-vegetation/` - the list of files it
-added plus one pristine backup per edited file - so `off` restores the tree byte-for-byte and
-leaves no state behind, and a pack folder the user installed by hand is refused rather than
-deleted. Its test is `bash scripts/vegetation-selftest.sh`: the installer self-test's fake tree
-under `build/tmp/`, `status -> off -> on --step 3 -> on --step 4 -> on --step 2 -> off`, a
-synthetic pack plus the real staged 192 MB pack when it is present (`--no-real-pack` skips it),
-and `sha256sum` of every file in the tree before and after the round-trip. It never writes
-outside `build/tmp/`, and `RHYREMIX_INSTALLER_SANDBOX=1` + `.fake-install-marker` guard it the
-same way as `apply.sh`/`deploy.sh`.
+heaviest `.txd` (the bisect - a diagnostic, so it applies at exactly `--step 4`, never at 5/6;
+the default is 3), **5 = the pack's own IDEs installed plus the dictionary they mis-name**
+(`gta3.img/lod_veg_firs.txd`, a copy of the pack's `lod_veg_fist.txd` - one letter, and it is what
+puts textures on the distant pine LODs instead of nothing), **6 = the pack's 234 card textures
+joined into `rtx.hairCardTextures`** (without it, installing the pack un-does s32's hair-card fix:
+only 5 of its hashes were already listed). The pack folder is auto-discovered under
+`GTAmods/x/` first, then the frozen `removed-from-game/rtx-copy/` copy; `--pack DIR` overrides.
+Three read-only tools back it up: `tools/vegetation_ide_check.py` (resolves every dictionary the
+pack's IDEs name against the archives, loose files and other mods, and emits the `dst=src` shim
+pairs), `tools/vegetation_stream.py` (what the `KeepLoaded=1` streaming ranges pin with and
+without the pack: 9.8 -> 92.0 MB, or 187.5 MB with the pack's IDEs), and
+`tools/vegetation_edge_measure.py` (leaf edge quality in tour frames and in the `.txd`s: the
+mid-alpha band along the leaf/background boundary, calibrated on synthetic ramps). Everything the
+script copies or edits is recorded in `<game>/modloader/.rhys-vegetation/` - the list of files it
+added (generated shims included) plus one pristine backup per edited file - so `off` restores the
+tree byte-for-byte and leaves no state behind, and a pack folder the user installed by hand is
+refused rather than deleted. Its test is `bash scripts/vegetation-selftest.sh`: the installer
+self-test's fake tree under `build/tmp/`, `status -> off -> on --step 3 -> on --step 4 -> on
+--step 2 -> on --step 5 -> check -> on --step 3 -> on --step 6 -> off`, a synthetic pack (carrying
+the same one-letter IDE typo as the real one) plus the real staged 192 MB pack when it is present
+(`--no-real-pack` skips it), and `sha256sum` of every file in the tree before and after the
+round-trip. It never writes outside `build/tmp/`, and `RHYREMIX_INSTALLER_SANDBOX=1` +
+`.fake-install-marker` guard it the same way as `apply.sh`/`deploy.sh`.
 
 Since s17 the character packs are one switchable command too (the shortlist, the order and the
 priorities live in `docs/CHARACTERS.md` §5/§8, the machine-readable copy in `deps/manifest.json`

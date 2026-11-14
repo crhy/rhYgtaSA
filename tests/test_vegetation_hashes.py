@@ -72,6 +72,46 @@ class TestAllowList(unittest.TestCase):
             self.assertFalse(re.match(V.VEG_RE, n), n)
 
 
+class TestPackAllowList(unittest.TestCase):
+    """n21: an HD vegetation pack invents its own dictionary names; @pack covers them and
+    still refuses the rock/junk dictionaries the same pack retextures."""
+
+    def test_accepts_the_pack_names(self):
+        for n in ("bsor_tree", "bsor_elm_prc", "bsor_high_spruce", "insanity_pines",
+                  "insanity_des", "vgsn_nitree", "plant1", "lod_veg_fist", "lod_veg",
+                  "des_trees", "gta_tree_boak", "gta_potplantsaa", "gta_proc_bush"):
+            self.assertTrue(re.match(V.PACK_VEG_RE, n), n)
+
+    def test_still_rejects_rock_junk_and_water(self):
+        for n in ("badlands", "gta_rockcuntry", "gtarock_deserts", "underwater", "junkpiles",
+                  "vegasbuild", "tikigrass", "p_rubble03", "carcols"):
+            self.assertFalse(re.match(V.PACK_VEG_RE, n), n)
+
+    def test_the_alias_reaches_the_tool(self):
+        """--pattern @pack must expand, and a bad alias must not silently match everything."""
+        self.assertEqual(V.PATTERN_ALIASES["@pack"], V.PACK_VEG_RE)
+        self.assertEqual(V.PATTERN_ALIASES["@veg"], V.VEG_RE)
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            p = os.path.join(tmp.name, "bsor_tree.txd")
+            nib = [0] * 8 + [8] * 4 + [15] * 4          # half transparent, a quarter soft
+            open(p, "wb").write(txd_bytes([("card", 8, 8, b"DXT3", 16, dxt3_block(nib) * 4)]))
+            r = subprocess.run([sys.executable,
+                                os.path.join(REPO, "tools", "vegetation_hashes.py"),
+                                p, "--pattern", "@pack", "--emit", "rtx.hairCardTextures"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("1 card texture(s)", r.stdout)
+            r2 = subprocess.run([sys.executable,
+                                 os.path.join(REPO, "tools", "vegetation_hashes.py"),
+                                 p, "--pattern", "@veg", "--emit", "rtx.hairCardTextures"],
+                                capture_output=True, text=True)
+            self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+            self.assertIn("0 card texture(s)", r2.stdout)
+        finally:
+            tmp.cleanup()
+
+
 class TestAlphaRule(unittest.TestCase):
     def setUp(self):
         # a grass card: half the texels fully transparent, a quarter soft, the rest opaque
