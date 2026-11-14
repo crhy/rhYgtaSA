@@ -46,7 +46,12 @@ enum LightTagNamespace {
     // n12: one per vehicle lamp, from the lamp's own hash. A headlamp is
     // re-created every time the car moves, so the destroy-before-create rule of
     // rhyFlushDelayedTag applies exactly as it does for a lamp light.
-    kTagVehicle = 600000
+    kTagVehicle = 600000,
+    // n11: the HEAD (bulb) light of street lamp #i. It is a separate Remix light
+    // from the lamp's own housing light, with its own hash, so the
+    // destroy-before-create rule in rhyFlushDelayedTag needs its own tag
+    // namespace: flushing a bulb must never retire the housing under it.
+    kTagStreetHead = 700000
 };
 
 // Number of handles still waiting to be destroyed (for the log line).

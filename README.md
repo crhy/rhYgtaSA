@@ -27,7 +27,7 @@ install and test it. What is in the box today:
 | area | what you get | how it is decided |
 |---|---|---|
 | **Sun, moon, sky** | a sun and a moon that are where San Andreas' latitude, season and the game's clock put them, with the sky's ambient following them | `plugin/src/solar.cpp` (physics) + `plugin/src/tod.cpp` (one continuous, never-backwards game minute) |
-| **Street lamps** | every lamp in the game's own lamp table and IPL files - 7002 of them - lit at its real fixture size, in sodium or mercury colour, switching at twilight instead of at a clock time | `plugin/src/lamps.cpp`, `tools/lamp_list.py`, generated per install from your own game files |
+| **Street lamps** | every lamp the **game itself declares** - the 2dFx light records inside its own `.dff`, 8962 of them placed - lit at its real fixture size, in the colour the game recorded for that bulb, with a small light at the bulb so the head glows, switching at twilight instead of at a clock time | `plugin/src/lamps.cpp`, `tools/dff_2dfx.py` + `tools/lamp_list.py` (generated per install from your own game files), `tools/lamp-coverage.py` (the 95 % gate) |
 | **Traffic signals** | a bulb on the lens **and** a few metres of its colour around the head, taking the colour from the game's own signal corona records | `plugin/src/signalhook.cpp` (read-only hook) + `signalheads.cpp`, with the generated `rhyremix_traffic.txt` as the fallback |
 | **Vehicle lamps** | a car's head, tail and brake lamps as real lamps - a 0.09 m reflector in a 50-degree cone and 0.05 m red lenses - aimed along the car's own axis | `plugin/src/vehiclecorona.cpp` reads the game's corona store; `vehiclelights.cpp` sizes it |
 | **Never a pop** | no lighting change is one frame wide: lamps fade in and out, the ambient and the sun are rate-limited, and a handle change is budgeted per frame | `plugin/src/smooth.cpp`, floors in `[fade]`, asserted in `tests/smooth_check.cpp` |
@@ -155,8 +155,8 @@ MixSets' real-time ped shadow (a gray square under CJ under Remix).
 
 That is the copy `apply.sh` installed in your game folder. On every start it builds the current
 plugin and installs it (`build/rhyremix.asi` → `<game>/scripts/`, and on a fresh clone it generates
-the lamp and traffic-signal lists from your own `gta3.img`, `.ide`, `.ipl` and the pack's lamp
-table), checks free VRAM, makes sure the default water variant is installed (a variant you chose
+the lamp and traffic-signal lists from your own `gta3.img`, `.ide` and `.ipl` - for lamps, the 2dFx
+light records inside the game's own models; for signals, the pack's lamp table), checks free VRAM, makes sure the default water variant is installed (a variant you chose
 explicitly is left alone), starts Proton inside the Steam runtime with the settings Remix and a
 DualShock need, and starts the F12 screenshot watcher. Then start a new game.
 
@@ -411,11 +411,12 @@ equals the profile's anchor, a whole simulated day stays inside the rate bound) 
 from CJ, never by what the screen is pointed at: there is no frustum test, no screen-size sort and
 no "N most visible lamps" anywhere in the plugin. Two rules keep that true. The count is a budget
 for the fade band, not a distance: a lamp inside `[streetlights] max_distance` is never the one
-`max_lights` drops, whatever the density around you (the worst point on the real 7002-lamp map has
-408 lamps within 300 units and 552 within 380, so the shipped `max_lights=560` + `sticky_extra=140`
-covers the map and the plugin prints the worst case it finds at load). And a traffic signal keeps its
-light by distance too: the game only registers a signal corona for what it draws, so "the corona
-stopped" used to mean "dark two seconds later" when you turned your back on a junction. The log
+`max_lights` drops, whatever the density around you (the worst point on the 8962-lamp list has
+484 lamps within 300 units and 673 within 380, so the shipped `max_lights=560` + `sticky_extra=140`
+covers the map and the plugin prints the worst case it finds at load; the bulb light is a separate
+near-field layer with its own radius and cap, `head_distance` / `head_max_lights`). And a traffic
+signal keeps its light by distance too: the game only registers a signal corona for what it draws, so
+"the corona stopped" used to mean "dark two seconds later" when you turned your back on a junction. The log
 proves both: `in_drop=0` in every 10-second line means no lamp inside the radius was ever left
 without a light, and `tests/always_on_check.cpp` runs a 360-degree camera sweep, a 300 s walk and a
 240 s drive through the measured worst-case density and asserts the light set does not notice. The

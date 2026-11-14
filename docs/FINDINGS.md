@@ -1709,6 +1709,17 @@ index of 1 makes interesting (the loop did run, at least twice, for one of the
 five model ids this function accepts) and what makes chasing them the wrong task.
 The list file has to carry the lens itself.
 
+> **Corrected by n11 (2026-11-14).** The two scans are right and the conclusion is
+> wrong: SA does not use the GTA3 `2dFx` chunk id `0x00010105`, it uses its own,
+> **`0x0253F2F8`**, and the records are in **1591 of the 12239 `.dff`** of this
+> archive. `tools/dff_2dfx.py` reads them (the record list closes byte-for-byte at
+> the end of the chunk in all 1591), and the lens positions they carry agree with
+> the lamp table to 0.1-0.2 m - `cj_traffic_light4`'s three lens records are at
+> (-3.24,-0.05,5.62/5.37/5.10) in red/amber/green, and the game's own loop at
+> `0x49DC75` reads those colour bytes as the phase index. Chasing them was not the
+> wrong task; it was the task that turned the street lamp list from a 22-model
+> table into the game's own 18691 lights. See "Every lamp the game declares" below.
+
 **It was carrying a pole.** The lamp table (`moonloader/SARemix_Light_Manager.dat`,
 the same file the shipped `headz` column already comes from) gives a *three*
 number head offset per model, and the v1 file kept only the third:
@@ -2950,3 +2961,110 @@ so the seam cannot go quiet again.
 carry relief and a dry matte response" is a prediction from the map statistics in 9;
 [TEXTURES.md](TEXTURES.md) and [NEXT-TEST.md](NEXT-TEST.md) step 8 say what to look at and what to
 bring back.
+
+## Every lamp the game declares: the 2dFx records, and the head that has to glow (2026-11-14, n11)
+
+rhY's 2026-11-12c review, V2, at the Verona Beach pier (00:31-00:44 of the video): *"boardwalk/beach
+lamps are dark: no lit bulb, no pool of light under them"*. The n06 follow-up had already put a hand-
+written table under the pier lamps. n11 asked the prior question - how do we know which lamps exist -
+and found that the game says so, per bulb, inside the models.
+
+**1. The chunk is `0x0253F2F8`, and it is everywhere.** Walking every chunk of every `.dff` in
+`gta3.img` (12239 `.dff`) finds it in **1591** of them. The record frame:
+
+```
+payload: u32 recordCount, then record[recordCount]
+    f32 x, y, z        model-local position
+    u32 tagword        LOW byte = tag
+    u32 payloadSize
+    u8  payload[payloadSize]
+```
+
+The self-check is the frame, not a magic string: the record list ends **exactly** at the end of the
+chunk in all 1591 (`scan_img` counts `chunks` and `closed` and they are equal). A parser one byte off
+cannot do that. The tag pairs with exactly one payload size across the whole archive - 0/80 (944
+records), 1/24 (49), 3/56 (692), 6/44 (77), 7/88 (489), 8/4 (30), 9/12 (14138), 10/40 (5) - which is
+what makes the tag's position decidable rather than guessed.
+
+**2. The tag is the LOW byte, and getting it wrong invents lamps.** Reading `tagword >> 24` makes
+every record a light (tagwords are all ≤ 0xff), and the first draft of the parser produced 46k
+"lights" including every palm tree and parking-lot surface in Los Santos. 18691 is the honest number.
+
+**3. The first four payload bytes are a colour, and the game says so.** The signal-head loop at
+`0x49DC75` computes `edi = (e[0x10] > 200) ? (100 > e[0x11] ? 1 : 2) : 0`, and `entry+0x10` is
+`payload+0x00`. `cj_traffic_light4`'s three lens records are (255,0,0), (255,128,0), (0,255,0), which
+that expression maps to 1, 2, 0 - red, amber, green, the game's own phase indices. The alpha byte is
+a constant `0xC8` on every lamp record measured, which rules out a packed `0xRRGGBB` int.
+
+**4. `+0x04` is a range; `+0x08/0x0c/0x10` are not a focus point.** Measured ranges: 62
+(`vegaslampost`), 100 (the LA lampposts - 16479 of the 18691 instances), 150 (`lampost_coast`), 180
+(`bollardlight`), 300 (`lamppost2`'s globes), 450-900 (airport, rail-bridge and refinery masts). The
+three following floats are small enums, not a point: `f8` ∈ {0,5,12,18} and it is **0 exactly where
+the model draws no corona**, `f12` ∈ {0,0.7,0.8,1,2,2.5,4}, `f16` ∈ {0,6,8}. A focus point would move
+with the record; these do not. The names after them (`coronastar`, `shad_exp`, `Col Sphere`) sit at
+model-dependent offsets - `lamppost2` and `lamppost3` disagree by a byte - so the reader returns the
+printable runs instead of pretending they are fields.
+
+**5. The inventory.** 145 models carry light records (944 records); **112** of them are placed by an
+IPL; the instances multiply them to **18691** world lights: LA 6552, vegas 6025, SF 4997, country
+1117. Region comes from the IPL - the directory for text IPLs, the stream name for the 164 "bnry" IPLs
+inside `gta3.img`. At the pier points n06 named ((378,-1964) and (836,-1855)) the lamps are
+`lamppost1` (28/144 instances), `lamppost2` (13/31), `lamppost3` (28/19), `lampost_coast` (3/0),
+`streetlamp1/2`, plus the freeway sign lamps `lasrnway1..5_las` and the motel sign `lamotsig1_la`.
+
+**6. The third-party table covers 64.4 % of that, and the Los Santos street number is 74.0 %.**
+`moonloader/SARemix_Light_Manager.dat` has **22** model ids, 15 of which are 2dFx-lit models.
+`tools/lamp-coverage.py` (tolerance 1.0 game unit, 3D):
+
+| region | 2dFx lights | signal layer | street lights | covered by the old list | coverage |
+|---|---|---|---|---|---|
+| LA | 6552 | 3016 | 3536 | 2617 | **74.01 %** |
+| vegas | 6025 | 3206 | 2819 | 1383 | 49.06 % |
+| SF | 4997 | 2965 | 2032 | 1360 | 66.93 % |
+| country | 1117 | 539 | 578 | 341 | 59.00 % |
+
+36 models are uncovered in Los Santos alone. The biggest single one is `lamppost2`: the model carries
+**three** lights - two globes at (±2.98, 0.01, 5.32) range 300 and a mid-pole lamp at
+(0.04,-0.05,3.90) range 100 - and the table has two offsets, so **244** of the 732 Los Santos
+`lamppost2` lights were never lit. That is the double-globe boardwalk post in the video, and it is a
+missing *bulb* on a lamp post the list already had.
+
+**7. Where the table does exist, it was written from this data - approximately.** Table offset vs the
+model's own 2dFx bulb: `lamppost1` (-0.50,0,3.08) vs (-0.44,0.05,3.20); `lamppost3` (-1.30,0.17,3.71)
+vs (-1.40,0.22,3.67); `lamppost2` (±3.00,0,5.50) vs (±2.98,0.01,5.32) - 0.11-0.19 m apart, close
+enough to be trustworthy and far enough that the 2dFx position is the one to use. And the table can
+be plainly wrong where nobody looked: `sub_floodlite` carries three offsets, all `(0,0,0)`, while the
+model's two lights are at (±1.52, 0.11, 13.89) - a 14 m mast's lamps at the base of the pole.
+
+**8. The game's colour and the physics agree, which is the cross-check that both are right.** The
+2dFx bytes are display values; linearised (`rhySrgbToLinear`), `lamppost3`'s (255,148,52) is
+(1.000, 0.297, 0.034) against the published HPS chromaticity (0.530, 0.415) → (1.000, 0.254, 0.003).
+`lamppost1` (249,145,34) → (1.000, 0.299, 0.017). A raster author and a lighting reference, naming the
+same lamp to within a few percent. Where the bytes are plain white (`streetlamp1/2`, `lampost_coast`,
+`bollardlight`) they carry no spectrum at all, and that is exactly where the fitting has to decide -
+hence the new `fluorescent` family (F40D daylight tube, x=0.313 y=0.337) rather than a guess from the
+ini's one cold triple.
+
+**9. One light cannot be both halves of "no lit bulb, no pool of light".** n02b already wrote the
+reason for signals: *"a point light is not visible geometry, it only lights what is near it"*. The
+luminaire light is a 0.15-0.20 m sphere in a 120-125 degree cone **pointing at the road**: it makes the
+pool and it cannot make the head, because the head is where it sits and its own housing is outside the
+cone. So the head gets its own light: 0.12/0.10/0.07 m by fitting band, **unshaped** (a bulb shines
+every way), carrying `head_radiance` **nits at its own radius**. Not flux-preserved, and the size of
+that choice is the s30 lesson restated: flux-preserving 1200 nits from a 0.1 m bulb to the 15-unit
+reference is **27 000 000** - a flood lamp wearing a bulb.
+
+**10. The head layer is near-field, and that is a measured bound, not a guess.** Worst case number of
+list lights within a radius of a point, over the 8962-light list (sampled every 8th lamp, printed by
+the plugin at load and by `lamp-coverage.py --density`): **174** within 120, **484** within 300, **673**
+within 380. So the head band is 120..160 with a 200-slot cap, and the luminaire band keeps 300..380
+with 560+140 (which n04 measured as 552 on the old 7002-lamp list - the new list is denser, and 700
+still covers it). Both layers run the same `rhySelectLights` hysteresis, the same fade envelope, the
+same per-frame create budget, and each has its own hash namespace and delayed-destroy tag, so a bulb's
+destroy-before-create can never retire the housing under it.
+
+**11. Not measured.** Whether the head light reads as a lit bulb from the seat of a bike. The
+mechanism is the one n02b shipped for signal lenses and rhY accepted ("We wanted the glow ... It
+should be both like real life"), and the game's own corona for the bulb (`coronastar`, the `f8` size
+float 12/18 in the record) still draws the sprite on top of it. [NEXT-TEST.md](NEXT-TEST.md) step 9 is
+the leg that settles it, with `head_glow=0` as the A/B.

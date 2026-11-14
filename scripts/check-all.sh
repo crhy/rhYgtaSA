@@ -33,7 +33,9 @@
 # Nothing here touches the game folder, wine or the GPU: the native tests are host-side
 # g++ binaries, the python tests use fake paths, and installer-selftest.sh installs into
 # a fake tree under build/tmp/ (vegetation-selftest.sh reuses that same tree). All output
-# goes to build/tmp/check-all/.
+# goes to build/tmp/check-all/. The two exceptions read the game folder and never write
+# to it: the HD PBR gate (n20b) and the lamp coverage gate (n11, which regenerates the
+# street-lamp list from the game's own 2dFx records into build/).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -179,6 +181,23 @@ run nat-drain-cc "compile drain_spread_check" 600 \
   g++ -std=c++17 -Wall -Wextra -Iplugin/src tests/drain_spread_check.cpp plugin/src/smooth.cpp -o build/tmp/drainc
 warncheck nat-drain-cc "compile drain_spread_check"
 run nat-drain "tests/drain_spread_check.cpp (n08: per-frame destroy bound + resync phase)" 120 build/tmp/drainc
+
+echo "== lamp coverage (n11: the game's own 2dFx lights vs our lamp list; reads the game folder, writes only build/) =="
+# n11 (rhY's 2026-11-12c V2: "boardwalk/beach lamps are dark: no lit bulb, no pool
+# of light under them"). The ground truth for "which lamps exist" is not a third
+# party's table: it is the 2dFx LIGHT records inside the game's own .dff, placed by
+# the game's own IPLs. tools/dff_2dfx.py reads them, tools/lamp_list.py turns them
+# into the list the plugin loads, and tools/lamp-coverage.py measures the list
+# against the inventory. Measured: the old lamp table covered 2617 of the 3536 Los
+# Santos street lights (74.0%); the 2dFx list covers 3536 (100%). The gate is 95%
+# so a regression that drops a whole model class fails loudly, and the density
+# numbers the caps are set from get printed every run instead of being remembered.
+run lamps-gen "tools/lamp_list.py -> build/rhyremix_lights.txt + build/rhyremix_2dfx.txt" 900 \
+  python3 tools/lamp_list.py --game /media/rhy/data/Gamez/GTASA-RTX \
+    --out build/rhyremix_lights.txt --inventory build/rhyremix_2dfx.txt --report-missing
+run lamps-cov "tools/lamp-coverage.py: LA coverage >= 95% of the game's own 2dFx lights" 600 \
+  python3 tools/lamp-coverage.py --list build/rhyremix_lights.txt \
+    --inventory build/rhyremix_2dfx.txt --region LA --min 95 --density 300,380,120
 
 echo "== python tests =="
 # Every file runs on its own: they are unittest-style and do sys.path.insert(0, "tools"),

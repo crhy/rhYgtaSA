@@ -58,6 +58,12 @@ static const char* const kIniDefaults =
     "sticky_extra=140\r\n"
     "min_distance=0\r\n"
     "max_lights=560\r\n"
+    "head_glow=1\r\n"
+    "head_distance=120\r\n"
+    "head_exit_distance=160\r\n"
+    "head_max_lights=200\r\n"
+    "head_radiance=1200\r\n"
+    "head_scale=1.0\r\n"
     "on_hour=19\r\n"
     "off_hour=6\r\n"
     "radius=15\r\n"
@@ -340,6 +346,18 @@ static void loadConfig() {
     c.sticky_extra = iniInt("sticky_extra", 140);
     c.min_distance = iniInt("min_distance", 0);
     c.max_lights = iniInt("max_lights", 560);
+    // n11: the head (bulb) layer. head_distance is deliberately much smaller than
+    // max_distance: measured over the 8962-light 2dFx list, the worst case within
+    // 120 units of a point is 174 lamps, within 300 it is 484 and within 380 it is
+    // 673. A bulb light is only worth a handle while the bulb is big enough to see,
+    // so the head layer runs at the 120 m band and the 200-slot cap covers it with
+    // room for the hysteresis; the luminaire layer keeps the 300/380 band.
+    c.head_glow = iniInt("head_glow", 1);
+    c.head_distance = iniInt("head_distance", 120);
+    c.head_exit_distance = iniInt("head_exit_distance", 160);
+    c.head_max_lights = iniInt("head_max_lights", 200);
+    c.head_radiance = iniFloat("head_radiance", 1200.0f);
+    c.head_scale = iniFloat("head_scale", 1.0f);
     c.on_hour = iniInt("on_hour", 19) % 24;
     c.off_hour = iniInt("off_hour", 6) % 24;
     c.radius = iniFloat("radius", 15.0f);
@@ -451,6 +469,34 @@ static void loadConfig() {
     }
     if (c.sticky_extra > c.max_lights) {
         c.sticky_extra = c.max_lights;  // doubling the set is not hysteresis
+    }
+    // n11: the head (bulb) layer. Same hysteresis rule as the luminaire layer -
+    // the exit radius must be the wider of the two, or a bulb blinks as the
+    // player walks past it - and it can never reach past the lamp it belongs to.
+    if (c.head_distance < 0) {
+        c.head_glow = 0;
+        c.head_distance = 0;
+    }
+    if (c.max_distance > 0 && c.head_distance > c.max_distance) {
+        c.head_distance = c.max_distance;
+    }
+    if (c.head_exit_distance < c.head_distance) {
+        c.head_exit_distance = c.head_distance + 40;
+    }
+    if (c.head_max_lights < 0) {
+        c.head_max_lights = 0;
+    }
+    if (c.head_max_lights > 4096) {
+        c.head_max_lights = 4096;
+    }
+    if (!(c.head_radiance >= 0.0f)) {
+        c.head_radiance = 0.0f;   // 0 = no head light, the A/B switch
+    }
+    if (!(c.head_scale > 0.0f)) {
+        c.head_scale = 1.0f;
+    }
+    if (c.head_scale > 100.0f) {
+        c.head_scale = 100.0f;
     }
     if (!(c.radius > 0.0f)) {
         c.radius = 15.0f;
@@ -1254,6 +1300,10 @@ static void loadConfig() {
            c.lamp_warm_family >= 0 ? rhyLampFamilyName(c.lamp_warm_family) : "kelvin",
            c.kelt_cold, c.kelt_warm, c.cold[0], c.cold[1], c.cold[2],
            c.warm[0], c.warm[1], c.warm[2]);
+    rhyLog("config: head (bulb) layer=%s dist=%d..%d max=%d radiance=%.0f nits "
+           "scale=%.2f",
+           c.head_glow ? "on" : "off", c.head_distance, c.head_exit_distance,
+           c.head_max_lights, c.head_radiance, c.head_scale);
     {
         // Say what the emitting spheres will actually be. The shipped radius of
         // 15 game units is a 30 metre ball, and the log is the only place a

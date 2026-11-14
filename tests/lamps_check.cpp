@@ -10,6 +10,7 @@
 // dial gets wrong".
 
 #include <cmath>
+#include <cstring>
 #include <cstdio>
 
 #include "../plugin/src/lamps.h"
@@ -136,6 +137,116 @@ int main() {
     ok("ini alias 'sodium' resolves", rhyLampFamilyFromName("sodium") == RHY_LAMP_HPS);
     ok("a nonsense name is rejected rather than silently defaulting",
        rhyLampFamilyFromName("candle") == -1);
+
+    // ---- n11: the 2dFx colour, the family behind it, and the head ----
+    // The 2dFx colour bytes are display values (a raster author wrote them); the
+    // Remix API wants linear radiance. Without the conversion the game's sodium
+    // orange and the published HPS chromaticity do not agree, and the agreement
+    // is the cross-check that both sources describe the same lamp.
+    ok("sRGB 0 maps to 0 and 1 maps to 1",
+       rhySrgbToLinear(0.0f) == 0.0f && fabsf(rhySrgbToLinear(1.0f) - 1.0f) < 1e-6f);
+    ok("sRGB 0.5 linearises to the IEC 61966 value 0.2140",
+       fabsf(rhySrgbToLinear(0.5f) - 0.2140f) < 2e-3f);
+    ok("the lineariser is monotonic", rhySrgbToLinear(0.2f) < rhySrgbToLinear(0.5f) &&
+       rhySrgbToLinear(0.5f) < rhySrgbToLinear(0.9f));
+
+    {
+        // lamppost3.dff's own 2dFx record, read out of gta3.img by
+        // tools/dff_2dfx.py: (255,148,52) at (-1.40,0.22,3.67).
+        int rec[3] = {255, 148, 52};
+        float c[3];
+        rhyLampTintedColour(RHY_LAMP_HPS, rec, c);
+        std::printf("    2dFx (255,148,52) -> linear %.3f,%.3f,%.3f\n", c[0], c[1], c[2]);
+        ok("a chromatic 2dFx colour wins, normalised to a peak of 1",
+           fabsf(c[0] - 1.0f) < 1e-6f && c[1] > 0.25f && c[1] < 0.35f && c[2] < 0.06f);
+        float fam[3];
+        rhyLampFamilyRgb(RHY_LAMP_HPS, fam);
+        ok("the game's sodium colour and the published HPS spectrum agree (the cross-check)",
+           fabsf(c[1] - fam[1]) < 0.08f && fabsf(c[2] - fam[2]) < 0.08f);
+
+        // streetlamp1, streetlamp2, lampost_coast and bollardlight all record
+        // plain white: bytes that carry no spectrum at all. That is exactly the
+        // case the fitting has to decide, and it is why the family exists.
+        int white[3] = {255, 255, 255};
+        float a[3], fl[3];
+        rhyLampTintedColour(RHY_LAMP_FLUORESCENT, white, a);
+        rhyLampFamilyRgb(RHY_LAMP_FLUORESCENT, fl);
+        ok("white 2dFx bytes fall back to the family's spectrum",
+           fabsf(a[0] - fl[0]) < 1e-6f && fabsf(a[1] - fl[1]) < 1e-6f &&
+           fabsf(a[2] - fl[2]) < 1e-6f);
+        ok("fluorescent is a cool white, not a sodium orange",
+           fl[1] > 0.8f && fl[2] > 0.6f);
+        float h[3];
+        rhyLampTintedColour(RHY_LAMP_HPS, white, h);
+        ok("the same white bytes under another family give that family's colour",
+           fabsf(h[1] - fam[1]) < 1e-6f);
+        int none[3] = {0, 0, 0};
+        float z[3], tu[3];
+        rhyLampTintedColour(RHY_LAMP_TUNGSTEN, none, z);
+        rhyLampFamilyRgb(RHY_LAMP_TUNGSTEN, tu);
+        ok("a v1 line with no colour at all also falls back to the family",
+           fabsf(z[1] - tu[1]) < 1e-6f);
+        // traincross1 records pure red: a saturated colour that is not a lamp
+        // spectrum at all, and it must survive as red rather than being averaged
+        // towards the family.
+        int red[3] = {255, 0, 0};
+        float rr[3];
+        rhyLampTintedColour(RHY_LAMP_NEON_RED, red, rr);
+        ok("a saturated 2dFx colour is kept, not pulled towards the family",
+           rr[0] > 0.99f && rr[1] < 0.01f && rr[2] < 0.01f);
+    }
+    ok("'fluorescent' is a family name the ini can use",
+       rhyLampFamilyFromName("fluorescent") == RHY_LAMP_FLUORESCENT &&
+       !std::strcmp(rhyLampFamilyName(RHY_LAMP_FLUORESCENT), "fluorescent"));
+
+    {
+        // The head: the bulb you can see, as opposed to the housing that lights
+        // the road. It has to be small (a bulb) and unshaped (a bulb shines every
+        // way, and the downward cone is why a head reads dark from the side).
+        RhyFixture big, mid, small, housing;
+        rhyLampHeadFixture(0, &big);
+        rhyLampHeadFixture(1, &mid);
+        rhyLampHeadFixture(2, &small);
+        rhyStreetFixture(1, &housing);
+        std::printf("    head radii: %.2f / %.2f / %.2f m (housing band 1 is %.2f m)\n",
+                    big.radius, mid.radius, small.radius, housing.radius);
+        ok("the head grows with the fitting band", big.radius > mid.radius &&
+           mid.radius > small.radius);
+        ok("a head is a bulb: centimetres, not metres", big.radius > 0.03f && big.radius < 0.30f);
+        ok("a head is unshaped (coneDeg 360 is the marker the caller reads)",
+           big.coneDeg >= 360.0f);
+        ok("the head is not bigger than the housing it sits in",
+           big.radius <= housing.radius);
+    }
+    {
+        // The head carries NITS at its own radius. It is deliberately not
+        // flux-preserved, and the size of that difference is the s30 lesson: a
+        // flux-preserving rescale of a 0.1 m bulb to the 15 unit reference is a
+        // flood lamp, not a bulb.
+        const float nits = 1200.0f;
+        ok("the head radiance is the nits the ini asked for",
+           fabsf(rhyLampHeadRadiance(nits, 0.10f, 1.0f) - nits) < 1e-3f);
+        ok("a luminance does not change when the bulb size does",
+           fabsf(rhyLampHeadRadiance(nits, 0.07f, 1.0f) - nits) < 1e-3f);
+        const float fluxed = rhyRadianceForFlux(nits, 0.10f, 15.0f);
+        std::printf("    head %.0f nits; the same number flux-preserved to r=15: %.0f "
+                    "(x%.0f)\n", nits, fluxed, fluxed / nits);
+        ok("flux-preserving a bulb would raise it by more than two orders of magnitude",
+           fluxed > 100.0f * nits);
+        ok("radiance_scale still scales the head",
+           fabsf(rhyLampHeadRadiance(nits, 0.1f, 0.5f) - 0.5f * nits) < 1e-3f);
+        ok("head_radiance=0 is off, not a default or a negative",
+           rhyLampHeadRadiance(0.0f, 0.1f, 1.0f) == 0.0f);
+    }
+    {
+        float n = 0.0f, e = 0.0f;
+        rhyLampHeadRadius(120.0f, 160.0f, 300.0f, &n, &e);
+        ok("the shipped head band passes through unchanged", n == 120.0f && e == 160.0f);
+        rhyLampHeadRadius(400.0f, 500.0f, 300.0f, &n, &e);
+        ok("a bulb can never reach past the lamp it belongs to", n <= 300.0f && e <= 380.0f);
+        rhyLampHeadRadius(120.0f, 100.0f, 300.0f, &n, &e);
+        ok("an exit radius narrower than the entry radius is widened, not inverted", e > n);
+    }
 
     std::printf("\n%d checks, %d failures\n", g_checks, g_fail);
     return g_fail == 0 ? 0 : 1;

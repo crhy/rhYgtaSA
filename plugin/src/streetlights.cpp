@@ -23,12 +23,25 @@
 #include "solar.h"  // colorTemperatureToRgb for the lamp spectra
 #include "sun.h"    // rhyLampsOn: one clock decides both the sun and the lamps
 
-// One lamp light from rhyremix_lights.txt: "type x y z".
+// One lamp light from rhyremix_lights.txt.
+//   v1 line: "type x y z"                     - the third-party lamp table
+//   v2 line: "type x y z r g b family range"  - the game's own 2dFx record
+// v2 is the default since n11 and is what tools/lamp-coverage.py measures: the
+// v1 table covers 2617 of the 3536 street lights of Los Santos (74.0%), the 2dFx
+// list covers all of them.
 struct LampLight {
     int type;
     float x;
     float y;
     float z;
+    // v2 only. rgb is the colour the model's own 2dFx LIGHT record carries for
+    // this bulb; family is the lamp family the fitting belongs to (-1 = the line
+    // is a v1 line and the ini's cold/warm rule decides the colour); range is the
+    // record's own range float in game units, kept for the log and the coverage
+    // comparison - the fixture size comes from the type column, not from it.
+    int rgb[3];
+    int family;
+    float range;
 };
 
 static std::vector<LampLight> g_lamps;
@@ -42,12 +55,24 @@ static std::vector<float> g_xy;
 // and published only ever moves one config step at a time, so a lamp that
 // streams in fades up and a lamp that streams out fades down. There is no code
 // path left that changes a live lamp's brightness in one frame.
+//
+// n11 adds the second handle of the same lamp: the LUMINAIRE (the housing, a
+// downward cone, the pool of light on the road) and the HEAD (the bulb, small,
+// unshaped, nits-based, the thing you can see). rhY's 2026-11-12c review named
+// both halves missing at once - "no lit bulb, no pool of light under them" - and
+// a Remix light is not visible geometry, so one handle cannot be both. Each has
+// its own envelope because each has its own distance band.
 struct LampState {
-    remixapi_LightHandle handle;
+    remixapi_LightHandle handle;  // the luminaire
+    remixapi_LightHandle head;    // the bulb; 0 = not wanted or not created yet
     RhyFade fade;
+    RhyFade hfade;
 };
 static std::map<int, LampState> g_active;  // list index -> live light
 static std::map<int, float> g_want;        // list index -> target gain (0..1)
+// n11: which bulbs get a head light this pass, and at what gain. Its own band
+// (head_distance..head_exit_distance) and its own cap (head_max_lights).
+static std::map<int, float> g_headWant;
 static std::vector<int> g_wantOrder;       // nearest first: who gets the next slot
 
 static bool g_inited = false;
@@ -67,6 +92,20 @@ static unsigned g_cfgRev = 0;     // ini revision we are following
 static unsigned g_fadeSteps = 0;  // re-creates done to move a gain one step
 static unsigned g_retired = 0;    // lights destroyed after fading to zero
 static unsigned g_playerGone = 0; // frames the player ped pointer was unreadable
+// n11: the head (bulb) layer's own counters, so the log can say how many bulbs
+// are lit and not just how many poles are.
+static unsigned g_headCreated = 0;
+static unsigned g_headRetired = 0;
+static unsigned g_headSteps = 0;
+static unsigned g_headPeak = 0;
+static unsigned g_v2Lines = 0;
+static unsigned g_badFamily = 0;   // v2 lines whose family name we do not know
+
+// The head light of lamp #i is a separate Remix light, so it needs its own hash
+// (the hash keys the light in the Remix runtime) and its own delayed-destroy tag
+// (delayed.h matches on the tag alone). The list is under 10000 entries, so an
+// offset of a million cannot collide with a luminaire hash.
+static const unsigned long long kHeadHashOffset = 1000000ull;
 
 // A gain at or below this counts as "dark": the handle is retired there rather
 // than kept around at zero radiance.
@@ -98,14 +137,44 @@ static void loadList() {
         if (type < 1 || type > 12) {
             continue;
         }
-        LampLight lamp = {type, x, y, z};
+        LampLight lamp = {type, x, y, z, {0, 0, 0}, -1, 0.0f};
+        // A v2 line carries the bulb's own colour, its lamp family and the 2dFx
+        // record's range. The family is a string, so the tail is scanned rather
+        // than assumed: a line that does not match is a v1 line and keeps the
+        // old colour rule. A family name the plugin does not know is logged once
+        // rather than dropped - the lamp still gets a light.
+        char fam[32];
+        fam[0] = '\0';
+        int rr = 0, gg = 0, bb = 0;
+        float rng = 0.0f;
+        if (std::sscanf(p, "%*d %*f %*f %*f %d %d %d %31s %f",
+                        &rr, &gg, &bb, fam, &rng) == 5) {
+            lamp.rgb[0] = rr;
+            lamp.rgb[1] = gg;
+            lamp.rgb[2] = bb;
+            lamp.family = rhyLampFamilyFromName(fam);
+            lamp.range = rng;
+            ++g_v2Lines;
+            if (lamp.family < 0) {
+                ++g_badFamily;
+            }
+        }
         g_lamps.push_back(lamp);
         g_xy.push_back(x);
         g_xy.push_back(y);
     }
     std::fclose(f);
-    rhyLog("streetlights: loaded %u lights from %s",
-           static_cast<unsigned>(g_lamps.size()), cfg->listPath.c_str());
+    rhyLog("streetlights: loaded %u lights from %s (%u v2 lines with a 2dFx colour, "
+           "%u v1 lines, %u unknown family names)",
+           static_cast<unsigned>(g_lamps.size()), cfg->listPath.c_str(),
+           g_v2Lines, static_cast<unsigned>(g_lamps.size()) - g_v2Lines, g_badFamily);
+    if (!g_lamps.empty()) {
+        const LampLight& L = g_lamps[0];
+        rhyLog("streetlights: first lamp type=%d pos=%.2f,%.2f,%.2f rgb=%d,%d,%d "
+               "family=%s range=%.1f", L.type, L.x, L.y, L.z, L.rgb[0], L.rgb[1],
+               L.rgb[2], L.family >= 0 ? rhyLampFamilyName(L.family) : "ini",
+               L.range);
+    }
 
     // n04: does the cap cover the radius? Measured once here, over every 8th lamp
     // as a stand-in for "everywhere the player can stand": the worst number of
@@ -116,18 +185,29 @@ static void loadList() {
     if (!g_lamps.empty() && cfg->max_distance > 0) {
         const float r2 = static_cast<float>(cfg->max_distance) *
                          static_cast<float>(cfg->max_distance);
+        const float hr2 = static_cast<float>(cfg->head_distance) *
+                          static_cast<float>(cfg->head_distance);
         unsigned worst = 0;
+        unsigned worstHead = 0;
         for (size_t i = 0; i < g_lamps.size(); i += 8) {
             unsigned within = 0;
+            unsigned withinHead = 0;
             for (size_t j = 0; j < g_lamps.size(); ++j) {
                 const float dx = g_lamps[j].x - g_lamps[i].x;
                 const float dy = g_lamps[j].y - g_lamps[i].y;
-                if (dx * dx + dy * dy <= r2) {
+                const float d2 = dx * dx + dy * dy;
+                if (d2 <= r2) {
                     ++within;
+                }
+                if (d2 <= hr2) {
+                    ++withinHead;
                 }
             }
             if (within > worst) {
                 worst = within;
+            }
+            if (withinHead > worstHead) {
+                worstHead = withinHead;
             }
         }
         rhyLog("streetlights: worst case %u lamps within max_distance=%d of a "
@@ -137,6 +217,9 @@ static void loadList() {
                    ? "the cap will trim lamps in the far band only, and the "
                      "nearest lamps are never evicted"
                    : "the cap covers the radius");
+        rhyLog("streetlights: worst case %u bulbs within head_distance=%d of a "
+               "point (cap head_max_lights=%d)", worstHead, cfg->head_distance,
+               cfg->head_max_lights);
     }
 }
 
@@ -247,6 +330,28 @@ static const float* lampColor(int type, const RhyConfig& c) {
     return cool ? c.cold : c.warm;
 }
 
+// n11: the colour of one lamp, v2 or v1.
+//
+// A v2 line carries the colour the model's own 2dFx record stores for this exact
+// bulb, plus the family of the fitting. That is the whole point of the 2dFx list:
+// the sodium post, the white globe post on the boardwalk and the red crossing
+// lamp are three different colours, and one cold/warm ini rule for the whole
+// world cannot say so. rhyLampTintedColour linearises the bytes (they are display
+// values, Remix wants linear) and falls back to the family's spectrum when the
+// bytes are plain white, which is where the fitting has to decide.
+//
+// Cross-check, measured: the game's own sodium lamps agree with the published
+// HPS chromaticity once linearised - lamppost3 records (255,148,52) -> linear
+// (1.000, 0.297, 0.034) against rhyLampFamilyRgb(HPS) = (1.000, 0.254, 0.003).
+static const float* lampColorFor(const LampLight& L, const RhyConfig& c) {
+    if (L.family < 0) {
+        return lampColor(L.type, c);
+    }
+    static float tint[3] = {1.0f, 1.0f, 1.0f};
+    rhyLampTintedColour(L.family, L.rgb, tint);
+    return tint;
+}
+
 // A lamp's light points straight down: street lamps light the road, not the
 // sky. sphere_shaping=0 falls back to an unshaped (all-directions) sphere.
 static void applyDownCone(remixapi_LightInfoSphereEXT* sphere,
@@ -349,11 +454,43 @@ static void reselect(const RhyConfig& c, const float* pp) {
             ++g_droppedInside;
         }
     }
+
+    // n11: the bulb layer, same rule, smaller band, separate cap. A 0.1 m globe
+    // is a couple of pixels at 120 m and nothing at 300, so the head light runs
+    // on head_distance..head_exit_distance; the luminaire set above is untouched.
+    // The `active` array is the lamps that already hold a HEAD handle, which is
+    // what the hysteresis is about for this layer.
+    g_headWant.clear();
+    if (!c.head_glow || c.head_radiance <= 0.0f || c.head_distance <= 0) {
+        return;
+    }
+    static std::vector<int> headActive;
+    headActive.clear();
+    for (std::map<int, LampState>::iterator it = g_active.begin();
+         it != g_active.end(); ++it) {
+        if (it->second.head) {
+            headActive.push_back(it->first);
+        }
+    }
+    const unsigned hn = rhySelectLights(
+        g_xy.empty() ? nullptr : &g_xy[0], static_cast<unsigned>(g_lamps.size()),
+        headActive.empty() ? nullptr : &headActive[0],
+        static_cast<unsigned>(headActive.size()), pp[0], pp[1],
+        static_cast<float>(c.head_distance),
+        static_cast<float>(c.head_exit_distance),
+        static_cast<unsigned>(c.head_max_lights), 40u, &want[0],
+        static_cast<unsigned>(want.size()), static_cast<float>(c.head_distance));
+    for (unsigned i = 0; i < hn; ++i) {
+        if (want[i].gain > 0.0f) {
+            g_headWant[want[i].id] = want[i].gain;
+        }
+    }
 }
 
 // ---------------------------------------------------------------- create / destroy
 
-static remixapi_LightHandle createLight(int index, const RhyConfig& c, float gain) {
+static remixapi_LightHandle createLight(int index, const RhyConfig& c, float gain,
+                                        int head) {
     const remixapi_Interface* api = rhyRemixApi();
     if (!api || !api->CreateLight) {
         return nullptr;
@@ -368,17 +505,36 @@ static remixapi_LightHandle createLight(int index, const RhyConfig& c, float gai
     // Without the rescale, replacing the shipped 15 game unit sphere (a 30 metre
     // ball) with a real 0.2 m luminaire head would cut the light by ~2500x and
     // the street would go black - which is why the radius had never been fixed.
-    const float radius = c.fixture_size ? rhyStreetRadius(band, c.fixture_scale)
-                                        : c.radius;
-    const float scale = rhyRadianceForFlux(radianceScale(L.type, c), radius,
-                                           c.radius_ref) * c.radiance_scale;
-    const float* col = lampColor(L.type, c);  // family, kelvin, or cold/warm
+    //
+    // The HEAD is not flux-preserved, deliberately. rhyRadianceForFlux exists so
+    // a shrunken street luminaire keeps lighting the street; applied to a bulb it
+    // turns the bulb into a flood lamp, which is the exact mistake s30 was
+    // diagnosed with for signal heads ("a 0.10 m / 1200-nit / flux-67 sphere is a
+    // lens you can look at and it colours nothing"). The head carries nits at its
+    // own radius; the luminaire carries the flux.
+    float radius = 0.0f;
+    float scale = 0.0f;
+    if (head) {
+        RhyFixture f;
+        rhyLampHeadFixture(band, &f);
+        radius = f.radius * (c.head_scale > 0.0f ? c.head_scale : 1.0f);
+        scale = rhyLampHeadRadiance(c.head_radiance, radius, c.radiance_scale);
+    } else {
+        radius = c.fixture_size ? rhyStreetRadius(band, c.fixture_scale)
+                                : c.radius;
+        scale = rhyRadianceForFlux(radianceScale(L.type, c), radius,
+                                   c.radius_ref) * c.radiance_scale;
+    }
+    const float* col = lampColorFor(L, c);  // 2dFx colour + family, or the ini rule
 
     std::memset(&info, 0, sizeof info);
     info.sType = REMIXAPI_STRUCT_TYPE_LIGHT_INFO;
     // LightInfo::hash keys the light in the Remix runtime. 0 = anonymous light;
-    // a non-zero base makes each lamp addressable from a Remix mod.
-    info.hash = c.light_hash_base + static_cast<uint64_t>(index);
+    // a non-zero base makes each lamp addressable from a Remix mod. The head of
+    // lamp #i is a different light from the housing of lamp #i, so it gets its
+    // own hash (see kHeadHashOffset).
+    info.hash = c.light_hash_base +
+                (head ? kHeadHashOffset : 0ull) + static_cast<uint64_t>(index);
     // s28: the radiance a handle carries is the fixture's radiance TIMES the
     // envelope's published gain. Fading a lamp in or out is a sequence of these
     // calls, each one a step closer to the target gain - never one jump.
@@ -399,7 +555,12 @@ static remixapi_LightHandle createLight(int index, const RhyConfig& c, float gai
     sphere.position.y = L.y;
     sphere.position.z = L.z;
     sphere.radius = radius;
-    if (c.sphere_shaping || L.type <= 6) {  // cone shaping, straight down
+    if (head) {
+        // No shaping at all. A bulb shines every way, and the 125 degree cone
+        // the luminaire needs at the road is the opposite of what makes a head
+        // read as lit when you look at it from the side.
+        sphere.shaping_hasvalue = 0;
+    } else if (c.sphere_shaping || L.type <= 6) {  // cone shaping, straight down
         applyDownCone(&sphere, c);
         if (c.fixture_size) {
             // The fixture's own distribution, not a single global cone. A
@@ -446,10 +607,10 @@ static remixapi_LightHandle createLight(int index, const RhyConfig& c, float gai
     static int createdLogs = 0;
     if (createdLogs < 3) {
         ++createdLogs;
-        rhyLog("streetlights: CreateLight ok #%d hash=%llu pos=%.1f,%.1f,%.1f "
+        rhyLog("streetlights: CreateLight ok #%d %s hash=%llu pos=%.1f,%.1f,%.1f "
                "radiance=%.2f,%.2f,%.2f gain=%.2f radius=%.2f cone=%.1f/%.2f focus=%.2f",
-               index, info.hash, sphere.position.x, sphere.position.y,
-               sphere.position.z, info.radiance.x, info.radiance.y,
+               index, head ? "HEAD" : "luminaire", info.hash, sphere.position.x,
+               sphere.position.y, sphere.position.z, info.radiance.x, info.radiance.y,
                info.radiance.z, gain, sphere.radius,
                sphere.shaping_value.coneAngleDegrees,
                sphere.shaping_value.coneSoftness,
@@ -470,12 +631,21 @@ static void fadeAllOut(const char* why) {
     }
     g_want.clear();
     g_wantOrder.clear();
+    g_headWant.clear();   // n11: the bulbs fade out with their lamps
 }
 
 // Retire one lamp's handle now that its envelope has reached dark.
 static void retireLight(std::map<int, LampState>::iterator it) {
     if (it->second.handle) {
         rhyDelayDestroy(it->second.handle, kTagStreet + it->first);
+    }
+    // n11: the bulb goes with its lamp. Its own envelope may still be above zero
+    // when the luminaire's reaches dark (the bands differ), but a head light with
+    // no lamp under it is a floating glow, and the head band is inside the
+    // luminaire band, so this only ever fires when the whole lamp is going off.
+    if (it->second.head) {
+        rhyDelayDestroy(it->second.head, kTagStreetHead + it->first);
+        ++g_headRetired;
     }
     g_active.erase(it);
     ++g_retired;
@@ -495,7 +665,21 @@ static remixapi_LightHandle recreateLight(int index, const RhyConfig& c,
         rhyDelayDestroy(old, kTagStreet + index);
     }
     rhyFlushDelayedTag(kTagStreet + index);  // destroy-before-create: same hash
-    return createLight(index, c, gain);  // nullptr only on a bridge/cap refusal
+    return createLight(index, c, gain, 0);  // nullptr only on a bridge/cap refusal
+}
+
+// n11: the same for the bulb. Its hash namespace is kHeadHashOffset away from
+// the luminaire's, so the destroy-before-create rule needs its own tag.
+static remixapi_LightHandle recreateHeadLight(int index, const RhyConfig& c,
+                                              remixapi_LightHandle old, float gain) {
+    if (!rhyCanCreateLight()) {
+        return old;
+    }
+    if (old) {
+        rhyDelayDestroy(old, kTagStreetHead + index);
+    }
+    rhyFlushDelayedTag(kTagStreetHead + index);
+    return createLight(index, c, gain, 1);
 }
 
 // ---------------------------------------------------------------- per frame
@@ -576,6 +760,51 @@ void rhyStreetlightsFrame() {
         it->second.fade.target = (w != g_want.end()) ? w->second : 0.0f;
         rhyFadeAdvance(it->second.fade, dt);
 
+        // n11: the same lamp's BULB gets its own envelope, advanced every frame
+        // like the luminaire's. The gate below is deliberately narrow: a lamp
+        // outside the head band with no head handle must not spend one of the
+        // frame's create attempts on a no-op, which would starve the luminaire
+        // layer (creates_per_frame is the binding constraint in a dense street).
+        const bool headLive = it->second.head != nullptr;
+        std::map<int, float>::iterator hw = g_headWant.find(it->first);
+        const bool headWanted = hw != g_headWant.end();
+        it->second.hfade.target = headWanted ? hw->second : 0.0f;
+        rhyFadeAdvance(it->second.hfade, dt);
+        if ((headLive || headWanted) &&
+            (headLive || rhyFadeDue(it->second.hfade, cfg->fade_step, kGainFloor)) &&
+            (frameBudget == 0 || attempts < frameBudget) && rhyCreateBudgetLeft()) {
+            ++attempts;
+            const RhyFadeOp hop = rhyFadeApply(it->second.hfade, cfg->fade_step,
+                                               kGainFloor);
+            if (hop == kRhyFadeRetire) {
+                rhySpendCreateSlot();  // a destroy is budgeted like a create (n08)
+                if (headLive) {
+                    rhyDelayDestroy(it->second.head, kTagStreetHead + it->first);
+                    it->second.head = nullptr;
+                    ++g_headRetired;
+                }
+            } else if (hop == kRhyFadeCreate || hop == kRhyFadeRecreate) {
+                remixapi_LightHandle hh = recreateHeadLight(
+                    it->first, *cfg, it->second.head, it->second.hfade.published);
+                if (hh) {
+                    if (!it->second.head) {
+                        ++g_headCreated;
+                    }
+                    it->second.head = hh;
+                    ++g_headSteps;
+                } else {
+                    // Same rule as the luminaire path: recreateHeadLight has
+                    // already destroyed the old handle when it returns null, so
+                    // keeping it here would be a use-after-free on the next draw.
+                    it->second.head = nullptr;
+                    if (g_apiBroken) {
+                        ++it;
+                        break;
+                    }
+                }
+            }
+        }
+
         // A light in g_active with no handle is a create that failed (cap, or a
         // bridge refusal that did not break the module). It is not a zombie: it
         // asks for a handle every frame until it gets one or fades to dark.
@@ -633,6 +862,21 @@ void rhyStreetlightsFrame() {
             break;
         }
         ++drawn;
+        // n11: the bulb of the same lamp is drawn with it. A head light that the
+        // renderer refuses is the same class of failure as the housing's, so it
+        // takes the module off in the same way rather than being retried.
+        if (it->second.head) {
+            if (!rhyDrawLight(it->second.head)) {
+                g_apiBroken = true;
+                g_brokenTick = GetTickCount();
+                rhyLog("streetlights: DrawLightInstance rejected for head #%d "
+                       "(draw failures so far: %u, live handles: %u), streetlights "
+                       "off until the next rhyremix.ini edit",
+                       it->first, rhyDrawFailures(), rhyLiveLights());
+                break;
+            }
+            ++drawn;
+        }
         ++it;
     }
 
@@ -657,7 +901,12 @@ void rhyStreetlightsFrame() {
         }
         LampState st;
         st.handle = nullptr;
+        st.head = nullptr;
         rhyFadeInit(st.fade, static_cast<float>(cfg->fade_in_ms) / 1000.0f,
+                    static_cast<float>(cfg->fade_out_ms) / 1000.0f);
+        // n11: the bulb's envelope starts dark and is fed by g_headWant; it is
+        // created here so both envelopes of a lamp are always timed the same way.
+        rhyFadeInit(st.hfade, static_cast<float>(cfg->fade_in_ms) / 1000.0f,
                     static_cast<float>(cfg->fade_out_ms) / 1000.0f);
         st.fade.target = w->second;
         rhyFadeAdvance(st.fade, dt);
@@ -670,7 +919,7 @@ void rhyStreetlightsFrame() {
         }
         ++attempts;
         rhyFlushDelayedTag(kTagStreet + index);  // destroy-before-create: same hash
-        st.handle = createLight(index, *cfg, st.fade.published);
+        st.handle = createLight(index, *cfg, st.fade.published, 0);
         if (st.handle) {
             g_active[index] = st;
             ++created;
@@ -682,19 +931,32 @@ void rhyStreetlightsFrame() {
     static DWORD g_lastCountTick = 0;
     if (now - g_lastCountTick >= 10000) {  // active count once per 10 s
         g_lastCountTick = now;
+        unsigned headLive = 0;
+        for (std::map<int, LampState>::iterator it = g_active.begin();
+             it != g_active.end(); ++it) {
+            if (it->second.head) {
+                ++headLive;
+            }
+        }
+        if (headLive > g_headPeak) {
+            g_headPeak = headLive;
+        }
         // drawn vs live is the diagnostic that matters: "active" only counts
         // handles we hold, live counts what the bridge gave us and never gave
         // back, and the draw failure counter is the only evidence of a light the
         // renderer actually refused. `steps` is the fade traffic: how many handles
         // were re-created this pass to move a gain one step.
-        rhyLog("streetlights: %u active, %u drawn this frame, %u awaiting "
-               "destroy (hour=%d, %u in list, kept=%u new=%u steps=%u created=%u "
-               "retired=%u in_drop=%u player_gone_frames=%u) | remix: live=%u "
+        rhyLog("streetlights: %u active (%u with a lit bulb), %u drawn this frame, "
+               "%u awaiting destroy (hour=%d, %u in list, kept=%u new=%u steps=%u "
+               "created=%u retired=%u in_drop=%u player_gone_frames=%u | head: want=%u "
+               "created=%u retired=%u steps=%u peak=%u) | remix: live=%u "
                "create_fail=%u draw_fail=%u budget_stop=%u deferred=%u",
-               static_cast<unsigned>(g_active.size()), drawn,
+               static_cast<unsigned>(g_active.size()), headLive, drawn,
                rhyDelayedPending(), rhyGameHour(),
                static_cast<unsigned>(g_lamps.size()), g_kept, g_new, stepped,
-               created, g_retired, g_droppedInside, g_playerGone, rhyLiveLights(),
+               created, g_retired, g_droppedInside, g_playerGone,
+               static_cast<unsigned>(g_headWant.size()), g_headCreated,
+               g_headRetired, g_headSteps, g_headPeak, rhyLiveLights(),
                rhyCreateFailures(), rhyDrawFailures(), g_budgetStop,
                rhyCreateDeferred());
     }

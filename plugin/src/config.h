@@ -21,6 +21,20 @@ struct RhyConfig {
                             // hysteresis: the set shrinks at max_lights+sticky_extra
                             // and grows back at max_lights, instead of churning at
                             // exactly max_lights)
+    // --- n11: the lamp HEAD (the bulb you can see), a second light layer ------
+    // rhY's V2 (2026-11-12c, Verona Beach): "boardwalk/beach lamps are dark: no
+    // lit bulb, no pool of light under them". The pool is the luminaire light
+    // below; the bulb is this. A Remix light is not visible geometry, so the head
+    // gets its own small unshaped nits-based light at the bulb - the same pair
+    // n02b shipped for signal lenses (bulb 1200 nits at 0.10 m + glow).
+    // It is a near-field light: a 0.1 m globe is nothing at 300 m, so it is
+    // created inside a smaller radius than the luminaire and capped separately.
+    int head_glow;            // 0 = off (the A/B switch back to one light per lamp)
+    int head_distance;        // metres 2D: a bulb gets a light inside this
+    int head_exit_distance;   // metres 2D: an existing bulb light survives to here
+    int head_max_lights;      // cap on live bulb lights, nearest first
+    float head_radiance;      // the head's luminance in NITS at its own radius
+    float head_scale;         // scale the head fixture size; 1.0 = real size
     int on_hour;            // night starts (game clock hour)
     int off_hour;           // night ends (wraps midnight)
     float radius;           // sphere light radius

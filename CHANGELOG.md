@@ -1369,7 +1369,7 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   now `tools/perf-report.py`; NEXT-TEST's perf section asks for the OMM A/B; STATUS finding G is
   **measured, ours bounded, renderer half awaiting a run**.
 
-### Textures (n20b) — MUST-HAVE #1: the 40 surfaces you actually look at get real PBR maps (finishes the parked `a96ec15`)
+### Textures (n20b) — MUST-HAVE #1: the 40 surfaces you actually look at get real PBR maps (finishes the parked `a96ec15`, shipped as `5d8f882`)
 
 - **Added: the HD PBR surface layer, on/off switchable.** `bash tools/textures.sh on|off|status|generate
   [GAME_DIR]` installs or removes 35 replacement texture sets — albedo, normal, roughness, height —
@@ -1448,6 +1448,72 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   switch list; STATUS's T1 row and its parked-work table.
 - **Not measured:** nothing here has been rendered (rule 1). The look is a prediction from the map
   statistics; NEXT-TEST step 8 is the leg that tests it.
+
+### Street lights (n11) — every lamp the game itself declares is lit, and its head glows (replaces the list `86a5ca9` generated)
+
+rhY's 2026-11-12c review, V2, at the Verona Beach pier: *"boardwalk/beach lamps are dark: no lit
+bulb, no pool of light under them"*. Two halves, and the second one was a data problem nobody knew
+existed: our lamp list came from a third-party table with **22 model ids**, and the game carries its
+own lamp data inside the models.
+
+- **Added: `tools/dff_2dfx.py`, the 2dFx reader.** The chunk is `0x0253F2F8` (found by walking every
+  chunk of every `.dff`), and it is in **1591 of the 12239 `.dff` of `gta3.img`** — the record list
+  closes byte-for-byte at the end of the chunk in all 1591, which is the self-check that the frame is
+  right. Record: `f32 x,y,z`, `u32 tagword` (**low** byte = tag), `u32 size`, payload. A light
+  payload is `u8 r,g,b,a` (`a` is a constant `0xC8`), `f32 range`, three unnamed enum-ish floats,
+  `u8[4]` flags, then NUL-terminated texture/material names at model-dependent offsets. The colour
+  bytes are a colour, not a packed int: the game's own signal-head loop at `0x49DC75` compares
+  `entry+0x10 > 200` and `100 > entry+0x11`, and for the three lens records of `cj_traffic_light4`
+  — (255,0,0), (255,128,0), (0,255,0) — that yields indices 1, 2, 0: red, amber, green. Reading the
+  tag from the **top** byte instead makes every record look like a light, which is how a first draft
+  of this parser called every palm tree in Los Santos a lamp.
+- **Fixed (V2): the lamp list is the game's, not a third party's.** `tools/lamp_list.py` now defaults
+  to **v2**: every 2dFx LIGHT record of every `.dff` placed by an IPL, positioned by
+  `instance + quaternion × the model's own offset` — the rule the game applies at `0x59C890`.
+  Measured: **145 models** carry light records (944 records), **112** of them are placed, and the
+  instances make **18691** world lights (LA 6552, vegas 6025, SF 4997, country 1117). The old table
+  covers **12042 of those 18691 = 64.4 %**; `tools/lamp-coverage.py` puts the Los Santos street
+  number at **74.0 %** for the old list and **100 %** for the new one, and names the 36 uncovered
+  models — the largest being `lamppost2`'s third (mid-pole) bulb, **244** of them in Los Santos,
+  which is the double-globe boardwalk post of the video. The v1 file is still producible
+  (`--format v1`, byte-identical to what shipped since `86a5ca9`), so the two are one file swap apart.
+- **Added: per-bulb colour.** A v2 line is `type x y z r g b family range`. The colour is the
+  model's own; `rhyLampTintedColour()` linearises it (the bytes are display values) and falls back to
+  the fitting's family spectrum when the bytes are plain white, which is where `fluorescent` vs
+  `mercury` vs `tungsten` has to be decided by the fitting. Cross-check, measured: the game's sodium
+  lamps agree with the published HPS chromaticity once linearised — `lamppost3` records
+  (255,148,52) → linear (1.000, 0.297, 0.034) against `rhyLampFamilyRgb(HPS)` = (1.000, 0.254, 0.003).
+  New family `fluorescent` (F40D chromaticity) for the white globe posts; families by model where the
+  model says what it is (`sub_floodlite` → halide, `airport_*` → tungsten, `traincross1` → neon).
+- **Added: the lamp head glows.** A second light per lamp — small (0.12/0.10/0.07 m by fitting band),
+  **unshaped**, and carrying `head_radiance` **nits at its own radius**, deliberately not
+  flux-preserved: flux-preserving a 0.1 m bulb to the 15-unit reference is a ×22500 raise, which is a
+  flood lamp wearing a bulb, the `s30` mistake restated. It is a near-field layer with its own radius
+  pair and cap (`head_distance=120`, `head_exit_distance=160`, `head_max_lights=200`), its own fade
+  envelope, its own hash namespace and its own delayed-destroy tag, so the n04 hysteresis and the n08
+  per-frame budget hold for it exactly as they do for the luminaire. `head_glow=0` is the A/B back to
+  one light per lamp.
+- **Measured for the caps:** over the 8962-light list the worst case within 120 units of a point is
+  **174** lamps, within 300 it is **484** and within 380 it is **673** — the shipped 560+140 still
+  covers the luminaire band, and 200 covers the head band. Both numbers are printed by the plugin at
+  load and by `lamp-coverage.py --density`, not remembered.
+- **Corrected: FINDINGS' n02 claim that the 2DFX records are not in the game files** ("no chunk with
+  id `0x00010105`", "no ASCII `2dFx` magic: 0 hits") was right that the *GTA3 magic* is absent and
+  wrong about the consequence: the chunk id is `0x0253F2F8` and the records are in a seventh of the
+  archive. That claim is why n06 built the pier lamps from a hand-written table instead.
+- **Tests:** `tests/test_dff_2dfx.py` (13: the record frame, the low-byte tag, truncation, the real
+  archive's 944 records, `lamppost2`'s three bulbs, the three signal lens colours),
+  `tests/test_lamp_v2.py` (19: family and size band from measured colours, the instance transform,
+  the generated v2/v1/inventory files end to end), `tests/test_lamp_coverage.py` (9: the coverage
+  arithmetic, including the cases where the answer is *not* 100 % and where a loose tolerance would
+  fake a pass), `tests/lamps_check.cpp` 34 → 53 checks (the lineariser, the colour cross-check, the
+  head fixture and its nits, the head band clamps). `scripts/check-all.sh` gained the `lamps-gen` and
+  `lamps-cov` gates: the list is regenerated from the game folder and must cover **≥ 95 %** of the
+  Los Santos 2dFx lights.
+- **Not measured:** whether the head light reads as a lit bulb from the player's seat. A Remix light
+  is not visible geometry, so the claim is only that the head is now the brightest thing at the head
+  and that the game's own corona (`coronastar`, size float 12/18 in the record) still draws the
+  sprite. NEXT-TEST step 9 is the leg that settles it.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

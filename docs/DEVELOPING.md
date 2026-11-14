@@ -41,11 +41,12 @@ Install the build into a game folder with `./deploy.sh`:
 ```
 
 `deploy.sh` also generates the two data files on a fresh clone — `build/rhyremix_lights.txt`
-(7002 lamps) and `build/rhyremix_traffic.txt` (1522 signals) — from the game's own `gta3.img` +
-`.ide` + `.ipl` plus the pack's lamp table under `<game>/moonloader/`. They are generated, not in
-git. It copies asi + ini + lists into `<game>/scripts/`, backs up the outgoing asi under
-`build/tmp/`, refuses an asi that is not `PE32 ... i386`, and prints the md5 of the build and of the
-deployed file: they must match before you trust a screenshot.
+(8962 lamps since n11: every 2dFx light record of every model the game places, see
+`tools/dff_2dfx.py`) and `build/rhyremix_traffic.txt` (1522 signals) — from the game's own `gta3.img`
++ `.ide` + `.ipl`; the traffic list also reads the pack's lamp table under `<game>/moonloader/`.
+They are generated, not in git. It copies asi + ini + lists into `<game>/scripts/`, backs up the
+outgoing asi under `build/tmp/`, refuses an asi that is not `PE32 ... i386`, and prints the md5 of
+the build and of the deployed file: they must match before you trust a screenshot.
 
 The gate is `bash scripts/check.sh <phase>`; it must end with "All checks passed."
 The installer's own end-to-end test (fake install, no game, no GPU, no writes outside
@@ -365,6 +366,18 @@ dedups on position now, resolves model names through the `.ide` files instead of
 guessing an id from the `gta3.img` index, and `--report-missing` lists the lamp-named
 models the lamp table has no entry for instead of leaving them silently dark.
 
+**n11 changed what that list is made of.** `--format v2` (the default) takes the lamps from
+the **2dFx light records inside the game's own `.dff`** — `tools/dff_2dfx.py` decodes chunk
+`0x0253F2F8` (record: `f32 x,y,z`, `u32 tagword` with the **tag in the low byte**, `u32 size`,
+payload; a light payload is `u8 rgba`, `f32 range`, three enums, `u8[4]` flags, then NUL-terminated
+names) — and places each record with the IPL instance transform. Nine columns:
+`type x y z r g b family range`, where `family` is the lamp type the colour says it is (`hps`,
+`mercury`, `halide`, `led`, `tungsten`, `neon`, `fluorescent`) and `type` is still the 1..12 size/type
+word of v1 (`1 + 2*band`). `--format v1` writes the old four-column table list, byte-identical to what
+shipped since `86a5ca9`, so an A/B is a file swap. `--inventory FILE` dumps every 2dFx light in the
+world (18691 lines) for `tools/lamp-coverage.py`, which is the gate: `--region LA --min 95` must pass
+(it reports 74.01 % for the v1 list and 100 % for v2, and names the models a list misses).
+
 Read the log like this: `remix: live=N create_fail=N draw_fail=N budget_refused=N`
 and `streetlights: N active, M drawn this frame`. `budget_refused > 0` means the
 request exceeds what you allowed; `active > 0, drawn = 0` means the lights exist in
@@ -419,20 +432,21 @@ doubles the daylight: `deploy.sh` renames it to `.dat` whenever the ini has
 
 ## Open problems (ours, measured)
 
-- Street lights come from a static lamp list (`build/rhyremix_lights.txt`, 7002 lamps
-  extracted from the game's own data), not from streaming, so a dark lamp post is a
-  data gap in that list or in the lamp table — see `tools/lamp_list.py --report-missing`.
+- Street lights come from a static lamp list (`build/rhyremix_lights.txt`, 8962 lamps since n11:
+  every 2dFx light record of every model the game places), not from streaming, so a dark lamp post is
+  a gap in that list — `python3 tools/lamp-coverage.py --list … --inventory … --region LA` says how
+  big the gap is, and `scripts/check-all.sh` fails the build if Los Santos drops under 95 %.
 - Traffic signals cast red/amber/green Remix lights from 1522 positions extracted from
   `gta3.img`, but the colour follows a simulated per-light cycle, not the state the game
   is actually showing — see `../.strata/notes-p03-trafficlights.md`. Controlled by
   `[trafficlights]` in `rhyremix.ini`.
-- **Some lamp posts are still dark on purpose.** `python3 tools/lamp_list.py --report-missing`
-  lists the lamp-named models the lamp table (the mod pack's
-  `<game>/moonloader/SARemix_Light_Manager.dat`, read in place, not copied into this repo) has no entry for:
-  `vegasairportlight`, `sf_rooflite`, `vgsstriptlights1`, `a51_light1_` and a dozen one-off
-  SFO / Las Vegas props are not street lamps and are left alone; `lamppost1` / `lamppost2`
-  (100 instances each in `LEVEL_0.ipl`) are not in the table either, so if a lamp post near
-  those instances reads as missing, that is the reason and the table needs an entry for it.
+- **The models the old table had no entry for are lit now.** `vegasairportlight`, `sf_rooflite`,
+  `vgsstriptlights1` (six lights on one model) and `a51_light1_` were "dark on purpose" while the
+  list came from the pack's 22-model table; all four carry 2dFx light records, so the v2 list places
+  them. What is still deliberately out of the street list is the **signal** models
+  (`cj_traffic_light*`, `mtraffic*`, `trafficlight*`, `gay_traffic_light`): those bulbs are the
+  `[trafficlights]` layer's lights, and a second handle on one lens is a wasted slot. The coverage
+  tool subtracts them from the denominator and says so.
 - **Correct radius/radiance for Remix lights is not yet measured**, only bounded
   (game units, radiance ~1-3). Use the probe light to pin it down before tuning
   anything else. The test profile ships with `probe=1`: one white calibration light
@@ -980,7 +994,8 @@ re-read first.
   pointing anyone at the README from GitHub.
 - `data/SARemix_Light_Manager.dat` is a file from the GTASA-Remix pack and stays out of git; the
   tools read it straight out of `<game>/moonloader/`.
-- Generated, never committed: `build/rhyremix_lights.txt`, `build/rhyremix_traffic.txt`,
+- Generated, never committed: `build/rhyremix_lights.txt`, `build/rhyremix_2dfx.txt`,
+  `build/rhyremix_traffic.txt`,
   `build/textures/` (the generated PBR sets and their `report.json`; 92 MB, regenerate with
   `bash tools/textures.sh generate`), `vendor/`, `build/`.
 - `scripts/check.sh` is the gate and is not to be edited. `bash scripts/check-readme.sh` is the

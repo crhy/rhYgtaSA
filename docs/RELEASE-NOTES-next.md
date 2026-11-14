@@ -59,6 +59,21 @@ If something in the update looks wrong, everything is reversible
   spinning the camera at night should change nothing about which lamps are lit. If a lamp ever goes out
   while it is still in front of you, the plugin log says so — `in_drop=` in the 10-second
   `streetlights:` line must stay 0.
+- **Every lamp the game has is lit, and each bulb keeps its own colour.** The lamp list used to come
+  from a third-party table with 22 model ids. The game itself says where its lamps are: every lamp
+  model in `gta3.img` carries **2dFx light records** — the bulb's position, its colour and its range —
+  and the plugin now reads that data instead (145 models, 944 records, **18691** bulbs once the game's
+  own object placements are counted). Measured over Los Santos: the old table lit **74 %** of the
+  street lamps the game declares; the new list lights all of them. That includes the boardwalk
+  double-globe posts at the pier, whose **mid-pole bulb** (244 of them in Los Santos) was never lit at
+  all, and it means a sodium post, a white fluorescent globe post and a red railway-crossing lamp are
+  no longer the same colour. `python3 tools/lamp-coverage.py --list … --inventory …` prints the number;
+  `--format v1` in `tools/lamp_list.py` writes the old list if you want the comparison.
+- **The bulb itself glows.** A street lamp now carries two lights: the housing (a downward cone — the
+  pool on the pavement) and a small unshaped light at the bulb, which is what makes the head read as
+  lit from the side instead of a dark fitting over a bright patch of road. It is a near-field light
+  (120 m, its own cap), so it costs little; `[streetlights] head_glow=0` in `rhyremix.ini` turns it off
+  if you want the before-picture.
 - **Less boiling when you rotate the camera.** Whether a given pixel draws a given lamp out of the
   several hundred that are lit is a random choice the renderer makes every frame, and the shipped
   settings re-shuffled that choice every frame with only four candidates per pixel. With the lamp pool

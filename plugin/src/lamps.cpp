@@ -156,6 +156,7 @@ void rhyLampFamilyRgb(int family, float* rgb) {
         case RHY_LAMP_LED:          rhyXyToLinearRgb(0.346f, 0.359f, rgb); return;  // 5000 K roadway LED
         case RHY_LAMP_TUNGSTEN:     rhyXyToLinearRgb(0.4476f, 0.4074f, rgb); return;  // CIE illuminant A, 2856 K
         case RHY_LAMP_NEON_RED:     rhyXyToLinearRgb(0.660f, 0.330f, rgb); return;
+        case RHY_LAMP_FLUORESCENT:  rhyXyToLinearRgb(0.313f, 0.337f, rgb); return;  // F40D daylight tube
         default: rgb[0] = rgb[1] = rgb[2] = 1.0f; return;
     }
 }
@@ -168,6 +169,7 @@ const char* rhyLampFamilyName(int family) {
         case RHY_LAMP_LED:          return "led";
         case RHY_LAMP_TUNGSTEN:     return "tungsten";
         case RHY_LAMP_NEON_RED:     return "neon";
+        case RHY_LAMP_FLUORESCENT:  return "fluorescent";
         default:                    return "unknown";
     }
 }
@@ -187,6 +189,11 @@ int rhyLampFamilyFromName(const char* name) {
     if (!strcasecmp(name, "mv") || !strcasecmp(name, "mercury_vapor")) return RHY_LAMP_MERCURY;
     if (!strcasecmp(name, "mh") || !strcasecmp(name, "metal_halide")) return RHY_LAMP_METAL_HALIDE;
     if (!strcasecmp(name, "incandescent") || !strcasecmp(name, "filament")) return RHY_LAMP_TUNGSTEN;
+    // n11: the white globe posts of the Los Santos boardwalk and the pier rail
+    // are fluorescent fittings (the 2dFx colour is plain white, which is what a
+    // tri-phosphor tube looks like when a raster author writes it down).
+    if (!strcasecmp(name, "fl") || !strcasecmp(name, "fluoro") ||
+        !strcasecmp(name, "fluorescent_tube") || !strcasecmp(name, "white_fl")) return RHY_LAMP_FLUORESCENT;
     return -1;
 }
 
@@ -250,6 +257,95 @@ float rhySignalRadius(float fixtureScale) {
     RhyFixture f;
     rhySignalFixture(&f);
     return f.radius * (fixtureScale > 0.0f ? fixtureScale : 1.0f);
+}
+
+// ---------------------------------------------------------------- n11: 2dFx lamps
+
+// sRGB -> linear (IEC 61966-2-1). Remix wants linear radiance and the 2dFx
+// bytes are display values. powf is fine here: this runs once per lamp when the
+// list is read, not per frame.
+float rhySrgbToLinear(float v01) {
+    if (v01 <= 0.0f) {
+        return 0.0f;
+    }
+    if (v01 > 1.0f) {
+        v01 = 1.0f;
+    }
+    return v01 < 0.04045f ? v01 / 12.92f
+                          : std::pow((v01 + 0.055f) / 1.055f, 2.4f);
+}
+
+void rhyLampTintedColour(int family, const int* rgb255, float* rgb) {
+    rgb[0] = rgb[1] = rgb[2] = 1.0f;
+    float lin[3] = {0.0f, 0.0f, 0.0f};
+    float mx = 0.0f, mn = 1.0f;
+    if (rgb255) {
+        for (int i = 0; i < 3; ++i) {
+            float v = static_cast<float>(rgb255[i]) / 255.0f;
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+            lin[i] = rhySrgbToLinear(v);
+            if (lin[i] > mx) mx = lin[i];
+            if (lin[i] < mn) mn = lin[i];
+        }
+    }
+    // Achromatic (or missing): white bytes carry no spectrum, so the fitting
+    // decides. 6% of the peak is the cut: the measured sodium lamps sit at a
+    // 96% spread, the boardwalk globes at exactly 0.
+    if (mx < 0.094f || mx - mn <= 0.06f * mx) {
+        rhyLampFamilyRgb(family, rgb);
+        return;
+    }
+    for (int i = 0; i < 3; ++i) {
+        rgb[i] = lin[i] / mx;
+    }
+}
+
+void rhyLampHeadFixture(int band, RhyFixture* out) {
+    // The bulb, not the housing: a globe post's globe is ~0.20 m across, a
+    // cobra-head's arc tube ~0.10 m across, a bollard's tube ~0.08 m. Unshaped:
+    // a bulb shines every way, and the shaping the LUMINAIRE needs (a 125 degree
+    // cone at the road) is the opposite of what makes a head read as lit from
+    // the side. coneDeg 360 is the marker "do not attach a shaping".
+    out->what = "head";
+    out->radius = 0.10f;
+    out->coneDeg = 360.0f;
+    out->coneSoftness = 0.0f;
+    if (band == 0) {
+        out->radius = 0.12f;      // cobra-head / floodlight bulb
+    } else if (band >= 2) {
+        out->radius = 0.07f;      // bollard, post-top, crossing lamp
+    }
+}
+
+float rhyLampHeadRadiance(float nits, float radius, float radianceScale) {
+    if (!(nits > 0.0f)) {
+        return 0.0f;
+    }
+    if (!(radius > 0.0f)) {
+        return nits;
+    }
+    if (!(radianceScale > 0.0f)) {
+        radianceScale = 1.0f;
+    }
+    return nits * radianceScale;
+}
+
+void rhyLampHeadRadius(float want, float exitWant, float maxDistance,
+                       float* nearOut, float* exitOut) {
+    float n = want;
+    if (!(n > 0.0f)) {
+        n = 0.0f;
+    }
+    if (n > maxDistance) {
+        n = maxDistance;   // a bulb never reaches further than its lamp
+    }
+    float e = exitWant > n ? exitWant : n + 40.0f;
+    if (e > maxDistance + 80.0f) {
+        e = maxDistance + 80.0f;
+    }
+    *nearOut = n;
+    *exitOut = e;
 }
 
 void rhySignalLensRgb(int phase, float* rgb) {

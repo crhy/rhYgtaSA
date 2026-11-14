@@ -72,6 +72,7 @@ enum RhyLampFamily {
     RHY_LAMP_LED,            // white LED: blue pump plus phosphor continuum
     RHY_LAMP_TUNGSTEN,       // incandescent: interiors, older signage
     RHY_LAMP_NEON_RED,       // signage / open neon
+    RHY_LAMP_FLUORESCENT,    // tri-phosphor tube: the white globe posts n11 found
     RHY_LAMP_COUNT
 };
 
@@ -122,6 +123,54 @@ void rhySignalFixture(RhyFixture* out);
 // how big a light is.
 float rhyStreetRadius(int band, float fixtureScale);
 float rhySignalRadius(float fixtureScale);
+
+// ---------------------------------------------------------------------------
+// n11: the lamp data the GAME carries (2dFx), and the head that has to glow
+// ---------------------------------------------------------------------------
+// The lamp list v2 (tools/lamp_list.py --format v2) carries, for every light,
+// the colour the model's own 2dFx record stores and the family the fitting
+// belongs to. These two functions decide how the two combine, and what the
+// visible head costs.
+
+// sRGB byte (0..255) -> linear. The 2dFx colour bytes are display values: the
+// game's own light code reads them straight off the record, but Remix wants
+// linear radiance. Converting is what makes the cross-check below work at all.
+float rhySrgbToLinear(float v01);
+
+// The colour of one 2dFx lamp, linear sRGB with the strongest channel at 1.
+//
+//   a chromatic 2dFx colour wins. Measured, the game's own sodium lamps and the
+//     published HPS chromaticity agree to a few percent once the bytes are
+//     linearised: lamppost3 records (255,148,52) -> linear (1.00, 0.297, 0.034),
+//     rhyLampFamilyRgb(RHY_LAMP_HPS) is (1.00, 0.254, 0.003). Two independent
+//     sources - a raster author and a lighting reference - naming the same lamp.
+//   an achromatic or missing colour falls back to the family, because a bulb
+//     recorded as plain white says nothing about its spectrum: that is exactly
+//     the case where "fluorescent" vs "mercury" vs "tungsten" has to be decided
+//     by the fitting instead.
+void rhyLampTintedColour(int family, const int* rgb255, float* rgb);
+
+// The head of the fitting: the part you can see, as opposed to the luminaire
+// light that lights the road. A Remix light is not visible geometry (see the
+// n02b finding: "a point light is not visible geometry, it only lights what is
+// near it"), so the head gets its OWN small unshaped light at the bulb, the same
+// trick n02b shipped for signal lenses: 1200 nits in a 0.10 m sphere makes the
+// housing around it read as a lit bulb, which is what a 0.20 m downward cone
+// aimed at the road never does.
+void rhyLampHeadFixture(int band, RhyFixture* out);
+
+// Radiance of that head light. `nits` is the head's own luminance, applied at
+// its own radius: deliberately NOT rhyRadianceForFlux(). That function exists so
+// a shrunken STREET luminaire keeps lighting the street; applied to a head it
+// turns a bulb into a flood lamp (the same mistake s30 diagnosed for signals).
+float rhyLampHeadRadiance(float nits, float radius, float radianceScale);
+
+// The head light is a near-field light: a 0.1 m globe is a couple of pixels at
+// 100 m and nothing at 300, so it is created inside a smaller radius than the
+// luminaire. Clamped here so an ini cannot ask for a bulb that reaches further
+// than the lamp it belongs to (and the exit radius keeps the n04 hysteresis).
+void rhyLampHeadRadius(float want, float exitWant, float maxDistance,
+                       float* nearOut, float* exitOut);
 
 // Traffic signal lens colours, from the lens passbands rather than from a
 // temperature: red glass passes roughly 610-640 nm, the amber lens 585-605 nm,

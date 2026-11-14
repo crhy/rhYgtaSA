@@ -77,9 +77,13 @@ if [ ! -f "$TLIST" ]; then
   echo "== generating traffic light list"
   timeout 600 python3 "$HERE/tools/traffic_list.py" --game "$R" --out "$TLIST" >/dev/null || { echo "traffic_list.py failed"; exit 1; }
 fi
-# The lists are generated from the game's own data (gta3.img + .ide + .ipl, and
-# the mod pack's lamp table under <game>/moonloader/), so they are not in git:
-# a fresh clone generates them here instead of failing on a missing file.
+# The lists are generated from the game's own data, so they are not in git: a
+# fresh clone generates them here instead of failing on a missing file. Since n11
+# the street list comes from the 2dFx LIGHT records inside gta3.img's .dff placed
+# by the .ipl files (tools/dff_2dfx.py) - every bulb the GAME declares, 8962 of
+# them, each with its own colour. The traffic list still comes from the .ipl files
+# plus the mod pack's lamp table under <game>/moonloader/, which is where a signal
+# head's offset above its pole lives.
 if [ ! -f "$LIST" ]; then
   echo "== generating street light list"
   timeout 900 python3 "$HERE/tools/lamp_list.py" --game "$R" --out "$LIST" >/dev/null || { echo "lamp_list.py failed"; exit 1; }
