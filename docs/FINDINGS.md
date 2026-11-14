@@ -2812,3 +2812,141 @@ Rule 1 forbids running the game here, and the Remix log of the 10:22 run was ove
 mechanism is source-and-timing evidence, not a counter. [docs/NEXT-TEST.md](NEXT-TEST.md) asks for
 the A/B: same tour, `rtxprofile.sh perf`, and one extra leg with
 `rtx.opacityMicromap.enableBuilding = False` to settle it either way.
+
+## The surfaces you actually look at: what the game's data says is on screen, and what the pack already covers (2026-11-14, n20 → n20b)
+
+rhY's MUST-HAVE #1. n20 built the pipeline and was parked on two documentation gate failures
+(`a96ec15`); n20b brought it onto `main`, finished it and measured what it had only asserted. The
+user-facing page is [TEXTURES.md](TEXTURES.md); this is the evidence, including the three places
+where n20's own tests were wrong and the code was right.
+
+**1. The pack's replacement textures are BC7/BC5/BC4 with DX10 headers and mip chains, and the
+runtime complains when they are missing.** Census of the 1152 `.dds` under
+`<game>/rtx-remix/mods/gameReadyAssets/texture/` (header parse, this session):
+
+| DXGI / legacy format | files | used by the pack for |
+|---|---|---|
+| DX10 / 80 = BC4_UNORM | 445 | `_rough`, `_height` |
+| DX10 / 83 = BC5_UNORM | 251 | `_normal` |
+| DX10 / 98 + 99 = BC7_UNORM(_SRGB) | 246 + 173 | `_albedo` |
+| legacy DXT1/DXT3/DXT5, BC5U, rgb32 | 37 | odds and ends |
+
+`<game>/rtx-remix/logs/remix-dxvk.log` (2026-11-12 11:48 run) logs
+`A suboptimal replacement texture detected: … Please make sure all replacement textures have
+mip-maps.` for `texture/Wall/*.dds` and `texture/Rail/railway_*.dds`, whose headers say
+`mipCount = 1`. So the target format for anything we generate is settled by the pack itself, and a
+mip chain is not optional. Our own set writes BC3 albedo instead of BC7 — see 6.
+
+**2. The runtime resolves mod asset paths case-insensitively under Proton.** `Materials.usda` says
+`@./texture/Asphalt/Asphalt_materials.usda@` while the directory on this ext4 volume is
+`texture/asphalt/`, and the same log loads `…\texture\Wall\BADC201F23379105_normal.dds` from
+`texture/wall/`. Checked because a case-sensitive filesystem would have silently dropped 18 of the
+pack's 23 material layers. It does not, so the pack's capitalisation mismatch is harmless — and a
+second folder under `rtx-remix/mods/` is enumerated (`Adding asset search path: z:…\mods\…`), which
+is why our own state lives in a **dot**-dir there and is not scanned as a layer.
+
+**3. SA's map geometry does not expose a per-triangle material index.** The triangle array is
+4-byte records (`[v0][v1][v2][0xff]`, two such arrays per geometry) and the 4th byte is `0xff` in
+every triangle of every model checked. Measured on `lae2_roads89` (225 tris, 232 verts, 5
+materials): the geometry struct is **7392 bytes = 900 + 900 + 24 + 2784 + 2784**, which closes
+exactly with two 4-byte index arrays and one morph target of positions+normals — there is no
+material array to read. Recovering it means reimplementing librw's binMesh/binUVN decoder, so
+`tools/texture_rank.py` splits a model's triangles **evenly over its distinct textures** and says
+so in its own docstring and in the JSON `note` field.
+
+**4. The ranking, measured.** 9315 instances in the text IPLs under `data/maps/**/*.ipl` + 36516 in
+the 164 binary ("bnry") IPLs inside `models/gta3.img` = **45831 instances, 11612 distinct models**
+(the `.ide` id resolution of `tools/lamp_list.py`: the position in the `.img` index is *not* the
+model id). Model → textures comes from the `binMATERIAL` chunks (type 0x00000007) of the model's
+`.dff`, the texture name being the first `binSTRING` inside it (verified on three LA map models:
+`lae2_roads89` → sidewalkgrass1/2/3 + plaintarmac1 + dt_road_stoplinea; `lawroads_law14` →
+dockpave_256, snpedtest1, crossing_law; `pershingsq1_lan` → sjmlahus28, pershing1_LAn, tanstucco1_LA,
+badmarb1_LAn). With the four daytime tour cameras (45° cone, 200 m): **109 models, 291 textures with
+geometry, top 40 = 40.9 % of the solid angle in the cones, 11 700 m²**. Re-running the tool on
+2026-11-14 reproduced the shipped 40 in the same order. Sensitivity (Jaccard against the shipped
+setting): 0.67–0.86 at cone 35°, 0.78–0.95 at cone 55°, 1.00 at the shipped 45°/200 m — the set
+moves by 1–8 of 40 across the whole 3×3 grid, so the answer is not a knife-edge, but it *is*
+parameter-dependent and the parameters are recorded in `config/texture-pbr.json`.
+
+**5. The pack already covers 5 of the 40, at better than we can make them.** Our layer is installed
+**last** in `mod.usda`'s `subLayers`, so it would win — and would be a downgrade:
+
+| texture | the pack's own files | ours |
+|---|---|---|
+| `sidewgrass1` `0x8A04C4005EC0D1C2` | 2048² albedo (12 mips), normal (12), rough (1), height (1) | 1024² derived |
+| `sidewgrass3` `0xA1A030CB1C532B19` | 2048² albedo (12), normal (1), rough (1), height (1) | 1024² |
+| `sidewgrass2` `0xB53827C8E12BB227` | 2048² albedo (12), normal (1), rough (1), height (1) | 1024² |
+| `gb_nastybar03` `0x032123631B5B198B` | 2048² albedo (12), normal (1), rough (1), height (1) | 1024² |
+| `dt_road` `0x7FF5EBF9BAD3765F` | **4096²** albedo + normal + rough + height, all 13 mips | 2048² |
+
+`pbrify.pack_coverage()` therefore skips them (35 overrides, not 40; 33.6 MB of VRAM not spent on
+making five surfaces worse), and `--keep-covered` puts them back for an A/B. Separately: **10 of the
+40 have a `mat_<HASH>` override in the pack's layers** (900 distinct `mat_` names across the pack's
+`.usda` files) but only these 5 have DDS files — the other five (`badmarb1_LAn`, `yardgrass1`,
+`grasspatch_64hv`, `backalley1_lae`, `ws_rooftarmac1`) get a material from the pack with the game's
+own texture, which is exactly the population n18's census counted.
+
+**6. There is no BCn encoder on this box, so `tools/bcn.py` is ours.** Pillow 13 *decodes* BCn but
+its DDS writer emits uncompressed RGBA whatever `rawmode` says — measured: `rawmode="BC7"` produces
+a DX10 header with DXGI **64** (R8G8B8A8) and a bit-exact round-trip, i.e. it silently ignored the
+request. ImageMagick 7 refuses too. `tools/bcn.py` writes BC1/BC3/BC4/BC5 (and BC7 mode 6, unused
+by the shipped set) and decodes them; `scripts/textures-selftest.sh` cross-checks it against Pillow,
+against **ffmpeg**'s DDS decoder, against the game's own DXT1 rasters, and against the D3D block
+layout written out of the spec.
+
+**7. Three of n20's own encoder assertions were wrong, and the encoder was right.** Found while
+making the self-test pass on `main` (it had never been run: the parked commit did not wire it into
+`check-all.sh`). All three were fixed in the **test**, not the tool, because ffmpeg, Pillow and the
+spec all agreed with the tool:
+
+* the BC1 check compared selector **1** against the 2/3 mix. Selector 1 is the `c1` endpoint; the
+  2/3 mix is selector 2 when `c0 > c1`. The check now walks all 16 selectors of block 0 against the
+  full four-entry table (and the `c0 <= c1` variant);
+* the alpha-ladder check interpolated `a0 → a1` linearly (`((7-i)·a0 + i·a1)/7` for every `i`). The
+  RGTC spec puts the endpoints at entries 0 and 1 and starts the 7-way mixes at entry 2 — entry 1 of
+  an `a0=255, a1=0` block is **0**, not 218. The same file's own first check
+  (`[255, 0, 218, 182, 145, 109, 72, 36]`) had the spec right;
+* the ffmpeg cross-decode compared `decode_bc4`'s **(h, w)** array against ffmpeg's **(h, w, 1)**,
+  which numpy broadcast to (h, w, h): an RMSE of 105 between two decoders that agree **bit for
+  bit** (verified directly: 0.0).
+
+The lesson is the one s13 already wrote about warnings: a check that has never run is not a check.
+`scripts/check-all.sh` now runs `scripts/textures-selftest.sh` (24 checks) as `textures`.
+
+**8. VRAM, measured rather than planned.** 35 sets, 140 DDS, **91.9 MB on disk and 91.9 MB in
+texture memory** (BCn is stored compressed, so those are the same number — no
+"small-on-disk/huge-in-memory" trap). Per output size: 512² = 1.05 MB, 1024² = 4.19 MB,
+2048² = 16.8 MB, 512×256 = 0.52 MB, 128×256 = 0.13 MB. The game's own rasters for the same 35
+materials, mip chains included, are **1.08 MB**, so the layer is **+90.8 MB** — against the
+3.5–4.4 GB of 16.4 GB the running game already uses (n08, above): ~0.6 % of the card. All 140 files
+carry a full mip chain (verified by decoding the headers, not by trusting the writer).
+
+**9. What the generated maps actually contain, decoded back out.** Roughness means by class
+(wall 0.657, grass 0.721, pavement 0.649, asphalt 0.555, roof 0.650, concrete 0.506, ground 0.699,
+roadmark 0.555, glass 0.041, brick 0.630, stucco 0.694) sit inside the bands the class table
+declares, and the normal-map std (14–35/255 for the rough classes, 0.8 for glass) sits on the pack's
+own range (its asphalt normal measures 21). Albedo fidelity against the source raster: mean absolute
+luminance shift **2.75** luma, worst 4.05, mean alpha 252.6 — the 4× LANCZOS pass does not repaint
+the surface, which is the whole reason the albedo is the game's and not a photograph.
+
+**10. The class numbers are the pack's, not ours.** `python3 tools/pbrify.py --game <GAME>
+--calibrate` decodes a sample of the pack's own maps per category: roughness medians asphalt 0.588,
+wall 0.681, pavement 0.655, ground 0.735, roof 0.685, concrete 0.514, metal 0.507, windows 0.060,
+Marble 0.079, carpet 0.832; normal-map std 21–48 for the rough categories, 0.7–1.8 for windows,
+marble and plastic. n20's first draft of `CLASSES` had asphalt 0.85 from the literature; the shipped
+table (asphalt 0.59, wall 0.68, pavement 0.66, ground 0.74, glass 0.06) is the pack's own numbers,
+which is also the only way this layer can sit next to the pack's 121 rough maps without a visible
+step.
+
+**11. One integration bug the tests had not reached.** `tools/texture_rank.py` wrote the class as
+`class_` (because `class=` is a keyword in a `dict(...)` call), while `tools/pbrify.py` read
+`e["class"]` — so the documented regeneration path, `rank.json` straight into `pbrify --list`,
+raised `KeyError`. The writer now emits `"class"` through the `**{"class": …}` spelling, `pbrify`
+accepts either, and `tests/test_texture_rank.py` pins the shape of the shipped
+`config/texture-pbr.json` (40 entries, unique Remix hashes, every class known, `pack_has` measured)
+so the seam cannot go quiet again.
+
+**12. Not measured.** Nothing here has been rendered (rule 1). The claim "kerb edges and stucco
+carry relief and a dry matte response" is a prediction from the map statistics in 9;
+[TEXTURES.md](TEXTURES.md) and [NEXT-TEST.md](NEXT-TEST.md) step 8 say what to look at and what to
+bring back.

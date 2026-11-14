@@ -37,6 +37,7 @@ install and test it. What is in the box today:
 | **DLSS 5, measured (n19)** | the reference video's single biggest advantage does **not** run here: the runtime's own capability query fails on every run (`NVIDIA DLSS-NR support query failed (0xbad00010)`, driver 610.57.04 on an RTX 4070 Ti SUPER, model DLL present), so nothing is shipped for it and the look is bought with materials, fog and grading instead | `config/rtx.conf.dlss5` + `tools/rtxprofile.sh` (the `dlss5` action: a reversible probe, **not** a shipped profile), `tests/test_dlss5_probe_keys.py`; verdict and re-check: [docs/TARGET.md](docs/TARGET.md) §2/§6, FINDINGS (n19) |
 | **Grading** | one tone curve for the whole frame instead of a per-region normalisation, with an exposure anchor that follows the sun, so the sun, chrome and wet patches can be bright instead of grey and 21:00 is not darkened by a noon number | `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` in all three profiles (n16), and `[tonemap] day_ev → night_ev` driven off solar elevation at runtime (n22); **not yet seen in game** - the run and the abort ladder are in [docs/TARGET.md](docs/TARGET.md) §6) |
 | **Materials** | the ~2190 materials the asset pack never gave PBR maps get a *measured* BRDF instead of the runtime's guess: `rtx.legacyMaterial.roughnessConstant = 0.65`, taken from the roughness of the pack's own maps (paving 0.58-0.65, per-map median 0.582) - and a census that proves no per-texture knob for them exists | `tools/pack_pbr_census.py` (coverage, decoded rough/metal/height, the uncovered-hash list) + the n18 block in all three profiles; **not yet seen in game** - [docs/TARGET.md](docs/TARGET.md) §6 |
+| **Textures (n20 → n20b, rhY's MUST-HAVE #1)** | the 40 map surfaces that own the most screen in our own tour shots get real albedo + normal + roughness + height maps, generated from the game's own rasters (4x, deterministic - a photograph would erase the road markings) and installed as a Remix replacement layer on top of the pack. 35 sets, 140 DDS, **91.9 MB of VRAM** against the 1.08 MB the game spends on those materials today; the 5 the pack already covers at 2048²/4096² are skipped by design | `tools/textures.sh` (`on` / `off` / `status` / `generate`), `tools/pbrify.py` (the generator, `--calibrate`, `--report` = the VRAM delta), `tools/bcn.py` (our BC1/3/4/5 encoders - Pillow and ImageMagick cannot), `tools/texture_rank.py` (the screen-share ranking), `config/texture-pbr.json`; [docs/TEXTURES.md](docs/TEXTURES.md), FINDINGS (n20b); **not yet seen in game** - NEXT-TEST step 8 |
 | **Looking at it** | an F12 screenshot hotkey that never touches D3D9, a 16-stop photo tour, and a reporter that turns the tour into numbers | `scripts/shot-watch.sh`, `plugin/lua/SARemix_Tour.lua`, `tools/tour-report.py` |
 | **Safety** | every install step reversible, the plugin stops touching a dead Remix bridge, and the launcher ends the Wine tree if the game hangs on Quit | `apply.sh` backups, `plugin/src/shutdown.cpp`, `launcher/launch-rtx.sh` |
 
@@ -298,6 +299,32 @@ The `rtx.conf` half of a variant - the animated-water keys and the two water tex
 installed with it by `tools/rtx_water_keys.py`, with `rtx.conf.pristine` and `rtx.conf.prev` kept
 in `<game>/.rhys-water/`. Why the sea still flickers on some edges (307 exactly-butted coplanar
 polygons, ~6000 seams, no hit tolerance in 1.6.1) is in [docs/FINDINGS.md](docs/FINDINGS.md).
+
+## HD PBR textures for the surfaces you actually look at
+
+```bash
+bash tools/textures.sh status  "/path/to/GTASA-RTX"
+bash tools/textures.sh on      "/path/to/GTASA-RTX"    # generates once into build/textures, then installs
+bash tools/textures.sh off     "/path/to/GTASA-RTX"    # exactly the bytes it added are removed
+```
+
+`on` copies 35 texture sets (albedo / normal / roughness / height, BC3 + BC5 + BC4, full mip chains,
+**91.9 MB**) and one USD layer into `<game>/rtx-remix/mods/gameReadyAssets/`, appending the layer as
+the last `subLayers` entry of `mod.usda` so it composes over the pack's own materials. `off` deletes
+exactly the files it listed in `…/gameReadyAssets/.rhys-textures/files.txt` and restores `mod.usda`
+from the backup kept there - `scripts/textures-selftest.sh` hashes a whole fake install before and
+after and requires it to come back byte-identical.
+
+Two decisions worth knowing before you look at the result, both argued out in
+[docs/TEXTURES.md](docs/TEXTURES.md): the **albedo is the game's own raster**, 4x upscaled, because
+SA's road textures carry the road markings and the map UVs are authored for them (a photographic
+replacement erases the crossings - and the neural upscaler route is what turns asphalt into wet
+plastic); and the **5 surfaces the pack already covers at 2048²/4096² are skipped**, because our
+layer composes last and would replace a photographic 2048² albedo with a derived 1024² one.
+`--keep-covered` puts them back for an A/B. Which 40 surfaces, measured from 45831 map instances at
+the four daytime tour cameras, and what that measurement cannot see (no occlusion, no per-triangle
+material split in SA's geometry), is the same page; the roughness numbers are the pack's own
+(`python3 tools/pbrify.py --game "$G" --calibrate`).
 
 ## Test flow
 

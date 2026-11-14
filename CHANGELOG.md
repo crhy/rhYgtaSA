@@ -809,8 +809,10 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
   `tools/usd_switch.py` install/remove them with a `.rhys-textures` state dir, `config/texture-pbr.json`,
   five new test files). The gate failed 87/2: `tests/test_next_test_doc.py` (its NEXT-TEST.md rewrite
   broke the one-screen limits) and `tests/test_changelog_coverage.py` (the entry naming that commit
-  could only exist in the commit). Nothing shipped; the census and the ranking live on in
+  could only exist in the commit). Nothing shipped at the time; the census and the ranking live on in
   [docs/TARGET.md](docs/TARGET.md) and the n21 vegetation work reuses the same hash machinery.
+  **Finished by n20b, in this tree** — see "Textures (n20b)" below: the tools are in the tree, the
+  switch is gated, and both gate failures are fixed.
 
 - **Parked (n09, `08dc373` on `failed/n09-exit-hang-114604`): the first exit-hang fix.** The shutdown
   state machine and the watchdog were right — 45 of 46 selftest checks passed — and the one failure
@@ -835,11 +837,15 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
   reading are in `.strata/notes-n11-every-lamp-lit.md`; the queue recorded `rc=2: no changes`. The
   2dfx reader, the world inventory and the coverage tool were never written, so the boardwalk and pier
   lamps are still dark.
-- **Never started (n03, n08).** `n03-next-session-ready` (deploy the tour script, bound the logs,
-  rewrite NEXT-TEST) and `n08-fps-steadiness` (frame pacing, finding G) are still in the queue with no
-  notes file. The measurement half of n08 was done during the n14 documentation sweep and is recorded
-  in [docs/FINDINGS.md](docs/FINDINGS.md), "Frame pacing: what the 2026-11-12 MangoHud logs say"; the
-  fix is still nobody's.
+- **Parked (n03, `b3a68cd` on `failed/n03-next-session-ready-235920`): next-session-ready** — deploy
+  the tour script, bound the logs, rewrite NEXT-TEST. It got as far as the NEXT-TEST rewrite that
+  `tests/test_next_test_doc.py` then refused (the one-screen bounds), and the queue parked it; the
+  durable half of the idea (a `cp` of `plugin/lua/SARemix_Tour.lua` in the preflight, and the
+  one-screen rule itself) is in the tree, the deploy step for the tour script is still nobody's.
+- **Started and finished (n08, `1c479fa`): frame pacing, finding G.** What the n14 sweep had only
+  measured became a task: `tools/perf-report.py`, the `[fade] destroys_per_frame` bound, the resync
+  phase split between the two lamp layers, six OMM work bounds in `config/rtx.conf.perf` and
+  `tests/drain_spread_check.cpp`. The entry is below, under its own hash.
 
 ### Docs and handoff (`df0ec29`, `50f6583`, `35e5d8d`)
 
@@ -1284,7 +1290,7 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
   The consequence for the plan is stated in TARGET §2: T1/T3/T4 are won with materials (n18), fog
   (n17) and grading (n16/n22), not with a DLSS 5 switch.
 
-### Frame pacing (n08) — finding G: the average got better and the tail got worse (this commit)
+### Frame pacing (n08) — finding G: the average got better and the tail got worse (in `1c479fa`)
 
 - **Measured (finding G, "FPS a little less steady than previous builds"): the regression is the
   tail, not the frame rate.** `tools/perf-report.py` over the two MangoHud CSVs of 2026-11-12 —
@@ -1362,6 +1368,86 @@ nothing outside REPO was written. Evidence: [docs/VEGETATION.md](docs/VEGETATION
 - **Docs:** FINDINGS "Frame pacing (2026-11-12 10:22 run, n08)"; TESTING's after-every-run step is
   now `tools/perf-report.py`; NEXT-TEST's perf section asks for the OMM A/B; STATUS finding G is
   **measured, ours bounded, renderer half awaiting a run**.
+
+### Textures (n20b) — MUST-HAVE #1: the 40 surfaces you actually look at get real PBR maps (finishes the parked `a96ec15`)
+
+- **Added: the HD PBR surface layer, on/off switchable.** `bash tools/textures.sh on|off|status|generate
+  [GAME_DIR]` installs or removes 35 replacement texture sets — albedo, normal, roughness, height —
+  for the 40 map surfaces that own the most screen in our own tour shots. `on` copies
+  `texture/rhy_pbr/*.dds` plus `rhy_textures.usda` into `<game>/rtx-remix/mods/gameReadyAssets/` and
+  appends the layer as the **last** `subLayers` entry of `mod.usda` (the `tools/mirrors.py` /
+  [docs/MIRRORS.md](docs/MIRRORS.md) install shape, the only one ever verified in game here);
+  everything it writes is listed in `…/gameReadyAssets/.rhys-textures/files.txt` and `mod.usda` is
+  backed up there, so `off` removes exactly its own files and restores `mod.usda` byte-for-byte.
+  **Undo:** that one command; `scripts/textures-selftest.sh` hashes a whole fake game tree before and
+  after and requires it to come back identical.
+- **Added: `tools/pbrify.py` + `tools/bcn.py` — the generator and its encoders.** The albedo is the
+  game's own raster (LANCZOS 4x, capped at 2048), because SA's road textures carry the road markings
+  (`dt_road_stoplinea`, `crossing_law*`) and the map's UVs are authored for them: a photographic
+  albedo erases the crossings. Height comes from the raster's own high-frequency energy, normal from
+  that height (Sobel, scaled by the material class), roughness from the class modulated by local
+  detail, metal only for the metal class. Output is **BC3/DXT5 albedo, BC5 normal, BC4 rough +
+  height, DX10 headers, full mip chains** — the format census of the installed pack (445 BC4, 251
+  BC5, 419 BC7 of its 1152 maps). BCn has to be encoded here because Pillow 13 and ImageMagick 7
+  both refuse: measured, `rawmode="BC7"` in Pillow writes a DX10 header with DXGI 64 = R8G8B8A8 and
+  round-trips losslessly, i.e. it silently ignored the request.
+- **Added: the pack-coverage guard.** Our layer composes last, so it wins — and for 5 of the 40 the
+  pack already ships 2048² (or 4096², for `dt_road`) photographic albedo+normal+rough+height, which
+  our derived 1024² maps would make *worse*. `pbrify.pack_coverage()` skips those and says so (35
+  overrides, not 40; 33.6 MB not spent), and `--keep-covered` puts them back for an A/B. The five are
+  recorded per texture in `config/texture-pbr.json`'s `pack_has`.
+- **Measured: the VRAM, not a guess.** 35 sets, 140 DDS, **91.9 MB on disk = 91.9 MB of texture
+  memory** with mip chains (BCn is stored compressed, so the two numbers are the same); the game's own
+  rasters for the same 35 materials are **1.08 MB**, so **+90.8 MB** — against the 3.5–4.4 GB of 16.4
+  GB the running game already uses (n08). Per size: 512² = 1.05 MB, 1024² = 4.19, 2048² = 16.8,
+  512×256 = 0.52, 128×256 = 0.13. `tools/pbrify.py --report` writes the per-set numbers
+  (`build/textures/report.json`), including each set's `src_vram` so the delta is recomputable.
+- **Measured: what the generated maps contain**, decoded back out: roughness means wall 0.657, grass
+  0.721, pavement 0.649, asphalt 0.555, roof 0.650, concrete 0.506, ground 0.699, roadmark 0.555,
+  brick 0.630, stucco 0.694, glass 0.041 — inside the bands the class table declares, on medians
+  taken from the pack itself (`tools/pbrify.py --calibrate`: pack asphalt 0.588, wall 0.681,
+  pavement 0.655, ground 0.735, windows 0.060); normal-map std 14–35/255 for the rough classes and
+  0.8 for glass, against the pack's own 21 for its asphalt normal; albedo luminance shift mean **2.75**
+  (worst 4.05), so the 4x pass does not repaint the surface. All 140 files carry a full mip chain.
+- **Fixed (n20b): three assertions in `scripts/textures-selftest.sh` were wrong and the encoder was
+  right.** The self-test had never been run — the parked commit did not wire it into
+  `scripts/check-all.sh`. Against ffmpeg, Pillow and the spec: the BC1 check compared selector **1**
+  against the 2/3 colour mix (selector 1 is the `c1` endpoint; the 2/3 mix is selector 2 when
+  `c0 > c1`) — it now walks all 16 selectors against the four-entry table; the RGTC alpha check
+  interpolated `a0 → a1` linearly, but the spec puts the endpoints at entries 0 and 1 and starts the
+  7-way mixes at entry 2 (entry 1 of `a0=255, a1=0` is **0**, not 218); and the ffmpeg cross-decode
+  compared `decode_bc4`'s (h, w) against ffmpeg's (h, w, 1), which numpy broadcast to (h, w, h) — an
+  RMSE of 105 between two decoders that agree bit for bit.
+- **Fixed (n20b): the documented regeneration path raised `KeyError`.** `tools/texture_rank.py` wrote
+  the class as `class_` (`class=` is a keyword in a `dict(...)` call) while `tools/pbrify.py` read
+  `e["class"]`, so `rank.json` straight into `pbrify --list` broke. The writer emits `"class"` now,
+  `pbrify` accepts either spelling, and `tests/test_texture_rank.py` pins the shape of the shipped
+  `config/texture-pbr.json` (40 entries, unique Remix hashes, every class known, `pack_has` measured).
+- **Added: the ranking, and its limits, in the open.** `tools/texture_rank.py` scores every map
+  instance (45831 of them: 9315 text IPL + 36516 binary IPL inside `models/gta3.img`, 11612 distinct
+  models) by the **solid angle** its triangles subtend at the four daytime tour cameras read out of
+  the game's own `moonloader/SARemix_Tour.lua`, charged to the model's textures. 291 textures have
+  geometry in the cones; the top 40 carry 40.9 % of that solid angle (11 700 m²). No occlusion, and
+  no per-triangle material split — SA's 4-byte triangle records end in `0xff` in every model checked
+  (`lae2_roads89`: 7392 bytes = 900 + 900 + 24 + 2784 + 2784 closes with two index arrays and one
+  morph target), so a model's triangles split evenly over its textures. `--sensitivity` prints the
+  Jaccard overlap over nine cone/radius settings (0.67–1.00); re-measuring on 2026-11-14 reproduced
+  the shipped 40 in the same order.
+- **Tests:** `scripts/textures-selftest.sh` (24 checks) is now part of `scripts/check-all.sh` as
+  `textures` — tour cameras from the real tour script, the encoders against Pillow/ffmpeg/the game's
+  own DXT1/the spec block layout, the generated DDS against the pack's format census, the layer as
+  USD with every asset path present, and the `on → on → off` round-trip against a fake game tree
+  hashed byte-for-byte. `tests/test_pbrify.py` 14 → 19 checks (the coverage guard in both directions,
+  the VRAM delta, the `class_` compatibility), `tests/test_texture_rank.py` +2 (the shipped selection
+  list, the writer's key), `tests/test_bcn.py` and `tests/test_usd_switch.py` unchanged from the parked
+  branch and passing on `main`.
+- **Docs:** new [docs/TEXTURES.md](docs/TEXTURES.md) (the switch, the measurement and its limits, the
+  coverage guard, the VRAM table, the class table, what is not claimed); FINDINGS "The surfaces you
+  actually look at…"; NEXT-TEST step 8 (and the doc is back inside its one-screen budget: 88 lines /
+  under 6000 bytes, with detail moved into TEXTURES/STATUS/VEGETATION); README's feature table and
+  switch list; STATUS's T1 row and its parked-work table.
+- **Not measured:** nothing here has been rendered (rule 1). The look is a prediction from the map
+  statistics; NEXT-TEST step 8 is the leg that tests it.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

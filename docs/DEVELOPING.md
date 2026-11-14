@@ -922,6 +922,57 @@ lands on the frames right after a stream-in. The A/B that would confirm or kill 
 (`rtx.opacityMicromap.enableBuilding = False`) is a look change, so it lives in NEXT-TEST as a leg
 instead of in a shipped profile.
 
+## Generating the PBR maps the asset pack never shipped (n20 → n20b)
+
+n18's census is the starting number: of the pack's **2363** `mat_<HASH>` materials, 174 have a
+replacement albedo and ~2190 have nothing, so their entire BRDF is one float
+(`rtx.legacyMaterial.roughnessConstant`). n20 built the pipeline that gives real maps to the part of
+that population you can actually see; it was parked on two documentation gate failures and n20b
+finished it. The user-facing page is [TEXTURES.md](TEXTURES.md); this is how the pieces fit.
+
+```
+tools/texture_rank.py   which textures are on screen  (game data, not screenshots)
+tools/pbrify.py         raster -> albedo / normal / rough / height, and the USD layer
+tools/bcn.py            the BC1/BC3/BC4/BC5 encoders (and BC7 mode 6, unused so far)
+tools/usd_switch.py     add / remove / has / check on a layer's subLayers list
+tools/textures.sh       the on/off/status switch and its state dir
+config/texture-pbr.json the 40 surfaces, with their Remix hashes and the pack's own files
+```
+
+**Why the ranking is a solid angle and not a screenshot.** A screenshot says what is bright, not
+which texture it is. `texture_rank.py` reads every map instance (45831: the text IPLs plus the
+binary "bnry" IPLs inside `gta3.img`, whose model *ids* come from the `.ide` files — the position in
+the `.img` index is not the id), keeps the ones inside a cone around the tour's own cameras (parsed
+as text out of the game's `moonloader/SARemix_Tour.lua`), and charges each instance's projected area
+÷ d² to its model's textures. What it cannot do is occlusion or a per-triangle material split:
+SA's triangle records are 4 bytes with the 4th byte `0xff` in every model checked, so the material
+index is only reachable through librw's binMesh decoder and a model's triangles split evenly over
+its textures. That is why `--sensitivity` prints the Jaccard overlap over nine cone/radius settings
+(0.67–1.00) instead of one number.
+
+**Why the albedo is the game's.** SA paints the road markings into the textures (`dt_road_stoplinea`,
+`crossing_law*`) and the UVs are authored for them, so a photographic albedo erases the crossings.
+The height field is then the raster's own high-frequency energy (SA's environment textures are
+pre-lit: the creases are already drawn), the normal is its Sobel gradient scaled by the material
+class, and the roughness is the class's value modulated by local detail — with the class values taken
+from the pack itself (`pbrify --calibrate`), not from the literature.
+
+**Why there is an encoder in this repo.** Pillow 13 reads BCn but writes uncompressed RGBA whatever
+`rawmode` says (measured: a `rawmode="BC7"` save comes back with DXGI 64 = R8G8B8A8); ImageMagick 7
+refuses. So `bcn.py` writes the blocks, and the self-test cross-checks it four ways: Pillow's decoder,
+ffmpeg's decoder, the game's own DXT1 rasters, and the D3D block layout written out of the spec.
+That cross-check earned its keep immediately — three of n20's own assertions were wrong (BC1 selector
+1 compared against the 2/3 colour mix; an RGTC ladder interpolated linearly instead of the spec's
+table; a (h,w) array compared against a (h,w,1) one, which numpy happily broadcast to (h,w,h)) and the
+encoder was right in all three cases. **A test that the gate never runs is not a test**: the parked
+commit had not wired `scripts/textures-selftest.sh` into `scripts/check-all.sh`.
+
+**The guard that keeps us from making the game worse.** Our layer is appended last to `mod.usda`'s
+`subLayers`, so it wins wherever it writes. Five of the 40 surfaces already have the pack's own
+2048² (or 4096²) photographic maps, so `pbrify.pack_coverage()` refuses to generate them unless
+`--keep-covered` is passed. If you widen the selection (`--top 100`), that guard is the thing to
+re-read first.
+
 ## Repo notes that bite
 
 - `screenshots/` is git-ignored (and `scripts/check.sh` asserts that it stays ignored). The screen
@@ -930,7 +981,8 @@ instead of in a shipped profile.
 - `data/SARemix_Light_Manager.dat` is a file from the GTASA-Remix pack and stays out of git; the
   tools read it straight out of `<game>/moonloader/`.
 - Generated, never committed: `build/rhyremix_lights.txt`, `build/rhyremix_traffic.txt`,
-  `vendor/`, `build/`.
+  `build/textures/` (the generated PBR sets and their `report.json`; 92 MB, regenerate with
+  `bash tools/textures.sh generate`), `vendor/`, `build/`.
 - `scripts/check.sh` is the gate and is not to be edited. `bash scripts/check-readme.sh` is the
   s11 gate for the user guide: every repo path mentioned in README exists, every link answers
   200/30x, no personal paths.

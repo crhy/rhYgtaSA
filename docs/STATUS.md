@@ -69,7 +69,7 @@ rhY's goal for the day: *every light must come from a real source; no fake ambie
 |---|---|---|---|
 | **T4 grading** | headroom p99.9/p50 1.41–1.81 vs the reference's 1.79–3.49; ceiling pixels 0.003–0.027 % vs up to 3.95 %; warmth −67…+10 vs +18.7…+48.3 | **config shipped by n16 + plugin anchor shipped by n22, after-numbers owed** — neither has ever been rendered (rule 1 forbids running the game here) | n16 shipped `rtx.tonemappingMode = 0` + `rtx.tonemap.exposureBias = -0.5` + `localtonemap.shadows 1.0` / `highlights 2.0` in all three profiles; n22 drives that same option from solar elevation at runtime (`[tonemap] day_ev -0.5 → night_ev +0.5`, ≤ 0.05 EV/s), so noon is unchanged and 21:00 gets 2× the light. The run and the abort ladder are [TARGET.md §6](TARGET.md); the mechanism is FINDINGS ("The tonemapper…", "One exposure anchor cannot serve noon and 21:00") |
 | **T3 atmosphere** | haze far/near local contrast 1.22–3.67 vs 0.46–1.18; sky 92–128 luma at saturation 0.28–0.61 vs 160–199 at 0.13–0.26 | **config shipped by n17, after-numbers owed** — never rendered (rule 1) | n17 shipped `rtx.volumetrics.enableFogRemap = True` + input bounds 400/4000 m (the game's own `FarClp` in `data/timecyc.dat`) + output bounds 2/6 m (3.4–10.3 km of air, was 344 km) + `fogRemapColorMultiscatteringScale = 0` in all three profiles, and fixed the dead `rtx.enableFogMaxDistanceRemap`. Predicted far/near 3.67 → ~2.6 at 1 km (`build/tmp/n17/predicted.txt`); the 0.5–0.9 target also needs the near band to have detail (T1) and the sky target needs in-scatter, which 1.6.1 only has inside 20 m — see FINDINGS (n17) and [TARGET.md §6](TARGET.md) |
-| **T1 materials** | counted by n18's `tools/pack_pbr_census.py`: **2363** `mat_<HASH>` materials, a replacement albedo for **174** of them (147 normal, 121 rough, 71 height, **13 metal** keyed to a game texture) — so ~**2190** render with the runtime's default legacy BRDF, which `rtx_materials.cpp` proves can only be a **constant** roughness, never a map | **config shipped by n18, after-numbers owed** — never rendered (rule 1) | n18 shipped `rtx.legacyMaterial.roughnessConstant = 0.65` in all three profiles: one step from the runtime default 0.7 onto the matte end of the pack's own decoded paving band (wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584; per-map median 0.582), and refused `rtx.opaqueMaterial.roughnessScale/Bias` because they would rescale the pack's 121 rough maps too. The next step is the offline PBR-ify pass: `build/tmp/n18/pack-uncovered.txt` ranks the 2197 uncovered hashes by USD references; protocol in [TARGET.md §6](TARGET.md), evidence in FINDINGS (n18) |
+| **T1 materials** | counted by n18's `tools/pack_pbr_census.py`: **2363** `mat_<HASH>` materials, a replacement albedo for **174** of them (147 normal, 121 rough, 71 height, **13 metal** keyed to a game texture) — so ~**2190** render with the runtime's default legacy BRDF, which `rtx_materials.cpp` proves can only be a **constant** roughness, never a map | **config shipped by n18 + the first 35 real maps shipped by n20b, after-numbers owed** — never rendered (rule 1) | n18 shipped `rtx.legacyMaterial.roughnessConstant = 0.65` in all three profiles: one step from the runtime default 0.7 onto the matte end of the pack's own decoded paving band (wall 0.649, asphalt 0.634, pavement 0.607, ground 0.584; per-map median 0.582), and refused `rtx.opaqueMaterial.roughnessScale/Bias` because they would rescale the pack's 121 rough maps too. **n20b then generated the maps the census said were missing** for the 40 surfaces with the most screen time: `bash tools/textures.sh on`, 35 sets (albedo/normal/rough/height, BC3/BC5/BC4, mip chains, 91.9 MB), the 5 the pack already covers better skipped by design — [TEXTURES.md](TEXTURES.md), FINDINGS (n20 → n20b), NEXT-TEST step 8. The next step is the same pipeline over the next 100 ranks (`--top 100`) |
 | **T2 HD assets** | pack albedo is mostly 2048 px; the "8K pack" claim is the channel's, not verifiable | **measured** | census in FINDINGS; the asset work is upstream (MIT pack) |
 | **DLSS 5 itself** | the keys exist in our 1.6.1 runtime (`rtx.dlssNeuralRendering.*`, 11 options), but the runtime's own capability query fails on this box: `NVIDIA DLSS-NR support query failed: (code: 0xbad00010, info: NVSDK_NGX_Result_FAIL_UnsupportedParameter)` — RTX 4070 Ti SUPER, driver 610.57.04, below Remix 1.6's own 616.92 baseline, while the model DLL (`<game>/.trex/nvngx_dlssnr.dll`, 266 MB) is present | **measured — unavailable** (n19) | n19: the query runs on **every** run (`rtx_ngx_wrapper.cpp:226`), so the log line above *is* the measurement; the probe profile `config/rtx.conf.dlss5` (`tools/rtxprofile.sh dlss5`) stays non-shipped and no shipped profile may carry a DLSS-NR key (`tests/test_dlss5_probe_keys.py`). Re-check after any driver update with `grep -iE 'DLSS-NR|Neural' <game>/rtx-remix/logs/remix-dxvk.log` — [TARGET.md §6](TARGET.md). Nothing here depends on it: T1/T3/T4 are won with materials, fog and grading |
 
@@ -89,10 +89,11 @@ instances in the TLAS — a VRAM call). The list with its reasons is `config/rtx
 | `failed/n09-exit-hang-114604` (`08dc373`) | n09 exit hang | 45 of 46 selftest checks passed; the failure was `scripts/test-session-selftest.sh`'s real-Strata guard losing a race. Redone as n09b (`cb0aac8`), which is in the tree |
 | `failed/n05-night-brightness-185753` (`6eafd4d`) | n05 nights and sunset gray | `scripts/test-session-selftest.sh` **timed out** (exit 124). The lighting work itself was complete and is described in FINDINGS |
 | `failed/n10-night-ambient-realism-172920` (`30a1a43`) | n10 fake night ambient | same selftest failed (exit 1). Its four causes and its numbers are recorded in FINDINGS |
-| `failed/n20-hd-pbr-textures-183453` (`a96ec15`) | n20 HD PBR textures (MUST-HAVE #1) | 87 of 89 checks passed; failed `tests/test_next_test_doc.py` (its NEXT-TEST rewrite broke the one-screen limits) and `tests/test_changelog_coverage.py`. `tools/texture_rank.py`, `tools/pbrify.py`, `tools/bcn.py`, `tools/textures.sh`, `tools/usd_switch.py` and 5 test files are on that branch, not in the tree |
+| `failed/n20-hd-pbr-textures-183453` (`a96ec15`) | n20 HD PBR textures (MUST-HAVE #1) | 87 of 89 checks passed; failed `tests/test_next_test_doc.py` (its NEXT-TEST rewrite broke the one-screen limits) and `tests/test_changelog_coverage.py`. **Finished by n20b, which is in the tree**: `tools/texture_rank.py`, `tools/pbrify.py`, `tools/bcn.py`, `tools/textures.sh`, `tools/usd_switch.py`, `config/texture-pbr.json` and the five test files, plus [TEXTURES.md](TEXTURES.md) and the measurements n20 never got to make |
+| `failed/n03-next-session-ready-235920` (`b3a68cd`) | n03 next-session-ready (deploy the tour script, bound the logs, rewrite NEXT-TEST) | parked on the NEXT-TEST rewrite itself: `tests/test_next_test_doc.py` refused it. The preflight `cp` of the tour script and the one-screen rule are in the tree; the deploy step for `plugin/lua/SARemix_Tour.lua` is still nobody's |
 | `wip/n06-pier-and-sign-lights-1922` (`48d93d5`) | n06 pier heads and sign bulbs | aborted for a reboot mid-task; a WIP snapshot, never gated |
 | *(no branch)* | n11 every lamp lit | the queue recorded `rc=2: no changes` — the plan was written, no code |
-| *(no branch)* | n03 next-session-ready, n08 fps steadiness | still in the queue, never started (no notes file) |
+| *(done)* | n08 fps steadiness (finding G) | no longer here: it ran and is in the tree as `1c479fa` (`tools/perf-report.py`, `[fade] destroys_per_frame`, the resync phase split, six OMM bounds in `rtx.conf.perf`) |
 
 If one of these is retried, the parked branch is the starting point for the analysis, **not** for
 the tree: each was parked on an unrelated gate failure and its config edits were never reviewed in
@@ -160,13 +161,26 @@ game.
     character), then `bash tools/rtxprofile.sh current $G`. Protocol and the driver-vs-GPU question:
     [TARGET.md §6](TARGET.md), evidence in FINDINGS (n19).
 
+12. **The HD PBR surfaces (n20b, MUST-HAVE #1)** — `bash tools/textures.sh on "$G"` puts 35
+    generated albedo/normal/rough/height sets over the 40 surfaces that own the most screen in our
+    own tour shots (the ranking, its limits and the 5 surfaces the pack covers better:
+    [TEXTURES.md](TEXTURES.md)). Look at stop 13 (Pershing noon) and stop 0 (Grove noon): the stucco
+    of `tanstucco1_LA`, the marble of `badmarb1_LAn` and the kerbs should carry relief and a dry matte
+    response, and the crossing and stop lines must still be there — if the markings moved, the albedo
+    route is wrong, not the roughness. Report: stops 00/13 mean and sat against step 1, and the frame
+    time plus `logs/perf/gpu-*.csv` (the layer is +91 MB of texture memory on a card that was using
+    3.5-4.4 GB). Too glossy or too matte is a `CLASSES` number in `tools/texture_rank.py`, not a
+    re-bake of everything: change it, `tools/textures.sh generate`, look again. Undo: `bash
+    tools/textures.sh off "$G"` (byte-exact `mod.usda`, no files left).
+
 ## How this page is kept honest
 
 `tests/test_changelog_coverage.py` (run by `scripts/check-all.sh`) fails if a commit on any branch
 since 2026-11-11 is not named in [../CHANGELOG.md](../CHANGELOG.md), if an Unreleased section names
 no commit, or if this page stops naming the parked branches and the three test sessions.
 
-Known doc debt, for the next sweep: [VEGETATION.md](VEGETATION.md), [MIRRORS.md](MIRRORS.md) and
-[NEXT-TEST.md](NEXT-TEST.md) still name this machine's install paths, and NEXT-TEST is at the exact
-limit its own test allows (90/90 lines, 5965/6000 bytes — n19 fitted the DLSS 5 probe into step 5 by
-trimming step 6's coordinates), so it cannot grow until n03 restructures it.
+Known doc debt, for the next sweep: [VEGETATION.md](VEGETATION.md), [MIRRORS.md](MIRRORS.md),
+[TEXTURES.md](TEXTURES.md) and [NEXT-TEST.md](NEXT-TEST.md) still name this machine's install paths,
+and NEXT-TEST sits inside the limits its own test sets (88/90 lines, ~5.9/6.0 KB — n20b fitted the
+textures step in by moving detail to [TEXTURES.md](TEXTURES.md) and this page), so it can grow again
+only by trimming something else until n03 restructures it.

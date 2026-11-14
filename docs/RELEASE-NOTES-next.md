@@ -146,6 +146,38 @@ If something in the update looks wrong, everything is reversible
   map (those average 0.382), so 0.1 is wrong in both directions - but lowering it also removes real
   highlights, so it gets its own step and its own measurement.
 
+### Textures — the surfaces you actually look at (n20 → n20b)
+
+- **The pavement, walls and ground you spend the most time looking at now have real material maps.**
+  One switch puts them on: `bash tools/textures.sh on "<game>"` (and `off` takes them off again,
+  byte for byte). It installs **35 sets of four maps each — colour, surface tilt, roughness and
+  height — for the 40 surfaces that cover the most of the picture in our own photo tour**: the stucco
+  and marble of Pershing Square, the asphalt and kerbs, the sidewalk grass, the roofs, the road
+  markings. Those 40 were not guessed: they were ranked from the game's own map data — 45 831 placed
+  objects, the four daytime tour cameras, and how much of the view each surface's geometry actually
+  occupies (the top 40 hold 41 % of it).
+- **Why the colour is still the game's own.** San Andreas paints its road markings *into* the road
+  textures — the stop lines and the zebra crossings are part of the raster, and the world's texture
+  coordinates are drawn for them. A photograph of asphalt would erase the crossings, so the colour
+  map is the game's texture, cleaned up and enlarged four times, and the new information is in the
+  tilt, roughness and height. That is also why this is not an AI upscaler: the published experience
+  with those is that they turn asphalt into wet plastic, which is the thing we are trying to remove.
+- **Where the numbers come from.** The roughness of each kind of surface (asphalt, concrete, brick,
+  glass, grass…) is measured out of the asset pack's own maps rather than invented, so our surfaces
+  sit in the same range as the pack's redone ones.
+- **VRAM, honestly: +91 MB.** The 35 sets are 92 MB of video memory (140 files, every one with a full
+  mip chain), against the ~1 MB the game spends on those same materials today. On a card that was
+  using 3.5–4.4 GB in this game that is about 2 % more — but it is real, and `tools/textures.sh status`
+  prints the number.
+- **Five surfaces are deliberately left alone.** For five of the 40 the asset pack already ships
+  2048×2048 (one of them 4096×4096) photographic colour, tilt, roughness and height maps; ours would
+  be a smaller, derived version of the same thing, so they are skipped unless you ask for them with
+  `--keep-covered` to compare. `bash tools/textures.sh status "<game>"` lists what is installed and
+  what was skipped.
+- **Not seen in game yet.** This is the first build with generated material maps, so the look is a
+  prediction; the thing to judge is whether kerbs, stucco and paving read as *dry, solid surfaces*
+  instead of painted flatness — and whether the road markings are still exactly where they were.
+
 ### DLSS 5 (the reference video's trick) — measured, and the answer is "not on this box"
 
 - **Nothing to enable.** The showcase look everyone is chasing is largely **DLSS 5** (DLSS 3D-Guided
@@ -418,6 +450,17 @@ What each shot should prove, and the knobs to A/B if it does not, are in
    means the burst never happened in that session). If the hillside hitches worse with
    `rtx.opacityMicromap.enableBuilding = False` added, that is the answer the A/B is after — say which
    way it moved.
+11. **The new material maps (n20b) — one switch, two stops.** `bash tools/textures.sh on "$G"` (it
+    builds the 35 sets into `build/textures/` the first time, about a minute, then installs them), then
+    look at **Pershing Square at noon** and the **Grove Street sidewalk**: the stucco, the marble slabs
+    and the kerb edges should carry relief and a dry matte response instead of the flat painted look of
+    the run before, and the zebra crossing and stop lines must be exactly where they were — if a
+    marking moved or blurred, that is the finding, not a detail. Send the two shots and say whether it
+    reads better or worse; too glossy or too chalky is one number per surface type (`CLASSES` in
+    `tools/texture_rank.py`), not a rebuild of everything: change it, run
+    `bash tools/textures.sh generate "$G"`, look again. Keep the nvidia-smi trace from §5 too: this
+    layer is +91 MB of video memory and we would like to see what it did to your frame times.
+    Undo: `bash tools/textures.sh off "$G"`.
 
 ---
 

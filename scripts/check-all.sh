@@ -6,7 +6,7 @@
 # scripts/check.sh <phase> is the per-phase gate and stays the thing CI-style work goes
 # through; this file is the "am I done with everything" sweep: the cross-compiled plugin
 # build, the native test binaries, every python test file, the installer self-test,
-# the vegetation switch self-test (s16: an on/off/status round-trip against the same fake
+# installer, the vegetation switch self-test (s16: an on/off/status round-trip against the same fake
 # tree, every file in it sha256'd before and after), the character-pack switch self-test (s17:
 # the six "characters" packs of deps/manifest.json staged synthetically, installed in the
 # documented order with their priorities written inside [Profiles.Default.Priority], and an
@@ -18,8 +18,11 @@
 # a fresh fake install - the pack's own water material, an rtx.conf with every water key removed -
 # must end up on the remix-ref variant after one RHYS_DRY_RUN=1 launcher run, must stay
 # byte-identical on the next run, and must never lose a variant that was chosen explicitly; the
-# installer half of the same feature is inside the installer self-test) and a syntax check of
-# every shell script we ship. One PASS/FAIL line per check,
+# installer half of the same feature is inside the installer self-test), the HD PBR surface switch
+# (n20/n20b: our own BC4/BC5/BC3 encoders cross-checked against Pillow, ffmpeg and the spec block
+# layout, the generated DDS checked against the installed pack's own format census, and a
+# textures.sh on/on/off round-trip against a fake game tree hashed back to its starting bytes) and
+# a syntax check of every shell script we ship. One PASS/FAIL line per check,
 # then either the list of failures or "ALL GATES PASSED".
 #
 # Since s13 the C++ also has to compile without a single warning: the plugin carries
@@ -222,6 +225,15 @@ echo "== water by default (tools/water.sh + apply.sh + a launcher dry run agains
 # on a fresh fake install must produce remix-ref + its rtx.conf keys, the next start must change no
 # byte, and a variant someone chose explicitly must survive every later default run.
 run waterdefault "scripts/water-default-selftest.sh" 300 bash scripts/water-default-selftest.sh
+
+echo "== HD PBR surfaces (tools/textures.sh + pbrify + our BCn encoders; reads the game folder, writes only build/tmp) =="
+# n20/n20b (rhY's MUST-HAVE #1): the 40 most visible map surfaces get albedo/normal/rough/height
+# maps generated from the game's own rasters. The BCn encoders are ours because Pillow 13 and
+# ImageMagick 7 both refuse to encode BCn here, so they are cross-checked against Pillow and
+# ffmpeg and against the D3D block layouts written out of the spec; the generated DDS are checked
+# against the format census of the installed pack (BC3/BC5/BC4, DX10 headers, full mip chains);
+# and the install round-trip runs against a fake game tree, hashed byte-for-byte.
+run textures "scripts/textures-selftest.sh" 600 bash scripts/textures-selftest.sh
 
 echo "== shell syntax (bash -n) =="
 # Every .sh in the tree except generated output (build/, rule 2) and git internals. A
