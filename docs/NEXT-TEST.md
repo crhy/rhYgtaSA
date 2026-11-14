@@ -10,7 +10,7 @@ bash tools/rtxprofile.sh status
 diff -q plugin/lua/SARemix_Tour.lua $G/moonloader/SARemix_Tour.lua
 ```
 Look: `Large Address Aware SET` (step 7 needs it); `profile : unknown` = rtx.conf is hand-tuned; the `diff` prints nothing -
-deploy.sh installs the tour script now (n03), so it is checked here, not copied by hand. Rollback: none.
+deploy.sh installs the tour script now (n03). Rollback: none.
 ## 1. baseline tour - nothing new
 ```bash
 bash scripts/test-session.sh --tour
@@ -25,6 +25,7 @@ gradually, never the whole active count in one line; `in_drop=` **0 always**; `p
 **s29 clock** - `grep -m2 'sky: ' $G/scripts/rhyremix.log`: `tod=` has decimals, ~5.0 game-min per 10 s line; `ms/min=`
 1670-2030; `torn=` a few; `jitter=` climbing while `elev=` holds one direction is the fix working; `reanchor=` ~0;
 `wraps=` 1/game day; `cal: accepted=0`; `cloud=0.00`. cf. TESTING.md.
+**n23 lamps down** - `python3 tools/night-brightness.py $G --target 25`: 21:00 stops <= 25 % of their noon frame (57.3 % today).
 ## 2. lamps that ignore the camera - finding A, the priority one (n04)
 ```bash
 bash scripts/abtest-lights.sh lights on $G && bash tools/rtxprofile.sh current $G
@@ -46,8 +47,8 @@ bash tools/water.sh realistic $G
 bash tools/water.sh calm $G
 bash tools/water.sh default $G --force    # back to the default (the A/B was explicit)
 ```
-Look: the sea at Santa Maria (stops 10/11) - no speckle, the horizon a line, not noise; **n13 installs `remix-ref` on
-every start** (pick: `.rhys-water/state`). Report: 11-water mean up from 6.8, black down from 29.2 %. Rollback:
+Look: the sea at Santa Maria (stops 10/11) - no speckle, the horizon a line, not noise; **n13 installs `remix-ref` on every start**.
+Report: 11-water mean up from 6.8, black down from 29.2 %. Rollback:
 `bash tools/water.sh pack $G` + `cp $G/rtx.conf.bak-before-n13 $G/rtx.conf`.
 ## 5. the 60 fps profile (s22) and the frame tail (n08)
 ```bash
@@ -71,14 +72,14 @@ bash tools/characters.sh status $G
 ```
 Look: stop 13-ped-crowd-pershing-noon - faces and hands at 2 m. Report: `status` says `criminal-peds-vary STAGED yes`
 (`Criminal Peds Vary` + `_criminal-peds-vary-extras`), the other five `no`, so `on` refuses - 5 of 6 not staged;
-`--partial` installs it, but it needs `PedFuncs` + `ModelVariations` (neither installed) plus the two hand `cp`s in its
-extras README (CHARACTERS.md 12). Stop 13 sat up (0.264), mean within ~10 % of 134.2. Rollback: `bash tools/characters.sh off $G`.
+`--partial` installs it; it still needs `PedFuncs` + `ModelVariations` and the two hand `cp`s (CHARACTERS.md 12).
+Stop 13 sat up (0.264), mean within ~10 % of 134.2. Rollback: `bash tools/characters.sh off $G`.
 ## 8. HD PBR on the 40 surfaces you look at (n20 -> n20b)
 ```bash
 bash tools/textures.sh on $G --generate      # 35 sets / 140 DDS / 92 MB, built once into build/textures
 ```
 Look: Pershing Square at noon (stop 13) and the Grove sidewalk (stop 0) - `tanstucco1_LA` stucco, `badmarb1_LAn` marble
-and the kerbs must carry relief and a dry matte response, not step 1's flatness ([TEXTURES.md](TEXTURES.md)). Report:
+and the kerbs must carry relief and a dry matte response, not step 1's flatness. Report:
 stops 00/13 mean/sat vs step 1, VRAM +91 MB. Rollback: `bash tools/textures.sh off $G` restores `mod.usda` byte-exact.
 ## 9. every lamp the game declares, and its bulb (n11)
 ```bash

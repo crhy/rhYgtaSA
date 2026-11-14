@@ -2479,6 +2479,51 @@ linear model puts the under-lamp night frame at 10.6-30.0 % of noon with the lam
 flux (measured today: 57.3 %). Both branches carry the tools (`tools/night-brightness.py`,
 `tools/night_ambient.py`, `tools/night-report.py`); neither is in the tree.
 
+### What n23 shipped for finding C, and what it still owes a live run (2026-11-14)
+
+n23 re-derived the **lighting** subset of the parked n05 on today's tree (`main`, HEAD `9ba6e08`)
+and left the renderer side to n16/n22/n24. Nothing was run in game (rule 1), so the "before" is the
+2026-11-12 10:22 tour and the "after" is owed by the next session.
+
+**Before, measured with `tools/night-brightness.py` (the tool is in the tree now, and it fails the
+run that misses):** under a lamp the 21:00 frame is **57.3 %** of its own noon frame (73.3 against
+128.0) where the target is ≤ 25 %, and **72.0 %** of that frame's pixels are lit — floor p10 8.4,
+mean of the lit part 96.0, mean of the unlit part 15.1. The other lamp stops: 30 m of pools 27.1 %
+(36.4 % lit), sodium close-up 20.8 % (26.6 % lit). The no-lamp water stop is already 15.7 %. So the
+night was bright because the frame **is** the lamp pool, not because of an ambient — which is what
+n10's scene-linear measurement (1.8 % of under-lamp sand 150 units from a lamp) already said.
+
+**The model, stated in the open** (linear in display luma, the same one n05 used, now printed by
+`--predict`): `mean(s) = mean_dark + (lit/100)·s·(mean_lit − mean_dark)`. With the numbers above,
+`s = 0.4` predicts 38.4 = **30.0 %** of noon with nothing else moving, and the pools/close-up stops
+land at 15.5 % / 11.9 %.
+
+**Shipped:** `[streetlights] radiance_scale 1.0 → 0.4` (one knob; the three `radiance_*` bands keep
+their ratios, so the sodium/mercury balance is untouched); `[trafficlights] bulb_radiance 1200 →
+840` ("a little too bright" = 30 %) with `glow_flux=304` and `glow_radius=3` **not moved**; and two
+decouplings that had to come first, because the street knob reached through them —
+`[trafficlights] radiance_scale` (ships 1.0; `trafficlights.cpp:411,423` used to pass the street
+value into both `rhySignalBulb` and `rhySignalGlow`, so 0.4 would have taken 60 % of the glow rhY
+asked to keep) and `[vehiclelights] radiance_scale` (ships 1.0; `vehiclecorona.cpp:367` used to hand
+it to `RhyVehicleTuning`, so 0.4 would have knocked the headlamps n12 sized from a measured ~5000
+peak intensity down to 40 % of it — finding V5 called those headlights *a small weak pool*).
+
+**A side effect worth knowing, measured rather than noticed:** `glow_flux=304` is capped against one
+street luminaire's flux (3473, computed from `radiance_big=2.0`/`radius_ref=15`, unscaled). With the
+lamps at 0.4 a real luminaire puts out 1389, so the signal glow goes from **8.8 % to 21.9 %** of a
+lamp's output. That is deliberate — finding C names the glow as the half to keep — but it is the one
+number in the change that moves without anyone touching its key, and the live A/B should expect the
+signal stops (53.5 % / 46.8 % today) to fall far less than the lamp stops.
+
+**What it still owes.** The 57.3 % was rendered with `rtx.tonemappingMode` at its Local default, so
+the local tonemapper's per-tile floor lift was in it; n16 shipped mode = 0, which removes that lift
+(the low end of n05's band, 10.6 %), while n22's `[tonemap] day_ev=-0.5 night_ev=+0.5` puts **+1.0 EV
+over noon** on a 21:00 frame (the high end, ≈42 % if it lands fully). Those two are the renderer's,
+not ours, and n23 did not touch them. If the live run still misses 25 % with the lamps at 0.4, the
+number to move is `[tonemap] night_ev`, and the number to move it **to** is **0.0** (a 0.5 EV
+take-down, ≈×1.41 less at night, which the same model puts at ≈21 %); −0.5 would be the full 1 EV.
+`tools/night-brightness.py --target 25` is the gate that says which world we are in.
+
 ## Aerial perspective: what the game's fog is, what the runtime does with it, and the six numbers between (2026-11-13, n17)
 
 docs/TARGET.md §4 **T3** ("distance must fade"). Nothing was run in the game — rule 1 — so this

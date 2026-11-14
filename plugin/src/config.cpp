@@ -74,7 +74,7 @@ static const char* const kIniDefaults =
     "radiance_big=2\r\n"
     "radiance_middle=1.2\r\n"
     "radiance_small=0.8\r\n"
-    "radiance_scale=1.0\r\n"
+    "radiance_scale=0.4\r\n"
     "cold=0.85,0.90,1.00\r\n"
     "warm=1.00,0.80,0.55\r\n"
     "kelt_cold=5000\r\n"
@@ -176,7 +176,8 @@ static const char* const kIniDefaults =
     "radius=6\r\n"
     "radiance=1.5\r\n"
     "bulb_radius=0\r\n"
-    "bulb_radiance=1200\r\n"
+    "bulb_radiance=840\r\n"
+    "radiance_scale=1.0\r\n"
     "glow_radius=3\r\n"
     "glow_flux=304\r\n"
     "corona_radius=0.45\r\n"
@@ -383,7 +384,7 @@ static void loadConfig() {
     c.radiance_big = iniFloat("radiance_big", 2.0f);
     c.radiance_middle = iniFloat("radiance_middle", 1.2f);
     c.radiance_small = iniFloat("radiance_small", 0.8f);
-    c.radiance_scale = iniFloat("radiance_scale", 1.0f);
+    c.radiance_scale = iniFloat("radiance_scale", 0.4f);
     iniRgb("cold", c.cold);
     iniRgb("warm", c.warm);
     c.kelt_cold = iniFloat("kelt_cold", 5000.0f);
@@ -511,7 +512,13 @@ static void loadConfig() {
         c.cone_softness = 0.2f;
     }
     if (!(c.radiance_scale > 0.0f)) {
-        c.radiance_scale = 1.0f;
+        // n23: a broken key falls back to the SHIPPED default, not to 1.0, so a
+        // typo in the one line that dims the night cannot silently put the old
+        // full-strength lamps back.
+        c.radiance_scale = 0.4f;
+    }
+    if (c.radiance_scale > 100.0f) {
+        c.radiance_scale = 100.0f;   // same ceiling as the two layer scales below
     }
     if (c.radiance_big < 0.0f) {
         c.radiance_big = 0.0f;
@@ -903,7 +910,7 @@ static void loadConfig() {
         c.traffic_bulb_radius = 5.0f;  // not a lens any more
     }
     c.traffic_bulb_radiance = iniFloatSec("trafficlights", "bulb_radiance",
-                                          1200.0f);
+                                          840.0f);
     if (!(c.traffic_bulb_radiance > 0.0f)) {
         c.traffic_bulb_radiance = 0.0f;  // 0 = no signal lights at all
     }
@@ -936,6 +943,20 @@ static void loadConfig() {
     }
     if (c.traffic_glow_flux > 3473.0f) {
         c.traffic_glow_flux = 3473.0f;  // one street luminaire, see above
+    }
+    // n23 (finding C): the signal layer's own multiplier. Until now the bulb and
+    // the glow were multiplied by [streetlights] radiance_scale, so taking the
+    // street lamps to 0.4 took 60 % of the glow with them - and finding C asks for
+    // the glow to be kept. 1.0 = the signals live by bulb_radiance (840) and
+    // glow_flux (304) alone; the bulb's take-down lives in bulb_radiance, so this
+    // knob cannot move the glow by accident.
+    c.traffic_radiance_scale = iniFloatSec("trafficlights", "radiance_scale",
+                                           1.0f);
+    if (!(c.traffic_radiance_scale > 0.0f)) {
+        c.traffic_radiance_scale = 1.0f;  // 0 or garbage = the neutral multiplier
+    }
+    if (c.traffic_radiance_scale > 100.0f) {
+        c.traffic_radiance_scale = 100.0f;
     }
     // n04: 90+120 covers the worst case measured over the 1522-entry list (85
     // signals within 250 units, 150 within 300), so the cap never evicts a signal
@@ -1178,6 +1199,19 @@ static void loadConfig() {
     c.veh_move_step = iniFloatSec("vehiclelights", "move_step", 0.8f);
     c.veh_cadence_ms = iniIntSec("vehiclelights", "cadence_ms", 120);
     c.veh_max_spread = iniFloatSec("vehiclelights", "max_spread", 6.0f);
+    // n23: the vehicle layer's own multiplier, and it is NOT the street-lamp one.
+    // vehiclecorona.cpp used to pass cfg->radiance_scale into RhyVehicleTuning, so
+    // the finding-C lamp take-down would have taken the headlamps n12 sized from a
+    // measured ~5000 peak intensity down to 40 % of it - V5 called those headlights
+    // "a small weak pool", so that would have been a second defect fixed by buying
+    // a third. 1.0 = n12's flux numbers stand on their own.
+    c.veh_radiance_scale = iniFloatSec("vehiclelights", "radiance_scale", 1.0f);
+    if (!(c.veh_radiance_scale > 0.0f)) {
+        c.veh_radiance_scale = 1.0f;  // 0 or garbage = the neutral multiplier
+    }
+    if (c.veh_radiance_scale > 100.0f) {
+        c.veh_radiance_scale = 100.0f;
+    }
     if (c.veh_max_lights < 0) {
         c.veh_max_lights = 0;
     }
@@ -1326,7 +1360,7 @@ static void loadConfig() {
            "head_ttl=%dms head_normal=%d head_forward=%.2f head_grace=%dms "
            "lens_offset=%d | bulb radius=%.3f "
            "radiance=%.0f nits (fixture_size=%d) corona_radius=%.2f (%s) | "
-           "glow radius=%.2f flux=%.0f (cap %.0f = one street luminaire)",
+           "glow radius=%.2f flux=%.0f (cap %.0f = one street luminaire) scale=%.2f",
            c.traffic_enabled, c.traffic_mode,
            c.traffic_source ? "game" : "list", c.trafficPath.c_str(),
            c.traffic_period, c.traffic_radiance, c.traffic_radius,
@@ -1340,7 +1374,8 @@ static void loadConfig() {
            c.traffic_bulb_radiance, c.fixture_size, c.traffic_corona_radius,
            c.traffic_corona_radius > 0.0f ? "resizes the game's 15.0 flare"
                                           : "the game's own 15.0 flare",
-           c.traffic_glow_radius, c.traffic_glow_flux, 3473.0f);
+           c.traffic_glow_radius, c.traffic_glow_flux, 3473.0f,
+           c.traffic_radiance_scale);
     rhyLog("config: sun=%d radiance=%.2f col=%.2f,%.2f,%.2f ang=%.2f spin=%.1f "
            "tilt=%.1f roll=%.1f fade=%.2f minel=%.2f step=%.2f vol=%.2f hash=%llu "
            "| moon=%d radiance=%.3f col=%.2f,%.2f,%.2f ang=%.2f fade=%.2f "
@@ -1409,11 +1444,12 @@ static void loadConfig() {
                                    : "Present is always forwarded to the bridge client");
     rhyLog("config: vehiclelights enabled=%d max=%d dist=%d spread=%.1f flux "
            "head=%.0f tail=%.0f brake=%.0f (red>=%d) radius head=%.2f tail=%.2f "
-           "cone=%.1f/%.2f move=%.2f cadence=%dms",
+           "cone=%.1f/%.2f move=%.2f cadence=%dms scale=%.2f",
            c.veh_enabled, c.veh_max_lights, c.veh_max_distance, c.veh_max_spread,
            c.veh_head_flux, c.veh_tail_flux, c.veh_brake_flux, c.veh_brake_red_min,
            c.veh_head_radius, c.veh_tail_radius, c.veh_head_cone_deg,
-           c.veh_head_cone_softness, c.veh_move_step, c.veh_cadence_ms);
+           c.veh_head_cone_softness, c.veh_move_step, c.veh_cadence_ms,
+           c.veh_radiance_scale);
 }
 
 // Timestamp of the ini the loaded values came from.  A FILETIME is two 32-bit

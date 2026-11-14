@@ -233,6 +233,48 @@ class TestIniKeys(unittest.TestCase):
             self.assertIn(key, kinidefaults().get("tonemap", {}),
                           "kIniDefaults does not write %s" % key)
 
+    def test_the_n23_layer_scales_are_parsed_and_clamped(self):
+        """n23 (finding C): [streetlights] radiance_scale went 1.0 -> 0.4, and the two
+        layers that knob used to reach through (the signal bulb/glow and the vehicle
+        lamps) got radiance_scale keys of their own.
+
+        Three ways this rots, all of them silent: a key in the ini that config.cpp never
+        asks for (the line does nothing and the next debugging session starts from a
+        fiction); a scale with no clamp (a 0 or negative value reaches Remix as a dark or
+        inverted light instead of the neutral multiplier); and an ini number that is not
+        the compiled default, so a plugin running without an ini looks different from the
+        one deploy.sh installs."""
+        for section in ("streetlights", "trafficlights", "vehiclelights"):
+            self.assertIn((section, "radiance_scale"), self.code,
+                          "config.cpp never reads [%s] radiance_scale" % section)
+        # the shipped ini carries the numbers n23 ships, and they ARE the compiled defaults
+        self.assertEqual(self.ini["streetlights"]["radiance_scale"], "0.4")
+        self.assertTrue(same(self.ini["streetlights"]["radiance_scale"],
+                             self.code[("streetlights", "radiance_scale")]),
+                        "[streetlights] radiance_scale: ini %s, code %s"
+                        % (self.ini["streetlights"]["radiance_scale"],
+                           self.code[("streetlights", "radiance_scale")]))
+        self.assertEqual(self.ini["trafficlights"]["radiance_scale"], "1.0")
+        self.assertTrue(same(self.ini["trafficlights"]["radiance_scale"],
+                             self.code[("trafficlights", "radiance_scale")]))
+        # the vehicle section is documented-but-disabled, so it is read as a comment line
+        self.assertEqual(self.ini_doc["vehiclelights"]["radiance_scale"], "1.0")
+        self.assertTrue(same(self.ini_doc["vehiclelights"]["radiance_scale"],
+                             self.code[("vehiclelights", "radiance_scale")]))
+        # and every one of the three is clamped: >0 or the neutral value, and a ceiling
+        cfg = read(CFG)
+        for var, neutral in (("c.radiance_scale", "0.4f"),
+                             ("c.traffic_radiance_scale", "1.0f"),
+                             ("c.veh_radiance_scale", "1.0f")):
+            self.assertIn("!(%s > 0.0f)" % var, cfg,
+                          "%s is not guarded against 0 or negative" % var)
+            self.assertIn("%s = %s;" % (var, neutral), cfg,
+                          "%s does not fall back to %s" % (var, neutral))
+            self.assertIn("%s > 100.0f" % var, cfg, "%s has no ceiling" % var)
+        # the bulb's take-down lives in bulb_radiance, so the glow cannot inherit it
+        self.assertEqual(self.ini["trafficlights"]["bulb_radiance"], "840")
+        self.assertEqual(self.ini["trafficlights"]["glow_flux"], "304")
+
     def test_the_day_anchor_equals_the_profile_anchor(self):
         """n22's no-op-at-noon property, checked where both sides are visible.
 

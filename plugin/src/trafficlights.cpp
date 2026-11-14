@@ -408,7 +408,8 @@ static void bulbFor(int phase, const RhyConfig& c, RhySignalBulb* out) {
         lens = c.traffic_radius;
     }
     rhySignalBulb(phase, c.fixture_size, lens, c.traffic_bulb_radiance,
-                  c.traffic_radiance, c.traffic_radius_ref, c.radiance_scale,
+                  c.traffic_radiance, c.traffic_radius_ref,
+                  c.traffic_radiance_scale,   // n23: not c.radiance_scale
                   out);
 }
 
@@ -419,8 +420,12 @@ static void bulbFor(int phase, const RhyConfig& c, RhySignalBulb* out) {
 // nothing. The flux default (304) is what the 2026-11-12 00:48 glow measured, and
 // rhySignalGlow clamps it to one street luminaire's (3473). See signalheads.h.
 static void glowFor(int phase, const RhyConfig& c, RhySignalGlow* out) {
+    // n23: c.traffic_radiance_scale, not c.radiance_scale. The street-lamp knob
+    // used to reach the glow through this call, so "knock the street lamps down"
+    // (radiance_scale 1.0 -> 0.4, finding C) silently took 60 % of the glow away
+    // with it - and the glow is the half finding C asks to keep.
     rhySignalGlow(phase, c.traffic_glow_radius, c.traffic_glow_flux,
-                  kRhySignalGlowFluxCap, c.radiance_scale, out);
+                  kRhySignalGlowFluxCap, c.traffic_radiance_scale, out);
 }
 
 // n02b: glow_flux=0 means "bulb only": no second handle exists at all, so the

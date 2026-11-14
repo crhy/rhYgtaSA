@@ -364,7 +364,7 @@ void rhyVehicleCoronaFrame() {
     t.tailRadius = cfg->veh_tail_radius;
     t.headConeDeg = cfg->veh_head_cone_deg;
     t.headConeSoftness = cfg->veh_head_cone_softness;
-    t.radianceScale = cfg->radiance_scale;
+    t.radianceScale = cfg->veh_radiance_scale;  // n23: NOT cfg->radiance_scale
     t.brakeRedMin = cfg->veh_brake_red_min;
     t.maxLamps = cfg->veh_max_lights;
     t.maxSpread = cfg->veh_max_spread;

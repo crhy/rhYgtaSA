@@ -220,8 +220,9 @@ struct RhySignalBulb {
 // fixtureSize: the ini's fixture_size. lensRadius: rhySignalRadius(scale) when
 // fixtureSize, otherwise the ini's trafficlights radius. bulbRadiance: the ini's
 // trafficlights bulb_radiance (nits at the lens). radianceAtRef/radiusRef: the
-// legacy pair (trafficlights radiance / radius_ref). radianceScale: the global
-// [streetlights] radiance_scale.
+// legacy pair (trafficlights radiance / radius_ref). radianceScale: the ini's
+// [trafficlights] radiance_scale (n23: it used to be the [streetlights] one, which
+// is how dimming the street silently dimmed the signals too).
 void rhySignalBulb(int phase, int fixtureSize, float lensRadius,
                    float bulbRadiance, float radianceAtRef, float radiusRef,
                    float radianceScale, RhySignalBulb* out);
@@ -283,8 +284,10 @@ struct RhySignalGlow {
 // radiusM: the ini's trafficlights glow_radius (<= 0 -> kRhySignalGlowRadius).
 // wantFlux: the ini's glow_flux (<= 0 -> no glow at all, the off switch).
 // capFlux: the ceiling (<= 0 -> kRhySignalGlowFluxCap).
-// radianceScale: the global [streetlights] radiance_scale, applied to the
-// radiance exactly as rhySignalBulb applies it, so one dial moves both halves.
+// radianceScale: the ini's [trafficlights] radiance_scale, applied to the
+// radiance exactly as rhySignalBulb applies it, so one dial moves both halves -
+// and, since n23, moves NOTHING outside the signals: the street-lamp knob used to
+// be passed here and took the glow down with the lamps.
 void rhySignalGlow(int phase, float radiusM, float wantFlux, float capFlux,
                    float radianceScale, RhySignalGlow* out);
 

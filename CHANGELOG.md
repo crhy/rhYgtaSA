@@ -824,7 +824,12 @@ started. Their measurements are in [docs/FINDINGS.md](docs/FINDINGS.md) and thei
   `1200 → 840` with a new `[trafficlights] radiance_scale` so the street knob stopped reaching the
   signals, `rtx.localtonemap.highlights = 1.5`, a night ramp of `rtx.localtonemap.shadows` 2.5 → 1.0,
   `tools/night-brightness.py`); the gate failed on `scripts/test-session-selftest.sh` **timing out**
-  (exit 124), not on any of these. Nothing shipped.
+  (exit 124), not on any of these. Nothing shipped at the time. **The lighting half was re-derived and
+  shipped by n23** (see "Night brightness (n23)" below): `radiance_scale=0.4`, `bulb_radiance=840`,
+  the `[trafficlights] radiance_scale` decoupling and the tool are in this tree. The renderer half is
+  not: n16 `b1afcc2` had since put `rtx.tonemappingMode = 0` in the profiles, which switches the local
+  tonemapper off entirely, so n05's `localtonemap.highlights = 1.5` and its night ramp of
+  `localtonemap.shadows` are inert-or-wrong on today's tree and were deliberately not re-applied.
 - **Parked (n10, `30a1a43` on `failed/n10-night-ambient-realism-172920`): the fake night ambient.**
   Same story: the analysis stands (the local tonemapper, the sky probe's ambient ceiling, the fallback
   light welded to the camera and a distant light pointing up out of the ground), the plugin gained
@@ -1518,7 +1523,7 @@ own lamp data inside the models.
   and that the game's own corona (`coronastar`, size float 12/18 in the record) still draws the
   sprite. NEXT-TEST step 9 is the leg that settles it.
 
-### Session readiness (n03) — the page rhY runs the session from, and the tour script nobody installed
+### Session readiness (n03, `9ba6e08`) — the page rhY runs the session from, and the tour script nobody installed
 
 Three things that were each somebody's follow-up and nobody's task (`.strata/notes-s26-perf-checklist.md`
 follow-ups 1-3, `notes-s27` step 5, `notes-s29` step 5). **Not committed yet**, so "undo" below means
@@ -1589,6 +1594,82 @@ undoing working-tree changes.
   "Parked and aborted work" bullet still said n11 "stopped with no commit" after it had been finished
   and committed. `bash scripts/check-all.sh` was red at HEAD **before** this task started: 103 checks
   passed, 1 failed (`tests/test_changelog_coverage.py`).
+
+### Night brightness (n23) — the lamps came down, and the signal glow did not go with them
+
+rhY, 2026-11-12b finding C: "street lights a little/considerably too bright — knock them down
+considerably. Nights must be significantly darker than daytime even with street lights on. Traffic
+signal BULB (on the lens) a little too bright; the signal's AMBIENT glow looks GOOD — keep it."
+STATUS rows 4b / B / C were open or "measured, not shipped" because the only work on them was parked
+as `6eafd4d`. n23 re-derived the **lighting** half on today's tree and left the renderer half to the
+commits that already own it (n16's tonemapping, n22's exposure anchor, n24's ambient).
+
+- **Measured first** (`tools/night-brightness.py`, read-only against the 2026-11-12 10:22 tour):
+  under a lamp the 21:00 frame is **57.3 %** of its own noon frame (73.3 against 128.0) where the
+  target is ≤ 25 %, and **72.0 %** of its pixels are lit (floor p10 8.4, mean_lit 96.0, mean_dark
+  15.1) — the frame *is* the lamp pool. The pool stops are already nearer (27.1 % / 20.8 %) and the
+  no-lamp water stop is 15.7 %, so the lever is lamp flux, not ambient. The linear model
+  (`mean(s) = mean_dark + (lit/100)·s·(mean_lit − mean_dark)`) puts `s = 0.4` at **30.0 %** with
+  nothing else moving. Evidence and the model: [docs/FINDINGS.md](docs/FINDINGS.md), "What n23
+  shipped for finding C".
+- **Changed: `[streetlights] radiance_scale 1.0 → 0.4`** — one knob, as the ini's own comment asks.
+  The three `radiance_*` bands keep their ratios, so the sodium/mercury balance does not move. The
+  compiled default and the ini the plugin writes when none exists moved with it, and a broken value
+  now falls back to **0.4** rather than to 1.0, so a typo in the one line that dims the night cannot
+  silently restore the old full-strength lamps.
+- **Changed: `[trafficlights] bulb_radiance 1200 → 840`** ("a little too bright" = −30 %), with
+  `glow_flux=304` and `glow_radius=3` **not touched**. The take-down is in the lens luminance and not
+  in a multiplier, so the glow cannot inherit it.
+- **Fixed: the street knob reached two layers it was never meant to.** `trafficlights.cpp:411,423`
+  passed `c.radiance_scale` into **both** `rhySignalBulb` and `rhySignalGlow`, so shipping 0.4 would
+  have taken 60 % of the glow rhY named as the half to keep; `vehiclecorona.cpp:367` handed the same
+  value to `RhyVehicleTuning`, so it would have knocked the headlamps n12 sized from a measured ~5000
+  peak intensity down to 40 % of it (finding V5 called those headlights *a small weak pool*). Two new
+  keys, both shipping at the neutral 1.0: **`[trafficlights] radiance_scale`** and **`[vehiclelights]
+  radiance_scale`** (parsed and clamped like the street one: >0 or neutral, ceiling 100).
+- **Known side effect, measured:** `glow_flux=304` is capped against one street luminaire's flux
+  (3473, computed from the unscaled `radiance_big=2.0`/`radius_ref=15`). With the lamps at 0.4 a real
+  luminaire emits 1389, so the signal glow goes from **8.8 % to 21.9 %** of a lamp's output. That is
+  the finding honoured rather than a regression, but it is the one number that moves without anyone
+  touching its key — expect the signal stops (53.5 % / 46.8 % today) to fall less than the lamp stops.
+- **Added: `tools/night-brightness.py` is in the tree and is a gate, not a report.** It pairs the
+  tour's manifest entries with its shot files the way `tools/tour-report.py` does, classifies each
+  stop by the clock in its name (night 20:00–04:59 scored, 10:00–14:59 the reference, twilight
+  printed but not scored), compares each night stop with the **same stop's** day frame where one
+  exists, and exits non-zero naming every stop over `--target`. New since the parked version: it
+  prints the **lit-pixel fraction** and the mean_lit/mean_dark split (the 72.0 % number is now
+  reproducible from the tool rather than from a scratch script), `--lit-max` gates that fraction,
+  `--predict S` prints the model above, and a run with **no night stop at all** now fails instead of
+  printing an empty table and exiting 0.
+- **Not touched, on purpose:** `rtx.localtonemap.*`, `rtx.tonemap.*`, `[tonemap] night_ev`. The
+  combined night level with n22's anchor is stated in FINDINGS and in
+  `.strata/notes-n23-night-brightness-lamps-down.md`: the 57.3 % was rendered with the local
+tonnemapper's floor lift in it (n16 removed that lever), while n22's `day_ev=-0.5 → night_ev=+0.5`
+  puts +1.0 EV on a 21:00 frame. If the live run still misses 25 % with the lamps at 0.4, the number
+  to move is **`[tonemap] night_ev` → 0.0** (≈21 % on the same model), not the lamps.
+- **Tests:** `tests/test_night_brightness.py` (new, 12 checks — the clock classes, the same-stop
+  partner, a fake tree where 31.2 % and 70.3 % both fail and 12.5 % passes, the lit split and the
+  model read back out of an image we drew, the no-night-stop gate, the GRAY pair, and the shipped
+  numbers including "n05's `localtonemap.highlights = 1.5` must not come back");
+  `tests/test_ini_keys.py` +1 check (all three `radiance_scale` keys parsed, equal to the compiled
+  defaults, and clamped); `tests/test_signal_hook.py` (compiled defaults now `bulb_radiance=840` and
+  `radiance_scale=1.0`); `tests/signals_check.cpp` (the two labels that called the street knob the
+  signal's scale).
+- **Docs:** [docs/TESTING.md](docs/TESTING.md) step 4 gained the three knob rows (what 0.4 means, what
+  to reach for when the misses are stops with no street lamp in them, and the two decouplings);
+  [docs/STATUS.md](docs/STATUS.md) rows 4b / B / C moved from open / measured-not-shipped to **in
+  tree, awaiting a run**; [docs/FINDINGS.md](docs/FINDINGS.md) has the before/after and the model;
+  [docs/NEXT-TEST.md](docs/NEXT-TEST.md) carries one line for the measurement (the page is at its
+  90-line / 6000-byte ceiling, so the detail went to TESTING.md and a step-0 line was trimmed to pay
+  for it).
+- **Undo:** `[streetlights] radiance_scale=1.0` and `[trafficlights] bulb_radiance=1200` in
+  `config/rhyremix-production.ini` (the two new keys may stay at 1.0 — they change nothing there), or
+  `git revert` of this commit.
+
+- **Fixed (gate, pre-existing):** `bash scripts/check-all.sh` was red at HEAD **before** this task
+  started — 106 checks, 1 failed, `tests/test_changelog_coverage.py`: `CHANGELOG.md` did not name
+  `9ba6e08` (the n03 commit itself, which n03 could not name from inside its own commit). The n03
+  heading now carries its hash. Same class of failure n03 itself fixed for `9b98f96`.
 
 ## [0.8.0] — 2026-11-11 (`e19fde6`)
 

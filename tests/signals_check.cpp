@@ -636,7 +636,7 @@ int main() {
        off.radiance[0] == 0.0f && off.radiance[1] == 0.0f && off.flux == 0.0f);
     RhySignalBulb scaled;
     rhySignalBulb(0, 1, 0.1f, 1200.0f, 1.5f, 6.0f, 0.5f, &scaled);
-    ok("[streetlights] radiance_scale scales the bulb too",
+    ok("[trafficlights] radiance_scale scales the bulb too (n23: not the street knob)",
        std::fabs(scaled.radiance[1] - 600.0f) < 1e-3f);
     RhySignalBulb scaleBad;
     rhySignalBulb(0, 1, 0.1f, 1200.0f, 1.5f, 6.0f, -2.0f, &scaleBad);
@@ -759,7 +759,7 @@ int main() {
                0.01f * g1m.radiance[1]);
     RhySignalGlow gScaled;
     rhySignalGlow(0, 3.0f, 304.0f, 0.0f, 0.5f, &gScaled);
-    ok("[streetlights] radiance_scale scales the glow too",
+    ok("[trafficlights] radiance_scale scales the glow too (n23: one dial, signals only)",
        std::fabs(gScaled.flux - g0.flux / 2.0f) < 1.0f);
     RhySignalGlow gBad;
     rhySignalGlow(0, 3.0f, 304.0f, 0.0f, -2.0f, &gBad);

@@ -81,6 +81,12 @@ If something in the update looks wrong, everything is reversible
   of the previous choice, and stops the re-shuffle. Expect the light from a lamp to hold steady while
   you turn, instead of crawling. If your frame rate matters more, `tools/rtxprofile.sh perf` is the
   cheaper variant of the same settings.
+- **Nights are darker.** The street lamps ship at 40 % of the light they used to throw. Measured: at
+  21:00 standing under a lamp, that frame was 57 % as bright as the same place at noon, and 72 % of
+  its pixels were lit by a lamp - the pool, not the sky, was what made night look like a dim day.
+  The colour balance (sodium against cool white) and the size of the pools are untouched. If it went
+  too far for you, `[streetlights] radiance_scale=1.0` in `rhyremix.ini` is the whole undo, live
+  while the game runs; `0.2` is darker still.
 
 ### Sun, moon and sky
 
@@ -231,6 +237,10 @@ If something in the update looks wrong, everything is reversible
   patch is only installed when the game's code at the patch site is exactly what we expect; otherwise
   the plugin logs why and falls back to the old pole-position mode. `source=list` puts the old mode
   back by hand at any time.
+- **The bulb on the lens is 30 % dimmer; the glow around it is exactly as it was.** Reported as "a
+  little too bright". The take-down is in the lens brightness, and the soft light a lit signal throws
+  on the pole, the wall and the road is a separate number that was not moved - and since this build
+  the street-lamp dimmer cannot reach either of them by accident.
 - **When the fallback runs, the bulb now sits on the lens instead of the mast.** The signal list used
   to carry a pole position and a head height, so a list-mode light hung 1.75–2.10 m sideways from the
   lens it was meant to be a bulb on — the lamp table the height came from always carried that sideways

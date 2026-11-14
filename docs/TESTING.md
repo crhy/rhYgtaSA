@@ -491,7 +491,10 @@ few seconds - no restart.
 
 | Symptom | Change |
 |---|---|
-| Night too bright overall | `[streetlights] radiance_scale=0.5` |
+| Night too bright overall | `[streetlights] radiance_scale` - **ships at 0.4** since n23 (finding C: under a lamp the 21:00 frame was 57.3 % of its own noon frame, and 72.0 % of its pixels were lit, so the frame *is* the lamp pool). `1.0` is the undo and the pre-n23 look; `0.2` if rhY wants it darker still. The three `radiance_*` bands keep their ratios, so the sodium/mercury balance does not move with it. Measure it: `python3 tools/night-brightness.py $G --target 25 --predict 0.4` - it exits non-zero on the stop that misses |
+| Night still too bright after the lamps came down | `tools/night-brightness.py` names the stop. If the misses are the stops with **no street lamp in them** (shopfront, burger sign, the signal stops) the lever is not ours: it is the pack's emissives (`rtx.emissiveIntensity`) or n22's `[tonemap] night_ev` (ships +0.5, i.e. the night gets 1 EV over noon; `0.0` is the first step back) |
+| The signal glow came down with the street lamps | n23: it cannot - `[trafficlights] radiance_scale` (ships 1.0) is the signals' own multiplier, and the bulb's take-down lives in `bulb_radiance` (840), not in it. `glow_flux=304` is untouched. The log's `config: trafficlights ... scale=` prints it |
+| A car's headlamps went dim when the street lamps did | n23: they cannot either - `[vehiclelights] radiance_scale` (ships 1.0, documented in the ini's commented block) is the vehicle layer's own multiplier. n12 sized `head_flux=950` from a measured ~5000 peak intensity, so it does not ride the street knob |
 | Light pools still soft/huge | `[streetlights] fixture_scale=2.0` is the *wrong* direction - instead check `fixture_size=1` is set |
 | Sparkles / fireflies / banding around lamps | `[streetlights] fixture_scale=5.0` (1 m source: still 15x tighter than the old blob, far gentler on Monte Carlo noise) |
 | Lamps too dim | `radiance_big=3.0` |

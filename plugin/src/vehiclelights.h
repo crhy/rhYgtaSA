@@ -178,7 +178,8 @@ struct RhyVehicleTuning {
     float tailRadius;       // metres; <= 0 -> rhyVehicleTailFixture()
     float headConeDeg;      // HALF angle; <= 0 -> the fixture's
     float headConeSoftness; // 0..1
-    float radianceScale;    // the global [streetlights] radiance_scale
+    float radianceScale;    // the [vehiclelights] radiance_scale (n23: not the
+                            // street-lamp one - the two layers are tuned apart)
     int brakeRedMin;        // observed tail red for the brake rule (0 = off)
     int maxLamps;           // cap on lamps this pass (nearest vehicle first)
     float maxSpread;        // metres: the lamps of one vehicle must fit in a box

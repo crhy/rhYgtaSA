@@ -67,7 +67,9 @@ struct RhyConfig {
     // its spectrum is a few atomic lines. -1 = not set, fall back to kelvin.
     int lamp_cold_family;
     int lamp_warm_family;
-    float radiance_scale;   // global multiplier over every radiance we send
+    float radiance_scale;   // global multiplier over every STREET lamp's radiance
+                            // (n23: it no longer reaches the signals or the vehicles -
+                            // see traffic_radiance_scale / veh_radiance_scale)
     float focus_exponent;   // shaping focus exponent, 0 = no focus
     int sphere_shaping;     // 1 = cone shaping for every lamp, not only spot types
     int resync_frames;      // frames between re-diffing the active light set
@@ -253,6 +255,13 @@ struct RhyConfig {
     // glow_flux=0 = no glow light at all, the A/B switch.
     float traffic_glow_radius;
     float traffic_glow_flux;
+    // n23 (finding C): the SIGNAL layer's own multiplier. Until n23 the bulb and
+    // the glow were multiplied by [streetlights] radiance_scale
+    // (trafficlights.cpp:411,423), so "knock the street lamps down" and "keep the
+    // glow" (test-2026-11-12b C) could not both be said in one config: taking the
+    // lamps to 0.4 silently took 60 % of the signal glow with them. 1.0 = the
+    // signals live by bulb_radiance and glow_flux alone.
+    float traffic_radiance_scale;
     int traffic_period;     // seconds per full red/amber/green cycle
     int traffic_max_lights; // cap on simultaneous traffic light Remix lights
     int traffic_max_distance; // metres, 2D (new lights)
@@ -366,6 +375,11 @@ struct RhyConfig {
     float veh_move_step;      // metres a lamp may drift before its handle is rebuilt
     int   veh_cadence_ms;     // floor on the rebuild period of one lamp's handle
     float veh_max_spread;     // metres: the lamps of one vehicle must fit in this box
+    // n23: the VEHICLE layer's own multiplier, for the same reason as the signals.
+    // vehiclecorona.cpp used to hand the street-lamp knob to rhyVehicleBuildLamps,
+    // so the finding-C take-down would have knocked the headlamps n12 sized from a
+    // measured ~5000 peak intensity down to 40 % of it. 1.0 = n12's numbers stand.
+    float veh_radiance_scale;
 };
 
 // Loads once on first call; returns the same pointer every time.

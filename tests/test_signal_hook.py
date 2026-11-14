@@ -725,7 +725,8 @@ class TestKillSwitch(unittest.TestCase):
                   encoding="utf-8") as fh:
             cfg = fh.read()
         self.assertIn('"corona_radius=0.45', cfg)
-        self.assertIn('"bulb_radiance=1200', cfg)
+        self.assertIn('"bulb_radiance=840', cfg)    # n23: 1200 x 0.7, finding C row 4b
+        self.assertIn('"radiance_scale=1.0', cfg)   # n23: the signals' own scale
         self.assertIn('"bulb_radius=0', cfg)
 
     def test_the_patch_site_is_read_through_the_pointer_checks(self):
